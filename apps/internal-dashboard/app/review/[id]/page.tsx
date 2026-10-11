@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { decryptPII } from "@/lib/crypto";
+import { builderDetailsView, canSeeBuilderPII } from "@/lib/reviewAccess";
 import {
   getProject,
   listShippedProjects,
@@ -166,7 +167,12 @@ export default async function ReviewDetail({
   // robertSync.ts), so spotCheckStage is the only thing isFinalStage can
   // mean here besides a proposed ban.
   const spotCheckStage = isFinalStage && p.second_pass_verdict === "not_fraud";
-  const isOwn = !!p.users?.slack_id && p.users.slack_id === viewer && !access.isOwner;
+  // Owner of the project, or an accepted collaborator on it (both are paid on
+  // approval, so neither may review it). Mirrors isOwnProject in app/actions.ts.
+  const isOwn =
+    !access.isOwner &&
+    ((!!p.users?.slack_id && p.users.slack_id === viewer) ||
+      allCollaborators.some((c) => c.status === "accepted" && !!c.users?.slack_id && c.users.slack_id === viewer));
   const isHeld = !!p.hold_at;
   // hold_by is stored as "Name (SlackID)" (see holdReview in app/actions.ts) -
   // parse the id back out to tell whether this viewer is the one who set it,
@@ -175,7 +181,7 @@ export default async function ReviewDetail({
   const canReview =
     !isHeld &&
     ((p.status === "shipped" && !isOwn) ||
-      (isProposedBan && canSecondPass) ||
+      (isProposedBan && canSecondPass && !isOwn) ||
       (spotCheckStage && access.isOwner));
   // Reviewer-side unship (see unshipProject): available to final reviewers at
   // second pass or fraud review regardless of who could submit a verdict, and
@@ -813,22 +819,35 @@ export default async function ReviewDetail({
             // also passes legacy plaintext through unchanged.
             // In live mode nothing is decrypted at all - the real values never
             // leave this block (see redactBuilderDetails).
+            // Name/email/birth date/address are for final reviewers and owners
+            // only (canSeeBuilderPII); a first-pass reviewer gets the age plus
+            // "on file"/"missing" per field, and for them nothing but the
+            // birthday (needed for the age) is even decrypted.
+            const privileged = canSeeBuilderPII(access);
             const dec = (v: string | null | undefined) => (live ? "" : decryptPII(v) || "");
+            const present = (v: string | null | undefined) => (live ? "" : v ? "x" : "");
+            const pii = privileged ? dec : present;
             const birthday = dec(u?.birthday);
             const builderAge = ageFrom(birthday);
-            const country = dec(u?.address_country);
+            const country = pii(u?.address_country);
+            const view = builderDetailsView(access, isFinalStage, {
+              fullName:
+                [pii(u?.first_name), pii(u?.last_name)].filter(Boolean).join(" ") ||
+                (privileged ? (u?.real_name ?? "") : present(u?.real_name)),
+              email: pii(u?.email),
+              birthday: privileged ? birthday : "",
+              age: builderAge,
+              country,
+              address: [pii(u?.address_line1), pii(u?.address_line2), pii(u?.address_city), pii(u?.address_state), pii(u?.address_postal), country]
+                .filter(Boolean)
+                .join(", "),
+            });
             const details = redactBuilderDetails(live, {
-              fullName: [dec(u?.first_name), dec(u?.last_name)].filter(Boolean).join(" ") || u?.real_name || "-",
-              email: dec(u?.email) || "-",
-              ageLabel:
-                builderAge != null
-                  ? `${builderAge}${isFinalStage && birthday ? ` (born ${birthday})` : ""}`
-                  : "-",
-              country: country || "-",
-              address:
-                [dec(u?.address_line1), dec(u?.address_line2), dec(u?.address_city), dec(u?.address_state), dec(u?.address_postal), country]
-                  .filter(Boolean)
-                  .join(", ") || "-",
+              fullName: view.fullName,
+              email: view.email,
+              ageLabel: view.ageLabel,
+              country: view.country,
+              address: view.address ?? "",
             });
             return (
               <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 p-4 text-sm space-y-2">
@@ -842,7 +861,7 @@ export default async function ReviewDetail({
                 </ul>
                 <details className="text-amber-900/90 dark:text-amber-200/90">
                   <summary className="cursor-pointer font-medium select-none">
-                    Builder details (name · email · age · shipping)
+                    {view.privileged ? "Builder details (name · email · age · shipping)" : "Builder details (age · fields on file)"}
                   </summary>
                   <div className="mt-2 grid gap-1 sm:grid-cols-2">
                     <div>
@@ -857,7 +876,7 @@ export default async function ReviewDetail({
                     <div>
                       <span className="text-muted-foreground">Country:</span> {details.country}
                     </div>
-                    {isFinalStage && (
+                    {view.address !== null && (
                       <div className="sm:col-span-2">
                         <span className="text-muted-foreground">Address:</span> {details.address}
                       </div>
@@ -1077,6 +1096,11 @@ export default async function ReviewDetail({
                       <div className="mb-2 rounded-md bg-rose-50 dark:bg-rose-950/30 px-2 py-1 text-sm font-semibold text-rose-700 dark:text-rose-300">
                         ⚠ First reviewer proposed{" "}
                         {p.first_pass_verdict === "banned" ? "a BAN" : "changes"} , confirm it, or approve to overturn.
+                        {p.first_pass_verdict === "banned" && !access.isOwner && (
+                          <span className="block font-normal">
+                            Only an owner can confirm a ban. Approving sends it back through fraud review and the owner spot check.
+                          </span>
+                        )}
                       </div>
                     )}
                     <div className="text-sm text-foreground/70">

@@ -9,6 +9,7 @@ export async function GET() {
   const jar = await cookies();
   jar.set("pixl_oauth_state", state, {
     httpOnly: true,
+    secure: true,
     sameSite: "lax",
     maxAge: 600,
     path: "/",

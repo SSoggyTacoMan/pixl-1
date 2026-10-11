@@ -13,7 +13,7 @@ import {
   satisfies,
   type RoleInputs,
 } from "./roles";
-import { clientIp, fieldNamesFromArgs, isNavigationSignal, targetFromArgs } from "./auditTarget";
+import { clientIp, errorCode, fieldNamesFromArgs, isNavigationSignal, targetFromArgs } from "./auditTarget";
 
 const session = (slackId: string) => ({ slackId, name: slackId, exp: 0 });
 const inputs = (over: Partial<RoleInputs> = {}): RoleInputs => ({
@@ -136,11 +136,22 @@ describe("audit helpers", () => {
     expect(targetFromArgs([])).toBeNull();
   });
 
-  test("client ip is the first x-forwarded-for hop", () => {
+  test("client ip is the last (ingress-appended) x-forwarded-for hop, not the spoofable first", () => {
     const h = new Headers({ "x-forwarded-for": "1.2.3.4, 10.0.0.1" });
-    expect(clientIp((n) => h.get(n))).toBe("1.2.3.4");
+    expect(clientIp((n) => h.get(n))).toBe("10.0.0.1");
+    const spoofed = new Headers({ "x-forwarded-for": "6.6.6.6, , 203.0.113.9 ,  " });
+    expect(clientIp((n) => spoofed.get(n))).toBe("203.0.113.9");
     const h2 = new Headers({ "x-real-ip": "5.6.7.8" });
     expect(clientIp((n) => h2.get(n))).toBe("5.6.7.8");
+  });
+
+  test("audit error meta is a class/code, never the message", () => {
+    const pgErr = Object.assign(new Error('duplicate key value (email)=(kid@example.com)'), { code: "23505" });
+    expect(errorCode(pgErr)).toBe("Error:23505");
+    expect(errorCode(new TypeError("Jane Doe, 1 Main St"))).toBe("TypeError");
+    expect(errorCode("raw string with PII")).toBe("string");
+    expect(errorCode(Object.assign(new Error("x"), { name: "evil name with spaces" }))).toBe("Error");
+    for (const v of [pgErr, new TypeError("Jane Doe, 1 Main St")]) expect(errorCode(v)).not.toMatch(/@|Jane|Main/);
   });
 
   test("redirect() is control flow, not an error", () => {

@@ -10,10 +10,27 @@ export interface AdminSession {
   exp: number;
 }
 
-function secret(): string {
-  const s = process.env.SESSION_SECRET;
+// The HMAC key for staff sessions. A short key is brute-forceable offline from
+// any one captured cookie, which would let someone mint an owner session, so
+// anything under 32 characters is refused outright.
+export const MIN_SESSION_SECRET_LENGTH = 32;
+
+export function validSessionSecret(s: string | undefined): string {
   if (!s) throw new Error("SESSION_SECRET is not set");
+  if (s.length < MIN_SESSION_SECRET_LENGTH)
+    throw new Error(`SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters`);
   return s;
+}
+
+function secret(): string {
+  return validSessionSecret(process.env.SESSION_SECRET);
+}
+
+// Cookies are Secure everywhere except local dev. Keyed off NODE_ENV rather
+// than parsing BASE_URL, so a missing/odd BASE_URL in production can't quietly
+// send the staff session over plain HTTP.
+export function secureCookies(nodeEnv: string | undefined = process.env.NODE_ENV): boolean {
+  return nodeEnv !== "development" && nodeEnv !== "test";
 }
 
 function sign(payload: string): string {
@@ -56,7 +73,7 @@ export async function setSessionCookie(slackId: string, name: string) {
   jar.set(COOKIE, encodeSession({ slackId, name, exp: Date.now() / 1000 + MAX_AGE }), {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.BASE_URL?.startsWith("https") ?? false,
+    secure: secureCookies(),
     maxAge: MAX_AGE,
     path: "/",
   });

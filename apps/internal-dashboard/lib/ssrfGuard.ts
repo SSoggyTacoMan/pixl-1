@@ -213,3 +213,82 @@ export async function safeJsonGet(
   }
   return null; // too many redirects
 }
+
+export interface SafeBinaryOptions extends SsrfGuardDeps {
+  maxBytes: number;
+}
+
+export class SafeFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SafeFetchError";
+  }
+}
+
+// GET a binary body (e.g. an admin-supplied shop image URL) through the same
+// pinned DNS lookup as safeJsonGet, so the address that was checked is the
+// address connected to (no DNS rebinding between check and fetch). Redirects
+// are refused outright rather than followed, and the body is streamed with a
+// hard byte cap: the transfer is aborted as soon as it passes maxBytes, before
+// anything large is buffered (a Content-Length over the cap is refused before
+// reading at all). Throws SafeFetchError with a human-readable reason.
+export async function safeBinaryGet(url: string, opts: SafeBinaryOptions): Promise<Buffer> {
+  const resolved = resolveDeps(opts);
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new SafeFetchError("invalid URL");
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw new SafeFetchError(`unsupported URL scheme (${u.protocol})`);
+  if (u.username || u.password) throw new SafeFetchError("URLs with credentials are not allowed");
+  if (!(await hostIsPublic(u.hostname, resolved))) throw new SafeFetchError("URL resolves to a private address");
+  return new Promise<Buffer>((resolve, reject) => {
+    const mod = u.protocol === "https:" ? https : http;
+    const reqOptions: https.RequestOptions = {
+      method: "GET",
+      headers: { accept: "image/png,image/jpeg,image/webp,*/*;q=0.1" },
+      lookup: makeSafeLookup(resolved.lookupImpl, resolved.isBlockedIp),
+      signal: AbortSignal.timeout(resolved.timeoutMs),
+      agent: false,
+    };
+    if (resolved.ca) reqOptions.ca = resolved.ca;
+    const req = mod.request(u, reqOptions, (res) => {
+      const status = res.statusCode ?? 0;
+      const fail = (msg: string) => {
+        res.destroy();
+        req.destroy();
+        reject(new SafeFetchError(msg));
+      };
+      if (status >= 300 && status < 400) return fail("image URL redirected, refusing to follow");
+      if (status < 200 || status >= 300) return fail(`image fetch failed (${status})`);
+      const declared = Number(res.headers["content-length"]);
+      if (Number.isFinite(declared) && declared > opts.maxBytes) return fail("image is too large");
+      const chunks: Buffer[] = [];
+      let total = 0;
+      let done = false;
+      res.on("data", (c: Buffer) => {
+        if (done) return;
+        total += c.length;
+        if (total > opts.maxBytes) {
+          done = true;
+          fail("image is too large");
+          return;
+        }
+        chunks.push(c);
+      });
+      res.on("end", () => {
+        if (done) return;
+        done = true;
+        resolve(Buffer.concat(chunks));
+      });
+      res.on("error", (e) => {
+        if (done) return;
+        done = true;
+        reject(e instanceof SafeFetchError ? e : new SafeFetchError("image download failed"));
+      });
+    });
+    req.on("error", (e) => reject(e instanceof SafeFetchError ? e : new SafeFetchError("could not fetch image URL")));
+    req.end();
+  });
+}

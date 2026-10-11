@@ -58,11 +58,38 @@ export function fieldNamesFromArgs(args: unknown[]): string[] {
   return [...names].slice(0, 50);
 }
 
-// First hop of x-forwarded-for (set by the Orchard ingress), else x-real-ip.
+// Client IP for audit rows. The FIRST x-forwarded-for hop is whatever the
+// client sent (anyone can put "1.2.3.4" there), so it can't be trusted. We
+// take the LAST non-empty entry instead: the one appended by our trusted
+// ingress (Orchard), which is the address it actually saw the connection from.
+// This assumes exactly one trusted proxy sits in front of the app and appends
+// to the header; if another proxy layer is ever added in front of it, this
+// must skip that many trusted hops from the right. Falls back to x-real-ip.
 export function clientIp(get: (name: string) => string | null): string | null {
   const fwd = get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0]!.trim() || null;
+  if (fwd) {
+    const hops = fwd
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean);
+    if (hops.length) return hops[hops.length - 1]!.slice(0, 100);
+  }
   return get("x-real-ip");
+}
+
+// What an audit row records about a thrown error: the class name only, never
+// the message. Messages can echo DB values or player PII (a Postgres error
+// quotes the offending row), and audit meta must never hold that.
+export function errorCode(e: unknown): string {
+  if (e && typeof e === "object") {
+    const code = (e as { code?: unknown }).code;
+    const name = (e as { name?: unknown }).name ?? (e as object).constructor?.name;
+    const cls = typeof name === "string" && /^[A-Za-z0-9_.]{1,60}$/.test(name) ? name : "Error";
+    // Postgres SQLSTATE / Node error codes are short fixed identifiers, safe to keep.
+    if (typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code)) return `${cls}:${code}`;
+    return cls;
+  }
+  return typeof e;
 }
 
 // Next signals redirect()/notFound() by throwing; those are normal control

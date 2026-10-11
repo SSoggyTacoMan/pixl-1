@@ -5,7 +5,8 @@ import { NextResponse } from "next/server";
 import { getSession } from "./session";
 import { getAdmin, isHelperId, isFulfillerId } from "./db";
 import { audit } from "./audit";
-import { fieldNamesFromArgs, isNavigationSignal, targetFromArgs } from "./auditTarget";
+import { errorCode, fieldNamesFromArgs, isNavigationSignal, targetFromArgs } from "./auditTarget";
+import { csrfRejection, type CsrfOptions } from "./requestGuards";
 import {
   describeRequirement,
   idsFromEnv,
@@ -106,10 +107,6 @@ export async function requireGuidelinesAck(access: AdminAccess): Promise<void> {
   if (acked === null || acked < GUIDELINES_VERSION) redirect("/review/guidelines");
 }
 
-function errorText(e: unknown): string {
-  return String((e as Error)?.message ?? e).slice(0, 300);
-}
-
 // Wraps every exported server action. Checks the role, runs the action, and
 // writes one audit_log row: ok (incl. a redirect()), denied, or error.
 // Denied throws, same as the old requirePerm did.
@@ -145,7 +142,7 @@ export function guardedAction<A extends unknown[], R>(
         result: ok ? "ok" : "error",
         slackId,
         target,
-        meta: ok ? { fields } : { fields, error: errorText(e) },
+        meta: ok ? { fields } : { fields, error: errorCode(e) },
       });
       throw e;
     }
@@ -153,13 +150,26 @@ export function guardedAction<A extends unknown[], R>(
 }
 
 // Same contract for app/api/* route handlers. Denied -> 401/403 JSON.
+// Non-GET requests must come from our own origin (CSRF, see
+// lib/requestGuards.ts); pass { requireJson: true } when the handler parses a
+// JSON body.
 export function guardedRoute<C = unknown>(
   name: string,
   req: Requirement,
   fn: (access: AdminAccess, request: Request, ctx: C) => Promise<Response>,
+  opts: CsrfOptions = {},
 ): (request: Request, ctx: C) => Promise<Response> {
   return async (request: Request, ctx: C): Promise<Response> => {
     const target = new URL(request.url).pathname;
+    const csrf = csrfRejection(request.method, (n) => request.headers.get(n), process.env.BASE_URL, opts);
+    if (csrf) {
+      const session = await getSession();
+      await audit(
+        { action: name, result: "denied", slackId: session?.slackId ?? null, target, meta: { csrf } },
+        request,
+      );
+      return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    }
     const access = await getAccess();
     if (!access || !satisfies(access, req)) {
       const session = await getSession();
@@ -175,7 +185,7 @@ export function guardedRoute<C = unknown>(
       await audit({ action: name, result: res.ok ? "ok" : "error", slackId, target, meta: { status: res.status } }, request);
       return res;
     } catch (e) {
-      await audit({ action: name, result: "error", slackId, target, meta: { error: errorText(e) } }, request);
+      await audit({ action: name, result: "error", slackId, target, meta: { error: errorCode(e) } }, request);
       throw e;
     }
   };

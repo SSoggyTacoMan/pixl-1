@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { bearerMatches } from "@/lib/requestGuards";
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { postToChannel } from "@/lib/slack";
@@ -14,7 +15,7 @@ export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
   if (!secret)
     return NextResponse.json({ ok: false, error: "CRON_SECRET is not set" }, { status: 500 });
-  if (req.headers.get("authorization") !== `Bearer ${secret}`) {
+  if (!bearerMatches(req.headers.get("authorization"), secret)) {
     await audit({ action: "cron.queue-health", result: "denied", actorType: "anonymous" }, req);
     return NextResponse.json({ ok: false }, { status: 401 });
   }

@@ -42,3 +42,14 @@ export function parseCsv(text: string): string[][] {
   }
   return rows;
 }
+
+// One quoted CSV output cell, neutralized against formula injection. A cell
+// that starts with =, +, -, @, a tab or a carriage return is treated as a live
+// formula by Excel/Sheets/LibreOffice (tab and CR are stripped and the rest
+// evaluated), so it gets a leading ' to render as inert text instead.
+// Exported values include player-typed text (names, descriptions, notes).
+export function csvCell(value: unknown): string {
+  const str = String(value ?? "");
+  const safe = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+  return `"${safe.replaceAll('"', '""')}"`;
+}

@@ -77,6 +77,9 @@ import { dmOrEmail } from "@/lib/notify";
 import { announceReview } from "@/lib/reviewChannel";
 import { REVIEW_REWARD_COOKIE, REVIEW_REWARD_MAX_AGE } from "@/lib/reviewReward";
 import { assertSafeExternalUrl } from "@/lib/urlSafety";
+import { safeBinaryGet } from "@/lib/ssrfGuard";
+import { canFlagOrder, isOwnOrder } from "@/lib/fulfillmentAccess";
+import { canSetHold, isOwnOrCollaborator, proposedBanDecision, queueAllows } from "@/lib/reviewAccess";
 import { safeRedirectPath, isSafeUrl } from "@/lib/safeUrl";
 import {
   guardedAction,
@@ -152,10 +155,49 @@ async function nextReviewPath(
 // Note: the DB column is `projects.level` but holds the tier (1-4). It predates
 // the player-facing 1-100 level and isn't worth a migration to rename.
 
-// A reviewer may never act on their own submission (self-review = cheating).
-async function isOwnProject(access: AdminAccess, userId: string): Promise<boolean> {
-  const { data } = await db.from("users").select("slack_id").eq("id", userId).single();
-  return !!data?.slack_id && data.slack_id === access.session.slackId;
+// A reviewer may never act on their own submission, nor on one they're an
+// accepted collaborator on (self-review = cheating; collaborators are paid on
+// approval too). The session carries a Slack id; every users row with that
+// slack_id counts as "me". Pass projectId so collaborators are checked too.
+async function isOwnProject(access: AdminAccess, ownerUserId: string, projectId: number): Promise<boolean> {
+  const { data: me } = await db.from("users").select("id").eq("slack_id", access.session.slackId);
+  const myIds = ((me ?? []) as { id: string }[]).map((r) => r.id).filter(Boolean);
+  if (myIds.length === 0) return false;
+  const collaborators = await acceptedCollaboratorUserIds(projectId);
+  return isOwnOrCollaborator(myIds, ownerUserId, collaborators);
+}
+
+function denyProjectAction(back: string | null, message: string): never {
+  if (back) redirect(`${back}${back.includes("?") ? "&" : "?"}error=${encodeURIComponent(message)}`);
+  throw new Error(message);
+}
+
+// Shared authorization for reviewer actions on one project, enforced inside
+// the action (not only by the page that renders the form):
+// - queue scope: a reviewer restricted to hardware/software (reviewQueues)
+//   may only touch projects of that kind;
+// - self-review: unless allowOwn, a non-owner reviewer may not act on a
+//   project they own or collaborate on.
+// Returns the project's owner/kind/name; denies via redirect to `back` with an
+// error (or a thrown Error when there's no page to go back to).
+async function authorizeProjectAction(
+  access: AdminAccess,
+  projectId: number,
+  back: string | null,
+  opts: { allowOwn?: boolean; ownMessage?: string } = {},
+): Promise<{ user_id: string; kind: string | null; name: string }> {
+  const { data: project } = await db
+    .from("projects")
+    .select("user_id, kind, name")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!project) denyProjectAction(back, "Project not found.");
+  const row = project as { user_id: string; kind: string | null; name: string };
+  if (!queueAllows(access.reviewQueues, row.kind))
+    denyProjectAction(back, "This project isn't in your review queue.");
+  if (!opts.allowOwn && !access.isOwner && (await isOwnProject(access, row.user_id, projectId)))
+    denyProjectAction(back, opts.ownMessage ?? "You can't review a project you own or collaborate on.");
+  return row;
 }
 
 // Time-bounded exception to the "can't first-pass your own project" guard
@@ -407,6 +449,7 @@ async function flagReviewReward(px: number): Promise<void> {
   const jar = await cookies();
   jar.set(REVIEW_REWARD_COOKIE, String(Math.max(0, Math.round(px))), {
     httpOnly: false,
+    secure: true,
     sameSite: "lax",
     path: "/",
     maxAge: REVIEW_REWARD_MAX_AGE,
@@ -592,10 +635,16 @@ export const setJournalHours = guardedAction("setJournalHours", "reviewer", asyn
   const journalId = Number(formData.get("journalId") ?? 0);
   const projectId = Number(formData.get("projectId") ?? 0);
   if (!journalId || !projectId) return;
+  await authorizeProjectAction(access, projectId, null, {
+    ownMessage: "You can't change journal hours on a project you own or collaborate on.",
+  });
+  // Scoped to the project that was just authorized: without the project_id
+  // filter, any journal id could be edited by naming a different project.
   const { data: journal } = await db
     .from("project_journals")
     .select("hours, approved_hours")
     .eq("id", journalId)
+    .eq("project_id", projectId)
     .maybeSingle();
   if (!journal) return;
   const rawHours = Number(journal.hours) || 0;
@@ -622,7 +671,8 @@ export const setJournalHours = guardedAction("setJournalHours", "reviewer", asyn
       // that's no longer in effect.
       deflation_reason: deflating ? deflationReason : null,
     })
-    .eq("id", journalId);
+    .eq("id", journalId)
+    .eq("project_id", projectId);
   if (error) throw new Error(error.message);
 
   // Deflating a journal entry moves real money, and until now it was the one
@@ -949,7 +999,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   const { data: current } = await db
     .from("projects")
     .select(
-      "status, user_id, name, description, image_url, first_pass_by, first_pass_hours, first_pass_verdict, second_pass_hours, second_pass_verdict, shipped_at, sidequest_id, trial_reward_choice, needs_funding, funding_usd, robert_project_id, robert_state",
+      "status, user_id, kind, name, description, image_url, first_pass_by, first_pass_hours, first_pass_verdict, second_pass_hours, second_pass_verdict, shipped_at, sidequest_id, trial_reward_choice, needs_funding, funding_usd, robert_project_id, robert_state",
     )
     .eq("id", projectId)
     .single();
@@ -976,7 +1026,11 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
       .maybeSingle();
     linkedTrial = sq as LinkedTrial | null;
   }
-  const own = await isOwnProject(access, current.user_id);
+  // Queue scope (hardware-only / software-only reviewers), enforced here and
+  // not only on the page.
+  if (!queueAllows(access.reviewQueues, (current as { kind?: string | null }).kind ?? null))
+    redirect(`${back}?error=${encodeURIComponent("This project isn't in your review queue.")}`);
+  const own = await isOwnProject(access, current.user_id, projectId);
   if (
     stage === "shipped" &&
     !access.isOwner &&
@@ -991,11 +1045,19 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   // straight to a different canSecondPass reviewer confirming or overturning
   // it here, same as before this redesign.
   const isProposedBan = stage === "second_review" && current.first_pass_verdict === "banned";
+  // A non-owner final reviewer overturning a ban proposal doesn't get to
+  // final-approve: the project re-enters the normal pipeline (fraud_review ->
+  // Robert -> owner Spot check) through the first-pass approval branch below.
+  // Ban decisions themselves are owner-only. See proposedBanDecision.
+  let rerouteToPipeline = false;
   if (isProposedBan) {
-    if (!access.canSecondPass)
-      redirect(`${back}?error=${encodeURIComponent("You don't have second-pass review access.")}`);
-    if (!access.isOwner && current.first_pass_by === by)
-      redirect(`${back}?error=${encodeURIComponent("A different reviewer must confirm or overturn this ban proposal.")}`);
+    const decision = proposedBanDecision(access, verdict, {
+      own,
+      proposedBy: String(current.first_pass_by ?? ""),
+      actor: by,
+    });
+    if (decision.kind === "deny") redirect(`${back}?error=${encodeURIComponent(decision.reason)}`);
+    rerouteToPipeline = decision.kind === "reroute_to_pipeline";
   } else if (stage === "second_review") {
     // A real approve/needs_changes/ban verdict at second_review is now the
     // Spot check step - it only fires once a second-pass reviewer has
@@ -1035,7 +1097,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
       .eq("id", projectId)
       .maybeSingle();
     if (cur && Number(cur.level) !== t) {
-      if (await isOwnProject(access, cur.user_id as string))
+      if (await isOwnProject(access, cur.user_id as string, projectId))
         redirect(
           `${back}?error=${encodeURIComponent("You can't change the tier of your own project.")}`,
         );
@@ -1118,7 +1180,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   // 'second_review' carrying what was proposed so a different final reviewer
   // confirms or overturns it. "Request changes" is the exception: it never needs
   // a second pass, so it falls through to bounce straight back to the maker.
-  if (stage === "shipped" && verdict !== "needs_changes") {
+  if ((stage === "shipped" && verdict !== "needs_changes") || rerouteToPipeline) {
     const proposedKey = verdict === "ban" ? "banned" : verdict;
     if (verdict === "approved") {
       const blackoutError = await applyBlackoutDecision({ projectId, formData, by, stage: "first_pass" });
@@ -1165,7 +1227,9 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
         reverted_at: null,
       })
       .eq("id", projectId)
-      .eq("status", "shipped")
+      // "shipped" for a normal first pass; "second_review" when a non-owner
+      // final reviewer overturns a ban proposal (rerouteToPipeline).
+      .eq("status", rerouteToPipeline ? "second_review" : "shipped")
       .select("id, name, user_id")
       .single();
     if (error || !project) {
@@ -1210,11 +1274,14 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
     redirect(nextPath);
   }
 
-  // From here the project is in 'second_review' (a super giving the Spot
-  // check final verdict on a not_fraud-triaged project) or it's a first-pass
-  // "request changes" falling through to bounce straight back to the maker.
-  // The second_review case is already fully gated above (isSuper required,
-  // second_pass_verdict must be "not_fraud").
+  // From here the project is either:
+  // - in 'second_review' with an OWNER giving the final verdict: the Spot
+  //   check on a not_fraud-triaged project, or confirming/overturning a
+  //   first-pass ban proposal (both gated above - owner required; a non-owner
+  //   overturning a ban proposal was rerouted into the pipeline above, and a
+  //   non-owner can't confirm a ban at all);
+  // - or a "request changes" from either stage, which bounces straight back
+  //   to the maker (any reviewer allowed to act at that stage may do this).
 
   // Request changes , bounce back to the maker.
   if (verdict === "needs_changes") {
@@ -1727,8 +1794,9 @@ export const setProjectLevel = guardedAction("setProjectLevel", "reviewer", asyn
     .eq("id", projectId)
     .single();
   if (!current) return;
-  if (await isOwnProject(access, current.user_id))
-    redirect(`${back}?error=${encodeURIComponent("You can't change the level of your own project.")}`);
+  await authorizeProjectAction(access, projectId, back, { allowOwn: true });
+  if (await isOwnProject(access, current.user_id, projectId))
+    redirect(`${back}?error=${encodeURIComponent("You can't change the level of a project you own or collaborate on.")}`);
   if (Number(current.level) === level) {
     revalidatePath(back);
     redirect(back);
@@ -1761,6 +1829,9 @@ export const updateFundingAmount = guardedAction("updateFundingAmount", "reviewe
   const raw = String(formData.get("fundingUsd") ?? "").trim();
   const amount = Math.min(Math.max(Number(raw) || 0, 0), 100000);
   if (!Number.isFinite(amount)) redirect(`${back}?error=${encodeURIComponent("Funding amount must be a number.")}`);
+  await authorizeProjectAction(access, projectId, back, {
+    ownMessage: "You can't change the funding of a project you own or collaborate on.",
+  });
 
   const { data: current } = await db
     .from("projects")
@@ -1925,6 +1996,8 @@ export const addProjectNote = guardedAction("addProjectNote", "reviewer", async 
   const projectId = Number(formData.get("projectId") ?? 0);
   const body = String(formData.get("body") ?? "").trim().slice(0, 2000);
   if (!projectId || !body) return;
+  // Queue scope only: a note is context, not a verdict.
+  await authorizeProjectAction(access, projectId, null, { allowOwn: true });
   // Optional screenshot - same Hack Club CDN upload every other
   // dashboard-originated image goes through (see "Edit submission" above).
   let imageUrl: string | null = null;
@@ -1964,6 +2037,9 @@ export const skipRobertPass = guardedAction("skipRobertPass", "reviewer", async 
   if (!projectId) return;
   if (!access.canSecondPass && !access.isOwner)
     redirect(`${back}?error=${encodeURIComponent("Only a final reviewer or an owner can skip Robert's review.")}`);
+  await authorizeProjectAction(access, projectId, back, {
+    ownMessage: "You can't skip Robert's review on a project you own or collaborate on.",
+  });
 
   const { data: project, error } = await db
     .from("projects")
@@ -1996,6 +2072,9 @@ export const applySubmissionEdits = guardedAction("applySubmissionEdits", "revie
   if (!projectId) return;
   if (!access.canEditSubmission)
     redirect(`${back}?error=${encodeURIComponent("You don't have permission to edit the submission.")}`);
+  await authorizeProjectAction(access, projectId, back, {
+    ownMessage: "You can't edit the submission of a project you own or collaborate on.",
+  });
 
   const { data: current } = await db
     .from("projects")
@@ -2073,6 +2152,7 @@ export const sendBackToFirstPass = guardedAction("sendBackToFirstPass", "reviewe
   if (!projectId) return;
   if (!access.canSecondPass)
     redirect(`${back}?error=${encodeURIComponent("Only a final reviewer can send a project back to first pass.")}`);
+  await authorizeProjectAction(access, projectId, back);
   if (!reason)
     redirect(`${back}?error=${encodeURIComponent("Say why you're sending this back to first pass.")}`);
 
@@ -2151,6 +2231,7 @@ export const unshipProject = guardedAction("unshipProject", "reviewer", async (a
   if (!projectId) return;
   if (!access.canSecondPass)
     redirect(`${back}?error=${encodeURIComponent("Only a final reviewer can unship a project.")}`);
+  await authorizeProjectAction(access, projectId, back);
   if (!reason)
     redirect(`${back}?error=${encodeURIComponent("Say why you're unshipping this project.")}`);
 
@@ -2224,6 +2305,7 @@ export const updateSecondPassChecklist = guardedAction("updateSecondPassChecklis
     "second_pass_heartbeats_added",
   ]);
   if (!projectId || !allowed.has(field)) redirect("/review");
+  await authorizeProjectAction(access, projectId, back);
   const checked = formData.get("checked") === "true";
 
   const { error } = await db
@@ -2697,6 +2779,9 @@ export const toggleProjectPeak = guardedAction("toggleProjectPeak", "reviewer", 
   const projectId = Number(formData.get("projectId") ?? 0);
   const isPeak = formData.get("isPeak") === "1";
   if (!projectId) return;
+  await authorizeProjectAction(access, projectId, null, {
+    ownMessage: "You can't mark a project you own or collaborate on.",
+  });
   const { data: project, error } = await db
     .from("projects")
     .update({ is_peak: isPeak })
@@ -2750,8 +2835,7 @@ export const extendHoursCutoff = guardedAction("extendHoursCutoff", "reviewer", 
   // Super-admins are already trusted with bigger self-adjacent calls
   // (deflateProjectHours et al) - a plain reviewer still can't touch their
   // own project's cutoff, self-review = cheating.
-  if (!access.isOwner && (await isOwnProject(access, project.user_id)))
-    redirect(`${back}?error=${encodeURIComponent("You can't act on your own project.")}`);
+  await authorizeProjectAction(access, projectId, back, { ownMessage: "You can't act on your own project." });
   // Draft/shipped/second_review/needs_changes are all fair game - a reviewer
   // may want to set this up before the player even ships. approved is too
   // late (payout's already computed) and a banned/rejected project shouldn't
@@ -2820,7 +2904,7 @@ export const rejectProject = guardedAction("rejectProject", "owner", async (acce
     redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("A reason is required to reject a project.")}`);
 
   const { data: target } = await db.from("projects").select("user_id").eq("id", projectId).single();
-  if (target && (await isOwnProject(access, target.user_id)))
+  if (target && (await isOwnProject(access, target.user_id, projectId)))
     redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("You can't act on your own project.")}`);
 
   const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
@@ -2887,7 +2971,7 @@ export const banProject = guardedAction("banProject", "owner", async (access, fo
     redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("A reason is required to ban a project.")}`);
 
   const { data: target } = await db.from("projects").select("user_id, banned_at").eq("id", projectId).single();
-  if (target && (await isOwnProject(access, target.user_id)))
+  if (target && (await isOwnProject(access, target.user_id, projectId)))
     redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("You can't act on your own project.")}`);
 
   const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
@@ -2965,17 +3049,32 @@ export const holdReview = guardedAction("holdReview", "reviewer", async (access,
   if (!projectId) return;
   if (!reason)
     redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("A reason is required to hold a review.")}`);
+  await authorizeProjectAction(access, projectId, returnTo, { allowOwn: true });
 
-  const { data: project, error } = await db
+  // Don't overwrite another reviewer's active hold (owners may).
+  const { data: existing } = await db
+    .from("projects")
+    .select("hold_by")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!existing) return;
+  const currentHoldBy = (existing.hold_by as string | null) ?? null;
+  const held = !!currentHoldBy && currentHoldBy.trim() !== "";
+  if (!canSetHold({ held, holderSlackId: held ? slackIdFromActorName(currentHoldBy!) : "" }, access))
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("Another reviewer already holds this review. Only they, or an owner, can change it.")}`);
+
+  // Compare-and-swap on the hold we just checked, so a hold placed by someone
+  // else in between isn't clobbered either.
+  let holdUpdate = db
     .from("projects")
     .update({
       hold_at: new Date().toISOString(),
       hold_by: by,
       hold_reason: reason,
     })
-    .eq("id", projectId)
-    .select("id, name, user_id")
-    .single();
+    .eq("id", projectId);
+  holdUpdate = currentHoldBy === null ? holdUpdate.is("hold_by", null) : holdUpdate.eq("hold_by", currentHoldBy);
+  const { data: project, error } = await holdUpdate.select("id, name, user_id").maybeSingle();
   if (error || !project) {
     console.error("holdReview failed", error?.message);
     return;
@@ -2991,7 +3090,7 @@ export const holdReview = guardedAction("holdReview", "reviewer", async (access,
 export const setLiveMode = guardedAction("setLiveMode", "staff", async (access, formData: FormData): Promise<void> => {
   const on = formData.get("on") === "1";
   const jar = await cookies();
-  jar.set(LIVE_MODE_COOKIE, on ? "1" : "0", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 12 });
+  jar.set(LIVE_MODE_COOKIE, on ? "1" : "0", { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 12 });
   // Every new live session starts with other reviewers' names hidden again.
   jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
   revalidatePath("/", "layout");
@@ -3002,7 +3101,7 @@ export const setLiveMode = guardedAction("setLiveMode", "staff", async (access, 
 export const setShowReviewerNames = guardedAction("setShowReviewerNames", "staff", async (access, formData: FormData): Promise<void> => {
   const show = formData.get("show") === "1";
   const jar = await cookies();
-  if (show) jar.set(LIVE_SHOW_REVIEWERS_COOKIE, "1", { httpOnly: true, sameSite: "lax", path: "/" });
+  if (show) jar.set(LIVE_SHOW_REVIEWERS_COOKIE, "1", { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
   else jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
   revalidatePath("/", "layout");
 });
@@ -3057,7 +3156,10 @@ export const releaseReviewHold = guardedAction("releaseReviewHold", "reviewer", 
 // too, not just a spot-checking super.
 export const saveReviewDraft = guardedAction("saveReviewDraft", "reviewer", async (access, projectId: number,
   draft: Record<string, string | number>,): Promise<void> => {
-  if (!projectId) return;
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) return;
+  await authorizeProjectAction(access, projectId, null, {
+    ownMessage: "You can't draft a review for a project you own or collaborate on.",
+  });
   const { error } = await db
     .from("projects")
     .update({
@@ -3978,17 +4080,14 @@ async function uploadShopImage(file: File): Promise<string> {
   return uploadShopImageBuffer(Buffer.from(await file.arrayBuffer()));
 }
 
+// Admin-supplied image URLs (CSV bulk import). safeBinaryGet pins DNS (the
+// address checked is the address connected to, so no rebinding to an internal
+// IP after the check), refuses redirects, and streams the body with a hard
+// byte cap so a huge or endless response can't exhaust memory.
+const SHOP_IMAGE_URL_MAX_BYTES = 15 * 1024 * 1024;
 async function uploadShopImageFromUrl(url: string): Promise<string> {
-  await assertSafeExternalUrl(url);
-  // redirect: "manual" so a validated hostname can't hand back a 3xx to an
-  // internal address (e.g. the cluster metadata IP) and have fetch silently
-  // follow it past the check above.
-  const res = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
-  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
-    throw new Error("image URL redirected, refusing to follow");
-  }
-  if (!res.ok) throw new Error(`image fetch failed (${res.status})`);
-  return uploadShopImageBuffer(Buffer.from(await res.arrayBuffer()));
+  const raw = await safeBinaryGet(url, { maxBytes: SHOP_IMAGE_URL_MAX_BYTES, timeoutMs: 10_000 });
+  return uploadShopImageBuffer(raw);
 }
 
 function readRegion(raw: string): ShopRegion {
@@ -4886,6 +4985,10 @@ export const claimOrder = guardedAction("claimOrder", "fulfiller", async (access
     revalidatePath("/fulfillment");
     return;
   }
+  // Self-dealing: nobody fulfills (and earns the payout on) their own order.
+  if (isOwnOrder({ player_slack: await buyerSlackFor(order.user_id as string) }, access.session.slackId)) {
+    throw new Error("You can't fulfill your own shop order.");
+  }
   const now = new Date().toISOString();
   const { error } = await db
     .from("shop_orders")
@@ -4917,6 +5020,16 @@ export const flagOrderOverBudget = guardedAction("flagOrderOverBudget", "fulfill
   const id = Number(formData.get("id") ?? 0);
   const note = String(formData.get("flagNote") ?? "").trim().slice(0, 300);
   if (!id || !note) return;
+  // Only the fulfiller working this order (or an owner) may park it.
+  const { data: current } = await db
+    .from("shop_orders")
+    .select("claimed_by_slack")
+    .eq("id", id)
+    .maybeSingle();
+  if (!current) return;
+  if (!canFlagOrder({ claimed_by_slack: current.claimed_by_slack as string | null }, access)) {
+    throw new Error("Only the fulfiller who claimed this order can flag it.");
+  }
   const { error } = await db
     .from("shop_orders")
     .update({
@@ -4949,6 +5062,12 @@ export const clearOrderFlag = guardedAction("clearOrderFlag", "owner", async (ac
 // stage where someone else owns it would step on their queue.
 function ownsOrder(access: AdminAccess, claimedSlack: string): boolean {
   return claimedSlack === access.session.slackId;
+}
+
+// The buyer's Slack id, for the self-dealing checks (isOwnOrder).
+async function buyerSlackFor(userId: string): Promise<string | null> {
+  const { data } = await db.from("users").select("slack_id").eq("id", userId).maybeSingle();
+  return (data?.slack_id as string | null | undefined) ?? null;
 }
 
 // Fulfillment moves real money and real hardware, but none of it used to be
@@ -5070,6 +5189,11 @@ export const shipOrder = guardedAction("shipOrder", "fulfiller", async (access, 
   if (!order || order.status !== "credited" || !ownsOrder(access, order.claimed_by_slack)) {
     revalidatePath("/fulfillment");
     return;
+  }
+  // Self-dealing: shipping your own order would also pay you the fulfillment
+  // pixels on it. Refused even if it somehow got claimed/reassigned to you.
+  if (isOwnOrder({ player_slack: await buyerSlackFor(order.user_id as string) }, access.session.slackId)) {
+    throw new Error("You can't fulfill your own shop order.");
   }
   const { error } = await db
     .from("shop_orders")
@@ -5214,6 +5338,11 @@ export const updateOrderFulfillmentInfo = guardedAction("updateOrderFulfillmentI
 export const reassignOrder = guardedAction("reassignOrder", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
+  const { data: target } = await db.from("shop_orders").select("user_id").eq("id", id).maybeSingle();
+  if (!target) return;
+  if (isOwnOrder({ player_slack: await buyerSlackFor(target.user_id as string) }, access.session.slackId)) {
+    throw new Error("You can't take over your own shop order.");
+  }
   const { error } = await db
     .from("shop_orders")
     .update({ claimed_by: actorName(access), claimed_by_slack: access.session.slackId })

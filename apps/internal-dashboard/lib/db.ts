@@ -10,6 +10,7 @@ import { reviewerName } from "./liveMode";
 // where env vars may be absent.
 export { db } from "./pgCompat";
 import { db, sql } from "./pgCompat";
+import { PUBLIC_USER_COLUMNS, publicOwnerLabel } from "./publicLabels";
 
 export interface UserRow {
   id: string;
@@ -1768,7 +1769,9 @@ export interface GalleryProject {
 export async function publicGallery(limit = 12): Promise<GalleryProject[]> {
   const { data, error } = await db
     .from("projects")
-    .select("id, name, description, image_url, demo_url, approved_hours, users(display_name, real_name)")
+    // Public page: embed display_name ONLY (see lib/publicLabels.ts). Never
+    // the legal-name column, contact details or Slack data.
+    .select(`id, name, description, image_url, demo_url, approved_hours, users(${PUBLIC_USER_COLUMNS})`)
     .eq("status", "approved")
     .is("banned_at", null)
     .order("shipped_at", { ascending: false })
@@ -1784,10 +1787,7 @@ export async function publicGallery(limit = 12): Promise<GalleryProject[]> {
     image_url: (p.image_url as string) ?? "",
     demo_url: (p.demo_url as string) ?? "",
     approved_hours: p.approved_hours as number | null,
-    owner: playerLabel(
-      p.users as unknown as { display_name?: string; real_name?: string } | null,
-      "?",
-    ),
+    owner: publicOwnerLabel(p.users as unknown as { display_name?: string | null } | null),
   }));
 }
 
@@ -2563,6 +2563,9 @@ export interface ShopOrderRow {
   flagged_by: string;
   flag_note: string;
   player_name: string;
+  // The in-game display name only (never real_name) - what the fulfillment
+  // list shows for orders whose buyer details the viewer may not see.
+  player_display_name: string;
   player_slack: string | null;
   // The item's own price_source_url (see shop_items, resolved via item_id) at
   // the time this order was listed - the last URL a fulfiller actually bought
@@ -2603,6 +2606,7 @@ export async function listShopOrders(status?: string, limit = 500): Promise<Shop
   );
   for (const r of rows) {
     r.player_name = playerLabel(names.get(r.user_id), r.user_id);
+    r.player_display_name = (names.get(r.user_id)?.display_name ?? "").trim() || "Player";
     r.player_slack = names.get(r.user_id)?.slack_id ?? null;
     r.item_source_url = r.item_id != null ? (sourceUrls.get(r.item_id) ?? null) : null;
   }
@@ -2626,6 +2630,7 @@ export async function getShopOrder(id: number): Promise<ShopOrderRow | null> {
     .eq("id", row.user_id)
     .maybeSingle();
   row.player_name = playerLabel(user as { display_name: string; real_name: string; slack_id: string | null } | null, row.user_id);
+  row.player_display_name = String(user?.display_name ?? "").trim() || "Player";
   row.player_slack = user?.slack_id ?? null;
   row.item_source_url = null;
   return row;
@@ -2677,6 +2682,22 @@ export async function buyerDetailsByUserId(userIds: string[]): Promise<Map<strin
       addressLines: [line1, line2, cityStateZip, country].filter((l) => l.trim() !== ""),
     });
   }
+  return out;
+}
+
+// Country only (decrypted), for orders whose full buyer details the viewer
+// may not see (see canSeeBuyerDetails in lib/fulfillmentAccess.ts). Selects
+// nothing but the id and country column, so no other PII is even read.
+export async function buyerCountriesByUserId(userIds: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(userIds)];
+  const out = new Map<string, string>();
+  if (ids.length === 0) return out;
+  const { data, error } = await db.from("users").select("id, address_country").in("id", ids);
+  if (error) {
+    console.error("buyerCountriesByUserId", error.message);
+    return out;
+  }
+  for (const u of data ?? []) out.set(u.id as string, decryptPII(u.address_country as string | null).trim());
   return out;
 }
 

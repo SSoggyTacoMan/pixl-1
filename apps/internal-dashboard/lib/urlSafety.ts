@@ -21,7 +21,8 @@ function isPrivateIpv4(ip: string): boolean {
     inCidr(ip, "172.16.0.0", 12) ||
     inCidr(ip, "192.168.0.0", 16) ||
     inCidr(ip, "169.254.0.0", 16) ||
-    ip === "0.0.0.0"
+    inCidr(ip, "100.64.0.0", 10) || // carrier-grade NAT (also used inside some clusters)
+    inCidr(ip, "0.0.0.0", 8)
   );
 }
 
@@ -41,7 +42,7 @@ function isPrivateIpv6(ip: string): boolean {
   );
 }
 
-function isPrivateIp(ip: string): boolean {
+export function isPrivateIp(ip: string): boolean {
   const family = isIP(ip);
   if (family === 4) return isPrivateIpv4(ip);
   if (family === 6) return isPrivateIpv6(ip);

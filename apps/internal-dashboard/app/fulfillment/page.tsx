@@ -6,6 +6,7 @@ import {
   listShopOrders,
   listFulfillers,
   buyerDetailsByUserId,
+  buyerCountriesByUserId,
   fulfillerStatsBySlackId,
   shopEconomySummary,
   ORDER_STAGES,
@@ -15,6 +16,7 @@ import {
   type ShopEconomySummary,
 } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
+import { canSeeBuyerDetails, isOwnOrder } from "@/lib/fulfillmentAccess";
 import {
   claimOrder,
   markOrderCredited,
@@ -246,10 +248,16 @@ export default async function FulfillmentPage({
   const flaggedCount =
     active === "flagged" && !mineOnly ? orders.length : (await listShopOrders("flagged", 50)).length;
   const handles = await slackHandles(orders.map((o) => o.player_slack));
-  // Name/email/mailing address so a fulfiller can actually source and ship
-  // the right thing without leaving the page - see the "Shipping info"
-  // disclosure on each card.
-  const buyerDetails = await buyerDetailsByUserId(orders.map((o) => o.user_id));
+  // Name/email/phone/mailing address are decrypted ONLY for orders this
+  // fulfiller has claimed (or for an owner) - see canSeeBuyerDetails. Every
+  // other order shows the buyer's country only, so browsing the queue doesn't
+  // decrypt hundreds of kids' addresses.
+  const detailOrders = orders.filter((o) => canSeeBuyerDetails(o, access));
+  const countryOrders = orders.filter((o) => !canSeeBuyerDetails(o, access));
+  const [buyerDetails, buyerCountries] = await Promise.all([
+    buyerDetailsByUserId(detailOrders.map((o) => o.user_id)),
+    buyerCountriesByUserId(countryOrders.map((o) => o.user_id)),
+  ]);
   // Owner-only, since it's a financial rollup rather than a per-order
   // fulfillment task - plain fulfillers don't need it to do their job.
   const economy = access.isOwner ? await shopEconomySummary() : null;
@@ -351,7 +359,9 @@ export default async function FulfillmentPage({
               key={o.id}
               order={o}
               handle={o.player_slack ? handles.get(o.player_slack) : undefined}
-              buyer={buyerDetails.get(o.user_id)}
+              buyer={canSeeBuyerDetails(o, access) ? buyerDetails.get(o.user_id) : undefined}
+              country={canSeeBuyerDetails(o, access) ? undefined : (buyerCountries.get(o.user_id) ?? "")}
+              ownOrder={isOwnOrder(o, me)}
               mine={o.claimed_by_slack === me}
               canManage={access.isOwner}
             />
@@ -396,12 +406,17 @@ function OrderCard({
   order: o,
   handle,
   buyer,
+  country,
+  ownOrder,
   mine,
   canManage,
 }: {
   order: ShopOrderRow;
   handle?: string;
   buyer?: BuyerDetails;
+  // Set (possibly "") when the viewer may not see buyer details: country only.
+  country?: string;
+  ownOrder: boolean;
   mine: boolean;
   canManage: boolean;
 }) {
@@ -442,7 +457,7 @@ function OrderCard({
           </div>
           <div className="text-sm text-muted-foreground mt-1">
             <Link href={`/players/${o.user_id}`} className="font-medium text-foreground hover:text-brand">
-              {o.player_name}
+              {buyer ? o.player_name : o.player_display_name}
             </Link>
             {o.player_slack && (
               <>
@@ -487,7 +502,13 @@ function OrderCard({
               </div>
             </Disclosure>
           )}
-          {LABEL_ELIGIBLE_ITEMS.has(o.item_name) && o.status !== "cancelled" && (
+          {!buyer && country !== undefined && (
+            <div className="text-xs text-muted-foreground mt-1">
+              Ships to: <span className="text-foreground">{country || "country not on file"}</span>
+              {" · "}full shipping info appears once you claim it
+            </div>
+          )}
+          {buyer && LABEL_ELIGIBLE_ITEMS.has(o.item_name) && o.status !== "cancelled" && (
             <div className="text-xs mt-1">
               <Link href={`/fulfillment/label/${o.id}`} target="_blank" className="text-brand hover:underline">
                 Print shipping label →
@@ -574,8 +595,10 @@ function OrderCard({
         <StageSteps status={o.status} />
       </div>
 
-      {actionable && <OrderActions order={o} mine={mine} canManage={canManage} />}
-      {actionable && o.status !== "shipped" && <FlagControls order={o} canManage={canManage} />}
+      {actionable && <OrderActions order={o} mine={mine} ownOrder={ownOrder} canManage={canManage} />}
+      {actionable && o.status !== "shipped" && (mine || canManage) && (
+        <FlagControls order={o} canManage={canManage} />
+      )}
       {canManage && o.status !== "pending" && o.status !== "cancelled" && (
         <EditFulfillmentInfo order={o} />
       )}
@@ -687,10 +710,12 @@ function FlagControls({ order: o, canManage }: { order: ShopOrderRow; canManage:
 function OrderActions({
   order: o,
   mine,
+  ownOrder,
   canManage,
 }: {
   order: ShopOrderRow;
   mine: boolean;
+  ownOrder: boolean;
   canManage: boolean;
 }) {
   // Reassign, cancel/refund, and the final "mark done" close stay owner-only ,
@@ -745,6 +770,15 @@ function OrderActions({
   }
 
   if (o.status === "pending") {
+    // claimOrder refuses a fulfiller's own order server-side too.
+    if (ownOrder) {
+      return (
+        <div className="flex items-end gap-2 flex-wrap">
+          <span className="text-xs text-muted-foreground">This is your own order, someone else has to fulfill it.</span>
+          {cancelForm}
+        </div>
+      );
+    }
     return (
       <div className="flex items-end gap-2 flex-wrap">
         <form action={claimOrder}>

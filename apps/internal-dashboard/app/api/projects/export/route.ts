@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { guardedRoute } from "@/lib/guard";
+import { csvCell } from "@/lib/csv";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { db } from "@/lib/db";
 import { parseAuditNote } from "@/lib/auditNote";
@@ -52,14 +53,8 @@ export const GET = guardedRoute("api.projects.export", "owner", async (): Promis
     if (!auditByProject.has(a.project_id)) auditByProject.set(a.project_id, a.audit_note ?? "");
   }
 
-  // A cell starting with =, +, -, or @ is a live formula to Excel/Sheets,
-  // prefix with a leading quote so these (name, description, audit notes...)
-  // render as inert text instead of executing when the sheet is opened.
-  const esc = (s: string) => {
-    const str = String(s ?? "");
-    const safe = /^[=+\-@]/.test(str) ? `'${str}` : str;
-    return `"${safe.replaceAll('"', '""')}"`;
-  };
+  // Formula-injection-safe quoting (see csvCell in lib/csv.ts).
+  const esc = (s: string) => csvCell(s);
   const header = [
     "Code URL",
     "Playable URL",

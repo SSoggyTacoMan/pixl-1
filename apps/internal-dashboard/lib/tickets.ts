@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { isValidTicketTs } from "./requestGuards";
 
 // Mirrors apps/pixorpheus/src/slack/escape.ts's escapeMrkdwn exactly - kept
 // as a separate copy since this app builds/deploys independently and
@@ -268,6 +269,7 @@ async function getSlackUser(id: string) {
 }
 
 export async function ticketThread(ts: string): Promise<ThreadMessage[]> {
+  if (!isValidTicketTs(ts)) throw new Error("Invalid ticket id");
   const channel = process.env.SLACK_HELP_CHANNEL;
   if (!channel) throw new Error("SLACK_HELP_CHANNEL is not set");
   const res = (await slackCall("conversations.replies", {
@@ -302,6 +304,7 @@ export async function ticketReply(
   text: string,
   actor: { slackId?: string; username?: string },
 ): Promise<void> {
+  if (!isValidTicketTs(ts)) throw new Error("Invalid ticket id");
   const channel = process.env.SLACK_HELP_CHANNEL;
   if (!channel) throw new Error("SLACK_HELP_CHANNEL is not set");
   let username = actor.username || "Support";
@@ -410,7 +413,8 @@ async function resolveViaPixorpheus(
   ts: string,
   actor: { slackId: string; username: string },
 ): Promise<ResolveResult> {
-  const res = await fetch(`${url}/${ts}/resolve`, {
+  if (!isValidTicketTs(ts)) return { ok: false, error: "Invalid ticket id." };
+  const res = await fetch(`${url}/${encodeURIComponent(ts)}/resolve`, {
     method: "POST",
     headers: { "x-api-key": key, "Content-Type": "application/json" },
     body: JSON.stringify({ slackId: actor.slackId, username: actor.username }),
@@ -434,6 +438,7 @@ export async function resolveTicketFromDash(
   ts: string,
   actor: { slackId: string; username: string },
 ): Promise<ResolveResult> {
+  if (!isValidTicketTs(ts)) return { ok: false, error: "Invalid ticket id." };
   const extUrl = process.env.EXTERNAL_TICKETS_URL;
   const extKey = process.env.EXTERNAL_API_KEY;
   if (extUrl && extKey) return resolveViaPixorpheus(extUrl, extKey, ts, actor);

@@ -3,6 +3,8 @@ import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { getShopOrder, buyerDetailsByUserId } from "@/lib/db";
+import { audit } from "@/lib/audit";
+import { canViewLabel } from "@/lib/fulfillmentAccess";
 import { PrintButton } from "./PrintButton";
 
 export const dynamic = "force-dynamic";
@@ -17,13 +19,30 @@ export default async function ShippingLabelPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requirePage("fulfiller");
+  const access = await requirePage("fulfiller");
   if (await getLiveMode()) return <LiveBlocked what="Shipping labels" />;
   const { id } = await params;
   const orderId = Number(id);
-  if (!Number.isFinite(orderId)) notFound();
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) notFound();
   const order = await getShopOrder(orderId);
-  if (!order) notFound();
+  // IDOR: the label is the buyer's full address, so only the fulfiller who
+  // claimed this order (or an owner) may open it. Anyone else gets the same
+  // 404 as a missing order, so ids can't be probed.
+  if (!order || !canViewLabel(order, access)) {
+    await audit({
+      action: "fulfillment.label_view",
+      result: "denied",
+      slackId: access.session.slackId,
+      target: `order:${orderId}`,
+    });
+    notFound();
+  }
+  await audit({
+    action: "fulfillment.label_view",
+    result: "ok",
+    slackId: access.session.slackId,
+    target: `order:${order.id}`,
+  });
   const buyer = (await buyerDetailsByUserId([order.user_id])).get(order.user_id);
   const addressLines = buyer?.addressLines ?? [];
 
