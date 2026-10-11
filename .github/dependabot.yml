@@ -1,0 +1,46 @@
+version: 2
+
+# Security updates are enabled repo-wide in GitHub settings and arrive as soon
+# as an advisory lands. These entries add weekly version bumps so dependencies
+# never drift far behind again (the sharp 0.35.4 RCE sat unpatched).
+updates:
+  # Workspace root: one bun.lock covers every app/package in the workspace.
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # Standalone lockfiles used by the per-app Docker builds.
+  - package-ecosystem: bun
+    directories:
+      - /apps/server
+      - /apps/internal-dashboard
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /apps/pixo-dm
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directories:
+      - /apps/server
+      - /apps/internal-dashboard
+      - /apps/pixl-dashboard
+      - /apps/pixorpheus
+      - /apps/game
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
