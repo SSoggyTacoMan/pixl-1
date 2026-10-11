@@ -137,6 +137,32 @@ export function buildAirtableFields(
   return fields;
 }
 
+// "Ada", "Ada and Bo", "Ada, Bo and Cy". Blank and repeated names are dropped.
+function joinNames(names: string[]): string {
+  const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+  if (unique.length <= 1) return unique[0] ?? "";
+  return `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
+}
+
+// For a project with collaborators, every person gets their own Airtable row
+// (see pushProjectToAirtable), so the same project shows up once per person and
+// Airtable's duplicate check would flag it. This sentence goes in the "Override
+// Duplicate Justification" field to say why that's expected. Empty for a solo
+// project, where there is nothing to explain.
+export function groupProjectNote(submitterNames: string[]): string {
+  const names = joinNames(submitterNames);
+  const count = new Set(submitterNames.map((n) => n.trim()).filter(Boolean)).size;
+  if (count < 2) return "";
+  return `This is a group project, submitted separately by each member (one row per person, with their own hours). Submitters: ${names}.`;
+}
+
+// What goes in "Optional - Override Duplicate Justification": the group-project
+// sentence (if any) followed by the duplicate-detection note Pixl already
+// stored on the project (projects.system_note), so neither one is lost.
+export function duplicateOverrideNote(systemNote: string, submitterNames: string[]): string {
+  return [groupProjectNote(submitterNames), systemNote.trim()].filter(Boolean).join(" ");
+}
+
 export type PushResult =
   | { ok: true; recordId: string }
   | { ok: false; error: string };

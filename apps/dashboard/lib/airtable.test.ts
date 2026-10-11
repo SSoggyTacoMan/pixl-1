@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { buildAirtableFields, githubUsernameFromRepoUrl, pushProjectRecord } from "./airtable";
+import {
+  buildAirtableFields,
+  duplicateOverrideNote,
+  githubUsernameFromRepoUrl,
+  groupProjectNote,
+  pushProjectRecord,
+} from "./airtable";
 
 const baseInput = {
   repoUrl: "https://github.com/octocat/spoon-knife",
@@ -227,5 +233,49 @@ describe("pushProjectRecord", () => {
     const result = await pushProjectRecord({ "Code URL": "https://github.com/a/b" }, null);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe("Invalid field name");
+  });
+});
+
+describe("groupProjectNote", () => {
+  test("names every submitter in a group project", () => {
+    expect(groupProjectNote(["Andrei Pop", "David Boltong"])).toBe(
+      "This is a group project, submitted separately by each member (one row per person, with their own hours). Submitters: Andrei Pop and David Boltong.",
+    );
+    expect(groupProjectNote(["Ada", "Bo", "Cy"])).toContain("Submitters: Ada, Bo and Cy.");
+  });
+
+  test("says nothing for a solo project", () => {
+    expect(groupProjectNote([])).toBe("");
+    expect(groupProjectNote(["Ada"])).toBe("");
+  });
+
+  test("ignores blank and repeated names, so two blanks are not a group", () => {
+    expect(groupProjectNote(["Ada", "", "  "])).toBe("");
+    expect(groupProjectNote(["Ada", "Ada"])).toBe("");
+    expect(groupProjectNote(["Ada", "", "Bo"])).toContain("Submitters: Ada and Bo.");
+  });
+});
+
+describe("duplicateOverrideNote", () => {
+  test("group sentence first, then the existing duplicate-detection note", () => {
+    const out = duplicateOverrideNote("Matches another YSWS submission.", ["Ada", "Bo"]);
+    expect(out.startsWith("This is a group project")).toBe(true);
+    expect(out.endsWith("Matches another YSWS submission.")).toBe(true);
+  });
+
+  test("keeps just the existing note for a solo project", () => {
+    expect(duplicateOverrideNote("Matches another YSWS submission.", ["Ada"])).toBe("Matches another YSWS submission.");
+  });
+
+  test("is empty when there is nothing to say", () => {
+    expect(duplicateOverrideNote("", ["Ada"])).toBe("");
+    expect(duplicateOverrideNote("  ", [])).toBe("");
+  });
+
+  test("a group project fills the Airtable field, a solo one leaves it out", () => {
+    const group = buildAirtableFields({ ...baseInput, systemNote: duplicateOverrideNote("", ["Ada", "Bo"]) });
+    expect(group["Optional - Override Duplicate Justification"]).toContain("Submitters: Ada and Bo.");
+    const solo = buildAirtableFields({ ...baseInput, systemNote: duplicateOverrideNote("", ["Ada"]) });
+    expect("Optional - Override Duplicate Justification" in solo).toBe(false);
   });
 });

@@ -68,7 +68,7 @@ import {
 } from "@/lib/db";
 import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { decryptPII } from "@/lib/crypto";
-import { buildAirtableFields, pushProjectRecord } from "@/lib/airtable";
+import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
 import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
 import { fetchHackatimeReport, fetchTrackedSecondsSince, fetchTrustFactor } from "@/lib/hackatime";
@@ -2440,9 +2440,32 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
     ),
   ];
 
+  // Everyone on the project, for the "group project" sentence in the Airtable
+  // duplicate-override field. Each person's row names all of them.
+  const { data: nameRows } = await db
+    .from("users")
+    .select("id, first_name, last_name, real_name, display_name")
+    .in("id", people.map((p) => p.userId));
+  const nameById = new Map(
+    ((nameRows ?? []) as {
+      id: string;
+      first_name: string | null;
+      last_name: string | null;
+      real_name: string | null;
+      display_name: string | null;
+    }[]).map((u) => [
+      u.id,
+      [u.first_name, u.last_name].filter(Boolean).join(" ") || u.real_name || u.display_name || "",
+    ]),
+  );
+  const duplicateNote = duplicateOverrideNote(
+    project.system_note ?? "",
+    people.map((p) => nameById.get(p.userId) ?? ""),
+  );
+
   const errors: string[] = [];
   for (const person of people) {
-    const error = await pushPersonToAirtable(project, person, auditSections, journalShareUrl);
+    const error = await pushPersonToAirtable(project, person, auditSections, journalShareUrl, duplicateNote);
     if (error) errors.push(error);
   }
   return errors.length === 0 ? { ok: true } : { ok: false, error: errors.join(" ") };
@@ -2459,6 +2482,7 @@ async function pushPersonToAirtable(
   person: AirtablePerson,
   auditSections: ReturnType<typeof parseAuditNote>,
   journalShareUrl: string,
+  duplicateNote: string,
 ): Promise<string | null> {
   const { data: user, error: userError } = await db
     .from("users")
@@ -2504,7 +2528,7 @@ async function pushPersonToAirtable(
     imageUrl: project.image_url ?? "",
     description: project.description ?? "",
     approvedHours: person.hours,
-    systemNote: project.system_note ?? "",
+    systemNote: duplicateNote,
     birthday: decryptPII(user?.birthday),
     addressLine1: decryptPII(user?.address_line1),
     addressLine2: decryptPII(user?.address_line2),
