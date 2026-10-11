@@ -4,23 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository overview
 
-Pixl is a Bun/Turborepo monorepo (`bun` workspaces: `apps/*`, `packages/*`) for a Hack Club YSWS ("You Ship, We Ship") pixel-art multiplayer game.
+Pixl is a Bun/Turborepo monorepo (`bun` workspaces: `apps/*`, `packages/*`) for a Hack Club YSWS ("You Ship, We Ship") pixel-art multiplayer game. It holds thousands of teenagers' personal data: guard every action, log every action, never trust the client.
 
-| App | Stack | Purpose |
-|---|---|---|
-| `apps/server` | Bun, Express, `ws`, Drizzle ORM, Supabase (Postgres) | Game server - auth, player state, WebSocket game/lobby logic, projects, shop, economy |
-| `apps/game` | Godot 4 | The 2D multiplayer game client (not TypeScript - GDScript/Godot project) |
-| `apps/landing` | Next.js 16, React 19, Tailwind 4 | Marketing site + apex proxy (pixl.hackclub.com) |
-| `apps/dashboard` | Next.js 16, React 19, Tailwind 4, shadcn/radix, Supabase | Admin/review dashboard - moderation, tickets, review queue, stats |
-| `apps/web-shell` | Next.js 16, React 19 | React migration of the player-facing web shell - docs (`/docs`), public no-account forms (`/form/:formKey`), a growing `(shell)` (`/dashboard`, etc.); the rest still on the old static site. See below. |
-| `apps/pixorpheus` | Bun, TypeScript, Slack Bolt v4, Express, Supabase | Slack bot - tickets, AI chat, moderation DMs, slash commands |
-| `apps/pixo-dm` | Node (CommonJS), Express | Standalone Railway service that relays dashboard-initiated player DMs through Slack as Pixo - plain `node index.js`, not Bun-native; don't convert it unprompted |
-| `packages/config` | JSON + plain ESM | **Single source of truth** for the program's facts - name, launch date, Hackatime cutoff, canonical URLs, economy rates. See below. |
-| `packages/theme` | JSON + plain ESM | **Single source of truth** for the LEDGER color palette (dark/light, web + Godot). See below. |
-| `packages/docs-engine` | Bun/TypeScript | Renders `docs/*.md` for `apps/web-shell` and builds OG preview cards into `apps/web-shell/public/<slug>/`. See below. |
-| `packages/map-sync` | Bun/TypeScript | Copies `apps/game`'s baked world-map PNGs into `apps/dashboard` for the NPC spot-picker. See below. |
+| App | Stack | Domain | Purpose |
+|---|---|---|---|
+| `apps/server` | Bun, Express, `ws`, Postgres (Orchard) | `server.pixl.hackclub.com` | The orchestrator - auth, player state, WebSocket game loop, projects, shop, economy. The only API the game and Pixl Dashboard talk to. |
+| `apps/pixl-dashboard` | Next.js 16, React 19, Tailwind 4, shadcn/radix | `pixl.hackclub.com` | **Pixl Dashboard** - landing page (5 locales), signed-in player pages, docs, public forms and shared journals. |
+| `apps/internal-dashboard` | Next.js 16, React 19, Tailwind 4, shadcn/radix | `dash.pixl.hackclub.com` | **Pixl Internal Dashboard** - review queue, moderation, shop/fulfillment, tickets, stats. Still talks to Postgres directly (moving it behind the server is planned). |
+| `apps/game` | Godot 4 | `play.pixl.hackclub.com` | The 2D multiplayer client. Serves only the Godot web export. |
+| `apps/pixorpheus` | Bun, TypeScript, Slack Bolt v4 | `pixo.pixl.rsvp` | Pixo, the Slack bot - tickets, AI chat, moderation DMs, slash commands |
+| `apps/pixo-dm` | Node (CommonJS), Express | Railway | Relays dashboard-initiated player DMs through Slack as Pixo - plain `node index.js`; folding it into Pixo is planned |
+| `packages/config` | JSON + plain ESM | | **Single source of truth** for program facts - name, launch date, Hackatime cutoff, canonical URLs, economy rates. |
+| `packages/theme` | JSON + plain ESM | | **Single source of truth** for the LEDGER color palette. |
+| `packages/docs-engine` | Bun/TypeScript | | Renders `docs/*.md` for Pixl Dashboard and builds OG preview cards. |
+| `packages/map-sync` | Bun/TypeScript | | Copies the game's baked world-map PNGs into the internal dashboard for the NPC spot-picker. |
 
-Each app has its own `package.json`/scripts and is largely independent; they share only Supabase as a common data layer (each app talks to Supabase directly rather than through a shared internal API), plus Hack Club Auth/Slack OAuth for identity. Deployed on Orchard (Kubernetes), not Vercel/Railway, despite some apps (`dashboard`, `game`, `landing`) still shipping a stale `vercel.json` from an earlier deploy target - `pixo-dm` is the one exception, actually deployed on Railway.
+Everything deploys on Orchard (Kubernetes) except `pixo-dm` (Railway). Stale `vercel.json` files are not deploy config. Every env var on Orchard must be stored with `secret: true`.
+
+### Boundaries (do not break these)
+
+- **The game and Pixl Dashboard share nothing.** No token handoff, no localStorage, no postMessage. The game only opens plain `https://pixl.hackclub.com/<page>` URLs from an allowlist in `apps/game/scripts/web_pages.gd`. Each app has its own login.
+- **The server only accepts browser requests from** `config.urls.site`, `config.urls.play` and `config.urls.dash` (`apps/server/src/http/origins.ts`). No localhost, no env override, no dev bypasses (the `ALLOW_*` flags were deleted on purpose - don't reintroduce them).
+- **Tokens never go in URLs.** Session tokens travel only in `Authorization: Bearer`; `?token=` is rejected. Login returns a single-use 60 s code that the client exchanges (`POST /auth/exchange`).
+- **Deny by default.** Every `/api` route needs a session unless it is listed in `apps/server/src/http/publicRoutes.ts`. Handlers read identity only from `req.session`, never from query, body or headers.
+- **Service-to-service calls** use `x-pixl-service-key`, one key per caller (`SERVICE_KEY_PIXL_DASHBOARD`, `SERVICE_KEY_INTERNAL_DASHBOARD`, `SERVICE_KEY_PIXO`), see `apps/server/src/http/serviceKeys.ts`.
+- **Admin power comes only from env.** Internal-dashboard owners are `ADMIN_SLACK_IDS`; the only table-backed roles are reviewers (`admins` rows, review permissions only), ticket helpers (`helpers`) and fulfillers (`fulfillers`). There are no super admins, sub-admins, moderators or report viewers - don't add a way to grant power from inside the app.
+- **Audit everything** into the `audit_log` table (migration `0214`): the server through `src/audit.ts`, the internal dashboard through `guardedAction` / `guardedRoute` in `lib/guard.ts`. Never put tokens, secrets or decrypted PII in `meta`.
+- **Every mutation is guarded.** Internal dashboard: every `'use server'` export is a `guardedAction(name, requirement, fn)` (a test enforces it). Pixl Dashboard: every mutation is a Server Action through `guardedAction(name, schema, handler)` that validates with zod and calls exactly one server endpoint. Server: every write route has a zod schema via `validate()`.
+- **Untrusted uploads**: images are checked by magic bytes (PNG/JPEG/WebP only) before they reach `sharp` (`apps/server/src/imageValidation.ts`, `apps/internal-dashboard/lib/imageSniff.ts`). The Oct 2026 incident was an SVG labelled `image/png` reaching librsvg.
+
+See `docs/superpowers/specs/2026-10-11-hardened-relaunch-design.md` for the full design and the reasons behind it.
 
 ## Commands
 
@@ -29,161 +42,92 @@ Run from the repo root unless noted. This repo uses Bun - see the Bun-specific g
 ```bash
 bun install                                  # install all workspaces
 
-# Turborepo shortcuts (root package.json)
 bun run dev                                  # run all apps' dev servers concurrently
-bun run landing                              # turbo dev --filter=@pixl/landing
-bun run dashboard                             # turbo dev --filter=@pixl/dashboard
-bun run web-shell                            # turbo dev --filter=@pixl/web-shell
+bun run pixl-dashboard                       # turbo dev --filter=@pixl/pixl-dashboard
+bun run internal-dashboard                   # turbo dev --filter=@pixl/internal-dashboard
 bun run build                                # turbo build (all apps)
 bun run config:sync                          # regenerate committed config copies (packages/config)
 bun run theme:sync                           # regenerate committed theme/palette copies (packages/theme)
-bun run docs:build                           # regenerate apps/web-shell/public/<slug>/og.png from docs/*.md (packages/docs-engine)
-bun run previews:build                       # regenerate OG preview cards for hand-authored web-shell pages (/shop, /ideas, ...)
-bun run map:sync                             # copy apps/game's baked world-map PNGs into apps/dashboard (packages/map-sync)
+bun run docs:build                           # regenerate doc OG cards (packages/docs-engine)
+bun run previews:build                       # regenerate OG cards for hand-authored Pixl Dashboard pages
+bun run map:sync                             # copy the game's baked world-map PNGs into the internal dashboard
 bun run npcs:bake                            # bun run apps/server/src/scripts/bake-npcs.ts
 
-# Per-app (cd into the app, or use --cwd)
 bun run --cwd apps/server dev                # game server, tsx watch on src/index.ts
 bun run --cwd apps/server build              # tsc build to dist/
-bun run --cwd apps/server db:generate        # drizzle-kit generate (schema -> migration)
-bun run --cwd apps/server db:migrate         # drizzle-kit migrate
-bun run --cwd apps/server db:studio          # drizzle-kit studio
+bun run --cwd apps/server test               # bun test (*.db.test.ts need PIXL_TEST_DATABASE_URL)
 
-bun run --cwd apps/landing dev               # next dev
-bun run --cwd apps/landing lint              # eslint
-bun run --cwd apps/dashboard dev             # next dev -p 4900
-bun run --cwd apps/dashboard typecheck       # tsc --noEmit
-bun run --cwd apps/dashboard test            # bun test
+bun run --cwd apps/pixl-dashboard dev        # next dev -p 4901
+bun run --cwd apps/pixl-dashboard typecheck  # tsc --noEmit
+bun run --cwd apps/pixl-dashboard test       # bun test
 
-bun run --cwd apps/web-shell dev             # next dev -p 4901
-bun run --cwd apps/web-shell typecheck       # tsc --noEmit
-bun run --cwd apps/web-shell test            # bun test
+bun run --cwd apps/internal-dashboard dev        # next dev -p 4900
+bun run --cwd apps/internal-dashboard typecheck  # tsc --noEmit
+bun run --cwd apps/internal-dashboard test       # bun test
 
-bun run --cwd apps/pixorpheus start          # Slack bot (src/index.ts), Bun-native, no build step
-bun run --cwd apps/pixorpheus dev            # same, with --watch
+bun run --cwd apps/pixorpheus start          # Slack bot, Bun-native, no build step
 bun run --cwd apps/pixorpheus typecheck      # tsc --noEmit
 ```
 
-There is no root-level test suite. Check an individual app's `package.json` before assuming a script (lint/typecheck/test) exists there - e.g. `apps/server` and `apps/pixo-dm` have none.
+CI (`.github/workflows/ci.yml`) typechecks and tests the server, both dashboards and Pixo against a throwaway Postgres, checks the standalone Docker lockfiles are in sync, and runs `osv-scanner`. Dependabot (`.github/dependabot.yml`) opens weekly grouped updates.
+
+`apps/server` and `apps/internal-dashboard` build in Docker from their own folder with `bun install --frozen-lockfile` against their **own** `bun.lock`. When you change their dependencies, update that standalone lockfile too (copy `package.json` + `bun.lock` to a temp dir, `bun install`, verify `--frozen-lockfile`, copy back) - updating only the root `bun.lock` ships the old versions.
 
 ### Environment
 
-Each app has its own `.env` (see `.env.example` where present, e.g. `apps/server/.env.example`). Bun auto-loads `.env` files - don't add `dotenv` to Bun-run apps (note `apps/server` still imports `dotenv/config` itself in some files; follow existing conventions in that file rather than changing it unprompted - `apps/pixorpheus` relies on Bun's auto-load and has no `dotenv` dependency). Common vars: `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` (shared across apps), `JWT_SECRET`, Hack Club Auth (`HCA_CLIENT_ID`/`SECRET`/`REDIRECT_URI`), Slack tokens for `pixorpheus`/`dashboard`.
+Each app has its own `.env` (see each `.env.example`). Bun auto-loads `.env` - don't add `dotenv` to Bun-run apps (`apps/server` still imports `dotenv/config` in some files; follow existing conventions there). Nothing has a localhost default; URLs come from `packages/config`.
 
 ### `packages/config` (shared program facts)
 
-Never hardcode the launch date, the Hackatime cutoff, a pixl.hackclub.com URL or the
-economy rates in an app - they all live in `packages/config/pixl.json`.
+Never hardcode the launch date, the Hackatime cutoff, a pixl.hackclub.com URL or the economy rates in an app - they live in `packages/config/pixl.json`.
 
-- Nothing imports `@pixl/config` at runtime, not even the TS apps - Railway/Vercel build each app from its own `/apps/<app>` root, so a workspace package outside that root doesn't resolve there. Every consumer instead reads a **generated, git-committed copy** produced by `bun run config:sync` after you edit `pixl.json` - never hand-edit the generated files, the next sync overwrites them.
-- **TS apps**: `server`/`pixorpheus` import `../config.generated.js` (the `.js` extension is required, they run as ESM); `landing`/`dashboard` import `../_generated/config` (or the `@/app/_generated/config` alias) - all expose `config`, `launchDate`, `hackatimeCutoffUnix`, `hasLaunched`, `launchDateLabel`, etc.
-- **Godot** (`apps/game/scripts/pixl_config.gd`) reads `apps/game/pixl.json`, and **the game's web pages** read `Pixl.config` in `apps/game/web/pixl.js` - both are also generated copies from the same sync.
-- Dates are ISO-8601 **UTC**. Format them with `timeZone: "UTC"`; a naive `new Date("2026-08-18T00:00:00")` means midnight in the *reader's* timezone and is the exact drift this package exists to stop.
+- Nothing imports `@pixl/config` at runtime - each app builds from its own root, so every consumer reads a **generated, git-committed copy** produced by `bun run config:sync`. Never hand-edit the generated files.
+- **TS apps**: `server`/`pixorpheus` import `../config.generated.js` (the `.js` extension is required, they run as ESM); the two dashboards import `app/_generated/config`.
+- **Godot** (`apps/game/scripts/pixl_config.gd`) reads the generated `apps/game/pixl.json`.
+- Dates are ISO-8601 **UTC**. Format them with `timeZone: "UTC"`.
 
-Launch-state copy (Pixo's persona/FAQ, the Slack welcome messages) switches itself
-via `hasLaunched()` - there is no string to flip on launch day.
+Launch-state copy (Pixo's persona/FAQ, the Slack welcome messages) switches itself via `hasLaunched()`.
 
-### `packages/theme` (LEDGER palette, generated design tokens)
+### `packages/theme` (LEDGER palette)
 
-`palette.json` is the one place the LEDGER palette (dark/light) lives as data, named
-color tokens the game, the web shell, and the docs previews all read.
+`palette.json` is the one place the palette lives. Run `bun run theme:sync` after editing it; it rewrites `apps/game/theme.json` and the marker blocks in `apps/pixl-dashboard/app/globals.css` (both generated, never hand-edit). `godot.light` doesn't exist yet.
 
-- Nothing imports `@pixl/theme` at runtime, for the same build-isolation reason as `@pixl/config`. Run `bun run theme:sync` after editing `palette.json`; it rewrites `apps/game/theme.json` (read by `apps/game/scripts/pixl_theme.gd`) and the token lines inside `apps/game/web/pixl.css`'s `:root{}` blocks, between `/* <pixl-theme:...> */` markers - both are committed but **generated, never hand-edit them**.
-- `godot.dark` only carries the token subset Godot actually consumes; `godot.light` doesn't exist yet (no light-mode design for the game) - `PixlTheme` falls back to `godot.dark` regardless of the player's web-shell choice.
-- `packages/docs-engine/src/og.ts` reads `web.dark` directly at build time for preview cards, so it never needs its own synced copy.
+### `packages/docs-engine` (docs)
 
-### `packages/docs-engine` (docs build)
+Pixl Dashboard renders `docs/*.md` through this package's `render()`/`buildTokens()` (a workspace import - the Pixl Dashboard Dockerfile uses a repo-root build context so it resolves). `bun run docs:build` writes OG cards. Source files are `<order>-<slug>.md`; `{{token}}` placeholders come from `pixl.json`, and unknown tokens fail the build.
 
-Doc *pages* now render in `apps/web-shell` (see below) - this package only still generates OG preview cards. `bun run docs:build` writes one `og.png` per doc into `apps/web-shell/public/<slug>/` (no `docs/` nesting there on purpose - `apps/web-shell` sets `basePath: "/docs"`, which already prefixes everything under `public/`). Source files are named `<order>-<slug>.md` (order sets nav position, slug sets the URL). `{{token}}` placeholders pull from `packages/config/pixl.json` at build time via `packages/docs-engine/src/tokens.ts`'s `buildTokens()`, re-run after editing `pixl.json`; unknown tokens fail the build. `packages/docs-engine/src/markdown.ts`'s `render()` (the actual markdown-to-HTML parser) is imported directly by `apps/web-shell/lib/docs.ts` as a workspace package - this is the one place in the repo that happens, since `apps/web-shell`'s Dockerfile uses a repo-root build context specifically to make that resolve (see below).
+### `packages/map-sync`
 
-### `packages/map-sync` (world map -> dashboard NPC picker)
-
-`bun run map:sync` copies `apps/game`'s baked world-map PNGs (see the `apps/game` notes below on baking) into `apps/dashboard` so the Trials & NPCs page can show NPC spot pickers against the real map. Re-run it after re-baking a world map, same generated-copy caveat as `config`/`theme`.
+`bun run map:sync` copies the game's baked world-map PNGs into `apps/internal-dashboard` for the NPC spot pickers. Re-run after re-baking a world map.
 
 ## Architecture notes
 
-### `apps/server` (game server)
-- Entry point `src/index.ts`; Express HTTP routes live under `src/routes/*` (auth, profile, projects, shop, sidequests, story, friends, explore, admin, reports, hackatime, vault, notifications, uploads, events, forms).
-- `forms` backs public, no-account application forms (e.g. reviewer applications): questions and close date are editable from the dashboard's Forms tab without a deploy, submissions verified by Slack ID rather than a full OAuth login.
-- Real-time game state is handled separately in `src/ws/gameServer.ts` (the authoritative multiplayer/WebSocket loop) and `src/ws/lobbies.ts` (private village / lobby grouping).
-- `src/auth/session.ts` issues/validates JWT sessions signed with `JWT_SECRET`; Hack Club Auth (HCA) is the identity provider.
-- `src/db/client.ts` + `src/db/schema.ts` (Drizzle) define the Postgres schema (via Supabase). Run `db:generate` after schema changes, then `db:migrate` to apply. Migrations live in `apps/server/drizzle/` as sequentially numbered raw SQL files; hand-written/data-only migrations just take the next free number. This repo has multiple contributors pushing migrations concurrently (several numbers already collide, e.g. `0044_`, `0050_`, `0053_`), so check `git log`/the current highest number right before adding one, don't trust what you last pulled.
-- Cross-cutting concerns: `src/xp.ts` (leveling/XP), `src/moderation.ts` / `src/imageModeration.ts` (content moderation, ties into `dashboard`'s review queue), `src/rateLimit.ts`, `src/hackatime/api.ts` (coding-time tracking integration), `src/shipsArchive.ts` (project submission history), `src/ysws/doubleDip.ts` (cross-YSWS duplicate-submission detection).
+### `apps/server`
+- Entry point `src/index.ts`; routes under `src/routes/*`. The request pipeline is in `src/http/`: `origins.ts` (CORS allowlist), `gate.ts` / `requireSession.ts` / `bearer.ts` (deny-by-default auth), `publicRoutes.ts`, `serviceKeys.ts`, `validate.ts` (zod), `clientKey.ts` (rate-limit keys).
+- `routes/auth.ts`: `GET /auth/hackclub?redirect=&state=` -> Hack Club Auth -> single-use code (`src/auth/loginCodes.ts`) -> `POST /auth/exchange`; `POST /auth/logout`; `POST /auth/flow/:name` (`verify-address`, `resync`, `legal-name`); `POST /api/hackatime/connect`. Logout currently revokes all of a user's sessions (game and web).
+- `forms` backs public, no-account application forms verified by Slack ID; questions are editable from the internal dashboard.
+- Real-time game state: `src/ws/gameServer.ts` and `src/ws/lobbies.ts`. The WS only accepts the play origin; the first frame must be `{"type":"auth","token":...}` within 5 s or it closes with 4401, and nothing is sent before auth.
+- `src/auth/session.ts` issues and validates JWT sessions (`JWT_SECRET`, 14 days). `src/audit.ts` writes `audit_log`.
+- Migrations live in `apps/server/drizzle/` as sequentially numbered raw SQL files. Multiple contributors push migrations concurrently (numbers have collided before), so check the current highest number right before adding one.
+- Cross-cutting: `src/xp.ts` (leveling), `src/moderation.ts` / `src/imageModeration.ts`, `src/rateLimit.ts`, `src/hackatime/api.ts`, `src/shipsArchive.ts`, `src/ysws/doubleDip.ts`, `src/imageValidation.ts`.
 
 ### `apps/game` (Godot client)
-- Not a Node/Bun project - it's a Godot 4 project (`project.godot`, `scenes/`, `scripts/`, `addons/`, `shaders/`). GDScript, not TypeScript. Don't try to `bun install`/run it like the other apps.
-- `web/` holds the web export target; `exports/` and `build/` hold build artifacts (gitignored).
-- The minimap and world map draw a **baked** top-down PNG of each world (`assets/map/*.png` + `bounds.json`), produced by `scripts/tools/world_map_baker.gd`. Re-bake after moving tilemaps: open `scripts/tools/bake_world_map.gd` in the editor and hit File > Run, or `godot --script scripts/tools/bake_world_map_cli.gd` (needs a real display, `--headless` bakes black). If the PNGs are missing both maps fall back to a flat placeholder rect.
+- A Godot 4 project, not a Bun app. Don't `bun install` it.
+- `serve.ts` and the Dockerfile serve only the Godot web export. `scripts/network_manager.gd` sends `Authorization: Bearer`, authenticates the WS with its first frame, and logs in with the code flow (`scripts/web_login.gd`). Login is web-only.
+- `scripts/web_pages.gd` opens allowlisted Pixl Dashboard pages as plain URLs. Add a path there when a new player page should be reachable from the game.
+- The minimap and world map draw a **baked** PNG per world (`assets/map/*.png` + `bounds.json`) from `scripts/tools/world_map_baker.gd`. Re-bake after moving tilemaps (`godot --script scripts/tools/bake_world_map_cli.gd`, needs a real display).
 
-### `apps/landing` and `apps/dashboard` (Next.js)
-- Both run **Next.js 16** with React 19 and Tailwind 4 (very recent, training-data knowledge of Next.js APIs/conventions is likely stale). `apps/landing` has an `AGENTS.md` flagging this explicitly: **read the relevant guide in `node_modules/next/dist/docs/` before writing Next.js code in either app**, and heed deprecation notices.
-- `dashboard` runs on port 4900 (`next dev -p 4900` / `next start -p 4900`) since multiple apps run concurrently in dev. It uses shadcn/radix-ui components and talks to Supabase directly plus Slack OAuth (`app/api/auth/*`) for admin login.
-- Page routes follow Next App Router conventions (`app/<route>/page.tsx`); shared page-local components live in `app/_components/`.
-- `apps/landing` is localized across 4 locales (`en`/`fr`/`es`/`pt`, plus `hi` per the README) under `app/[lang]/dictionaries/`. Anything in `Shop.tsx`/`Sidequests.tsx` that references a dictionary array by position must stay index-aligned across all locale files - add/remove/reorder an item identically everywhere, or the wrong name/price silently lands on the wrong image in some locales.
-
-### `apps/web-shell` (React migration of the player-facing web shell)
-- Next.js 16 App Router, dev server on port 4901 (`next dev -p 4901`),
-  deployed on Orchard (`pixl-web-shell`, no public
-  hostname of its own - reached only through `apps/landing/next.config.ts`'s
-  `rewrites()`, over the Orchard cluster's internal service DNS). Each page
-  family lives at its own literal route segment (`app/docs/[slug]`,
-  `app/(shell)/dashboard`, `app/form/[formKey]`, and so on as later slices
-  land) - there is no app-wide `basePath` (removed 2026-08-24 once a second
-  family joined docs; see
-  `docs/superpowers/specs/2026-08-23-react-migration-design.md`'s addendum
-  for why one was ever needed and why it stopped working). `/form/:formKey`
-  is public and no-account (Slack-ID-verified, not full OAuth) - it's the
-  one page family here that doesn't need the `pixl_session` cookie below.
-- Auth: an httpOnly `pixl_session` cookie holds the same JWT
-  `apps/server` issues. `proxy.ts` catches `?token=` on any request
-  (Hack Club Auth redirects back to whatever page login started from, not
-  one fixed callback route) and moves it into the cookie. `lib/session.ts`
-  verifies it locally (`JWT_SECRET` must match `apps/server`'s exactly).
-  Server Components call `apps/server` directly via `lib/server-api.ts`;
-  Client Components that need to mutate go through
-  `app/api/proxy/[...path]/route.ts` instead, since the cookie is
-  unreadable by client JS by design. This only applies to `apps/web-shell`
-  - the Godot client and any page still on the old static site
-  (`apps/game/web/`) keep using the token-in-localStorage flow unchanged.
-- The `(shell)` route group (`app/(shell)/layout.tsx`) renders the
-  sidebar/topbar chrome, ported from `apps/game/web/pixl.js`'s
-  `mountTopbar()`, around every signed-in page. `app/(shell)/nav-data.ts`
-  holds the nav structure; `shell-nav.tsx` is the interactive Client
-  Component (mobile sheet, theme picker); the layout itself is a Server
-  Component that renders the full-page signed-out gate or fetches the
-  wallet/Restoration numbers before the page ever reaches the browser.
-- The RE/payout economy formulas (`rePerHour`, `projectPayoutUsd`, etc. in
-  `pixl.js`) aren't ported here yet - `/dashboard` only ever displays
-  values `apps/server` already computed (wallet pixels/RE/level), it never
-  runs the formulas itself. Port them as their own tested module (matching
-  `packages/docs-engine/src/tokens.ts`'s pattern: byte-for-byte identical
-  to `apps/server`'s own math, this must never drift) when a slice first
-  needs to compute a payout number client-side, likely `calc` or `projects`.
-- Reads `docs/*.md` directly via `packages/docs-engine`'s `render()`/
-  `buildTokens()` (a workspace-package import - this app's Dockerfile uses
-  a repo-root build context specifically so that resolves, unlike
-  `apps/dashboard`'s isolated per-app context).
-- Docker image uses Next's `output: "standalone"` - required in this
-  monorepo, not just an optimization: without it, the runtime stage would
-  need to drag along the whole workspace's hoisted `node_modules` (Bun
-  installs into a shared `/repo/node_modules/.bun/...` store for any
-  workspace-package-dependent app, since the install runs against the root
-  `package.json`) to keep `apps/web-shell/node_modules`'s symlinks from
-  dangling. `output: "standalone"` traces the real dependency graph into
-  concrete files instead.
-- See `docs/superpowers/specs/2026-08-23-react-migration-design.md` for
-  the full migration design (its 2026-08-24 addendum has the slice order
-  for everything after docs) and `docs/superpowers/plans/` for the
-  per-slice implementation plans.
+### `apps/pixl-dashboard` and `apps/internal-dashboard` (Next.js 16)
+- **Next.js 16** with React 19 and Tailwind 4 - training-data knowledge is likely stale. **Read the relevant guide in `node_modules/next/dist/docs/` before writing Next.js code** and heed deprecations (e.g. middleware is `proxy.ts`).
+- **Pixl Dashboard** (`apps/pixl-dashboard`, port 4901): landing page at `/` with locales under `app/[lang]` (dictionary arrays referenced by position in `Shop.tsx`/`Sidequests.tsx` must stay index-aligned across locales); signed-in pages in the `(shell)` route group; public `/docs`, `/form` and `/journals`. The session is the httpOnly `pixl_session` cookie, verified locally with `JWT_SECRET` (must match the server). Server Components read through `lib/server-api.ts` (Bearer from the cookie); mutations are Server Actions behind `lib/guarded-action.ts`. No economy formulas client-side except tested modules that mirror the server byte-for-byte. Per-request nonce CSP in `proxy.ts`. Player markdown renders through `components/markdown.tsx` (React elements, no HTML strings). The Docker image uses `output: "standalone"` with a repo-root context.
+- **Pixl Internal Dashboard** (`apps/internal-dashboard`, port 4900): roles in `lib/roles.ts`, guards in `lib/guard.ts` (`requirePage`, `guardedAction`, `guardedRoute`), audit writer `lib/audit.ts`. Calls the server with `SERVICE_KEY_INTERNAL_DASHBOARD`. Image uploads go through the server's `/api/admin/uploads`.
 
 ### `apps/pixorpheus` (Slack bot)
-- Bun-native TypeScript, no build step (`bun run src/index.ts`) - a single Bolt v4 process, organized by feature under `src/` (`tickets/`, `chat/`, `ai/`, `memory/`, `commands/`, `pixelate/`, `github/`, `external/`, `slack/`). There is no separate dashboard process anymore - helper/admin ticket moderation lives in `apps/dashboard` (the Next.js app), which resolves tickets through `src/external/ticketApi.ts` on this bot.
-- `models.json` lists OpenRouter models available to the AI chat/roast/fact features.
-- See `apps/pixorpheus/README.md` for the full slash-command reference and architecture table before modifying bot behavior.
+- Bun-native TypeScript, no build step - a single Bolt v4 process organized by feature under `src/`. Ticket moderation lives in the internal dashboard, which resolves tickets through `src/external/ticketApi.ts`.
+- `models.json` lists the OpenRouter models available to AI features. See `apps/pixorpheus/README.md` for commands.
 
 ### `apps/pixo-dm` (Pixo DM relay)
-- Small standalone Express service (`index.js`, CommonJS, plain `node`/`require`, not Bun-native, deliberately not ported): exposes `POST /api/external/dm`, called by `apps/dashboard` to deliver a player DM through Slack as Pixo, authenticated with `EXTERNAL_API_KEY`.
-- Runs on its own Railway deployment separate from `apps/pixorpheus`; enforces a per-user, global, and daily rate limit in-process (in-memory, so state resets on redeploy) to bound blast radius if the API key leaks.
+- Small standalone Express service (`index.js`, CommonJS): `POST /api/external/dm`, called by the internal dashboard, authenticated with `EXTERNAL_API_KEY`, rate limited in memory.
 
 ## Bun usage
 
