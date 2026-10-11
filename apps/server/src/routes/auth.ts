@@ -277,10 +277,11 @@ router.get(
 // Step 3: trade a login code for a session token. Allowed from the Pixl
 // Dashboard's backend (x-pixl-service-key = SERVICE_KEY_PIXL_DASHBOARD) or
 // from the game's own origin with no key. Anything else is refused.
+// The caller is checked before the body is validated, so an unauthorized
+// caller always gets 401 and never learns anything about the expected shape.
 router.post(
   "/auth/exchange",
-  validate({ query: v.noQuery, body: z.object({ code: z.string().min(16).max(128) }) }),
-  (req, res) => {
+  (req, res, next) => {
     const given = serviceKeyHeader(req);
     if (given) {
       const service = matchServiceKey(given);
@@ -304,7 +305,10 @@ router.post(
       });
       return res.status(401).json({ ok: false, error: "unauthorized" });
     }
-
+    next();
+  },
+  validate({ query: v.noQuery, body: z.object({ code: z.string().min(16).max(128) }) }),
+  (req, res) => {
     const grant = loginCodes.redeem(String(req.body.code));
     if (!grant) {
       auditRequestThrottled(req, {
