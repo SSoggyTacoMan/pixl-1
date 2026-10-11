@@ -1,7 +1,7 @@
 // Only OG preview cards now - docs/*.md rendering itself moved into
-// apps/web-shell/lib/docs.ts. Still runs from the repo root via
-// `bun run docs:build`, but now writes into apps/web-shell/public/docs/<slug>/
-// instead of static HTML pages under apps/game/web/docs/. apps/web-shell has
+// apps/pixl-dashboard/lib/docs.ts. Still runs from the repo root via
+// `bun run docs:build`, but now writes into apps/pixl-dashboard/public/docs/<slug>/
+// instead of static HTML pages under apps/game/web/docs/. apps/pixl-dashboard has
 // no basePath (see next.config.ts) - doc pages live at the literal
 // /docs/<slug>/ route, so their OG images need to physically sit at
 // public/docs/<slug>/og.png to match.
@@ -12,7 +12,7 @@ import { buildTokens } from "./src/tokens.ts";
 
 const ROOT = new URL("../../", import.meta.url).pathname;
 const CONTENT = `${ROOT}docs`;
-const OUT = `${ROOT}apps/web-shell/public/docs`;
+const OUT = `${ROOT}apps/pixl-dashboard/public/docs`;
 const config = JSON.parse(
   await Bun.file(`${ROOT}packages/config/pixl.json`).text(),
 );
@@ -48,4 +48,4 @@ for (const file of files) {
   count++;
 }
 
-console.log(`[docs] built ${count} OG cards into apps/web-shell/public/docs/`);
+console.log(`[docs] built ${count} OG cards into apps/pixl-dashboard/public/docs/`);

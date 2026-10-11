@@ -10,6 +10,7 @@ const Pixl = (() => {
       "site": "https://pixl.hackclub.com",
       "play": "https://play.pixl.hackclub.com",
       "docs": "https://pixl.hackclub.com/docs",
+      "dash": "https://dash.pixl.hackclub.com",
       "server": "https://server.pixl.hackclub.com",
       "ws": "wss://server.pixl.hackclub.com/ws",
       "repo": "https://github.com/hackclub/pixl"

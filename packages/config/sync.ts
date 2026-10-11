@@ -213,8 +213,8 @@ for (const target of [
   "apps/server/src/config.generated.ts",
   "apps/pixorpheus/src/config.generated.ts",
   "apps/landing/app/_generated/config.ts",
-  "apps/dashboard/app/_generated/config.ts",
-  "apps/web-shell/app/_generated/config.ts",
+  "apps/internal-dashboard/app/_generated/config.ts",
+  "apps/pixl-dashboard/app/_generated/config.ts",
 ]) {
   await write(`${ROOT}${target}`, ts);
 }

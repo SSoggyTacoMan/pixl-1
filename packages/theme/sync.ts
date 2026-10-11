@@ -54,9 +54,9 @@ await write(
 const CSS_TARGET = `${ROOT}apps/game/web/pixl.css`;
 let css = await readFile(CSS_TARGET, "utf8");
 
-// apps/web-shell/app/globals.css carries its own hand-authored Tailwind
+// apps/pixl-dashboard/app/globals.css carries its own hand-authored Tailwind
 // setup around the same <pixl-theme:...> markers, injected the same way.
-const WEB_SHELL_CSS_TARGET = `${ROOT}apps/web-shell/app/globals.css`;
+const WEB_SHELL_CSS_TARGET = `${ROOT}apps/pixl-dashboard/app/globals.css`;
 let webShellCss = await readFile(WEB_SHELL_CSS_TARGET, "utf8");
 
 for (const theme of Object.keys(palette.web)) {
