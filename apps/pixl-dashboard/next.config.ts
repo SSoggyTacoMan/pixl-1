@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { NextConfig } from "next";
+import { CDN_HOSTS } from "./lib/cdn-hosts";
 
 // Static security headers for every response (pages, API routes, static
 // files). The Content-Security-Policy itself is per-request (it carries a
@@ -31,11 +32,7 @@ const nextConfig: NextConfig = {
   },
   images: {
     // next/image only optimizes images from the Hack Club CDN.
-    remotePatterns: [
-      { protocol: "https", hostname: "cdn.hackclub.com", pathname: "/**" },
-      { protocol: "https", hostname: "hc-cdn.hel1.your-objectstorage.com", pathname: "/**" },
-      { protocol: "https", hostname: "assets.hackclub.com", pathname: "/**" },
-    ],
+    remotePatterns: CDN_HOSTS.map((hostname) => ({ protocol: "https" as const, hostname, pathname: "/**" })),
   },
   experimental: {
     serverActions: {

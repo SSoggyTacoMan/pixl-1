@@ -15,9 +15,11 @@ export interface ItemCardInput {
   // Raw bytes of the item's image_url response, or null if it couldn't be
   // fetched/decoded - the card still renders fine without it.
   imageBytes: Uint8Array | null;
+  /** Footer line, e.g. "PIXL.HACKCLUB.COM/SHOP". */
+  footer?: string;
 }
 
-export function renderItemCard({ name, price, imageBytes }: ItemCardInput): Uint8Array {
+export function renderItemCard({ name, price, imageBytes, footer = "PIXL.RSVP/SHOP" }: ItemCardInput): Uint8Array {
   const canvas = new Canvas(W, H, BG);
 
   const pad = 48;
@@ -76,7 +78,7 @@ export function renderItemCard({ name, price, imageBytes }: ItemCardInput): Uint
   // narrower than a full-width card, and short item names left it colliding
   // with the "PIXL.RSVP/SHOP" text.
   canvas.fill(left, footY, maxWidth, 2, STROKE);
-  drawText(canvas, "PIXL.RSVP/SHOP", left, footY + 26, 3, DIM, 2);
+  drawText(canvas, footer.toUpperCase(), left, footY + 26, 3, DIM, 2);
 
   return canvas.encode();
 }

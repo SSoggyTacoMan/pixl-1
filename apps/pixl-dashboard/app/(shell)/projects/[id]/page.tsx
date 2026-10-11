@@ -9,7 +9,9 @@ import {
   loadStats,
   loadTimeline,
   loadTrials,
+  loadWalletRe,
 } from "../data";
+import { projectEstimate, usdPerHourFor } from "../../calc/estimates";
 import { projectCutoffMs, statsPath } from "../format";
 import { isInReview } from "../types";
 import { Collaborators } from "../_components/collaborators";
@@ -57,7 +59,15 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
     );
   }
 
-  const timeline = await loadTimeline(id);
+  const [timeline, re] = await Promise.all([loadTimeline(id), loadWalletRe()]);
+  const htSeconds = linkedSeconds(project, stats);
+  // Computed here, server side: the client only ever sees the resulting numbers.
+  const estimate = projectEstimate({
+    htSeconds,
+    journalSeconds: project.journal_seconds,
+    approvedHours: project.approved_hours,
+    re: re ?? 0,
+  });
   return (
     <ProjectEditor
       project={project}
@@ -66,7 +76,9 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
       cutoffMs={cutoffMs}
       blackout={blackout}
       hasBirthday={hasBirthday}
-      htSeconds={linkedSeconds(project, stats)}
+      htSeconds={htSeconds}
+      estimate={estimate}
+      usdPerHour={usdPerHourFor(re ?? 0)}
       collaborators={
         collabs ? (
           <Collaborators projectId={id} collaborators={collabs.collaborators} isOwner={collabs.isOwner} joinCode={project.join_code} />

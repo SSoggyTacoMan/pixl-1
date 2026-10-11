@@ -7,13 +7,14 @@ import { SafeImage } from "@/components/safe-image";
 import { Notice } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
 import { claimTrophy } from "../actions";
+import { shopError } from "../shop-errors";
 import type { ShopItem } from "../shop-lib";
 import { AffordBar } from "./detail-bits";
 import { optionGroups } from "./item-lib";
 
 /** Level-gated trophy: earned, not bought. */
 export function TrophyDetail({ item, xp, claimed }: { item: ShopItem; xp: number; claimed: boolean }) {
-  const claim = useAction(claimTrophy);
+  const claim = useAction(claimTrophy, shopError);
   const [justClaimed, setJustClaimed] = useState(false);
   const need = Number(item.unlock_xp);
   const state = claimed || justClaimed ? "claimed" : xp >= need ? "claimable" : "locked";

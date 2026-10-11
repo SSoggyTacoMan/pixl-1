@@ -23,6 +23,7 @@ export function ProjectForm({
   onSave,
   saveLabel,
   returnTo,
+  usdPerHour,
 }: {
   form: FormState;
   set: SetForm;
@@ -35,6 +36,8 @@ export function ProjectForm({
   onSave: () => void;
   saveLabel: string;
   returnTo: string;
+  /** Player's current $/hr, computed server side, for the funding note. */
+  usdPerHour?: number;
 }) {
   const linkedId = form.sidequestId ? Number(form.sidequestId) : null;
   const isLinked = (t: Trial) => linkedId != null && Number(t.id) === linkedId;
@@ -111,7 +114,7 @@ export function ProjectForm({
           <span className="hint">Hardware hours come from your journal (and Hackatime if you code firmware).</span>
         ) : null}
       </Row>
-      <HardwareFields form={form} set={set} projectId={projectId} locked={locked} />
+      <HardwareFields form={form} set={set} projectId={projectId} locked={locked} usdPerHour={usdPerHour} />
       <Row label="TRIAL (build for a Trial, or your own idea)">
         <select
           className="field"

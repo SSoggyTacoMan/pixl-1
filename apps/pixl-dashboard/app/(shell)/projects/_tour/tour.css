@@ -1,0 +1,23 @@
+/* Guided tour overlay (ported from pixl.js injectTourCSS). */
+.pt-veil { position: fixed; inset: 0; z-index: 200; background: rgb(10 10 14 / .5); }
+.pt-hole {
+  position: fixed; z-index: 200; pointer-events: none;
+  border: var(--bw) solid var(--gold);
+  box-shadow: 0 0 0 9999px rgb(10 10 14 / .5);
+  transition: top .25s ease, left .25s ease, width .25s ease, height .25s ease;
+}
+.pt-card {
+  position: fixed; z-index: 201; width: min(340px, calc(100vw - 32px));
+  padding: 18px; background: var(--panel); color: var(--ink);
+  border: var(--bw) solid var(--stroke);
+}
+.pt-card.center { top: 50%; left: 50%; transform: translate(-50%, -50%); }
+.pt-title { font-family: var(--pixel); font-size: 18px; letter-spacing: .5px; color: var(--gold); margin-bottom: 8px; }
+.pt-body { font-size: 14px; line-height: 1.55; color: var(--dim); }
+.pt-body b { color: var(--ink); }
+.pt-foot { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+.pt-dots { display: flex; gap: 5px; margin-right: auto; }
+.pt-dot { width: 7px; height: 7px; background: var(--muted); }
+.pt-dot.on { background: var(--gold); }
+.pt-skip { background: none; border: 0; color: var(--faint); cursor: pointer; font-size: 12px; padding: 6px; }
+.pt-extra { display: block; width: 100%; margin-top: 12px; }

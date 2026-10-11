@@ -8,11 +8,14 @@ import { SafeImage } from "@/components/safe-image";
 import { Notice } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
 import { buyItem, saveItem, unsaveItem } from "../actions";
+import { shopError } from "../shop-errors";
 import { isTrophy, metaBits, type ConfigPicks, type ShopItem } from "../shop-lib";
 import { AffordBar, DetailPrice, LimitedChips } from "./detail-bits";
 import { Checkout, firstStep, type CheckoutEligibility, type CheckoutStep } from "./checkout";
 import { configImage, configTotal, optionSummary, resolvePicks, stockChoice, stockOk } from "./item-lib";
 import { Configurator, PlainOptions } from "./option-pickers";
+import type { EarnRates } from "../../calc/estimates";
+import { hoursHint } from "../hours-hint";
 import { priceState } from "./price-state";
 import { TrophyDetail } from "./trophy-detail";
 
@@ -27,6 +30,7 @@ export function ItemDetail({
   pixels,
   eligibility,
   verifyReturn,
+  rates,
 }: {
   item: ShopItem;
   xp: number;
@@ -34,6 +38,8 @@ export function ItemDetail({
   pixels: number | null;
   eligibility: CheckoutEligibility;
   verifyReturn: "ok" | "failed" | null;
+  /** Per-hour earn rates computed server side (calc/estimates.ts). */
+  rates: EarnRates | null;
 }) {
   const router = useRouter();
   const [rawPicks, setPicks] = useState<Record<number, string>>({});
@@ -46,7 +52,7 @@ export function ItemDetail({
   const [notice, setNotice] = useState<string | null>(
     verifyReturn === "ok" ? "Address verified." : verifyReturn === "failed" ? "Couldn't get an address from Hack Club Auth." : null,
   );
-  const buy = useAction(buyItem);
+  const buy = useAction(buyItem, shopError);
   const save = useAction(saveItem);
   const unsave = useAction(unsaveItem);
 
@@ -123,7 +129,7 @@ export function ItemDetail({
         <div className="detail-info">
           <h1 className="detail-name">{item.name}</h1>
           <LimitedChips item={item} isConfig={!!(isConfig && browsable)} />
-          <DetailPrice ps={ps} />
+          <DetailPrice ps={ps} hint={item.locked ? "" : hoursHint(total, rates)} />
           <div className="detail-desc">{bbstrip(item.description || "")}</div>
           {metaBits(item).length ? <div className="item-meta">{metaBits(item).join(" · ")}</div> : null}
 

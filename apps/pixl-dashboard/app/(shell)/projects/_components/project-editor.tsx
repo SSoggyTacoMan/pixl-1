@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import { Notice } from "@/components/ui/primitives";
+import type { ProjectEstimate } from "../../calc/estimates";
 import { isInReview, type BlackoutState, type HtStats, type Project, type Trial } from "../types";
 import { ProjectForm } from "./project-form";
 import { ProjectHeader } from "./project-header";
+import { SaveStatusChip } from "./save-status";
 import { ShipPanel } from "./ship-panel";
 import { TrialBrief, TrialReward } from "./trial-bits";
 import { useProjectForm } from "./use-project-form";
@@ -19,6 +21,8 @@ export function ProjectEditor({
   blackout,
   hasBirthday,
   htSeconds,
+  estimate,
+  usdPerHour,
   collaborators,
   timeline,
   journal,
@@ -31,13 +35,15 @@ export function ProjectEditor({
   blackout: BlackoutState;
   hasBirthday: boolean;
   htSeconds: number;
+  estimate: ProjectEstimate | null;
+  usdPerHour: number;
   collaborators: ReactNode;
   timeline: ReactNode;
   journal: ReactNode;
   dangerZone: ReactNode;
 }) {
   const inReview = isInReview(project);
-  const { form, set, save, saving, flash } = useProjectForm(project, null, inReview);
+  const { form, set, save, saving, flash, status, pauseAutosave } = useProjectForm(project, null, inReview);
   const [showDetails, setShowDetails] = useState(false);
   const trial = trials.find((t) => Number(t.id) === Number(project.sidequest_id) && t.unlocked && !t.completed);
 
@@ -50,6 +56,7 @@ export function ProjectEditor({
         project={project}
         imageUrl={form.imageUrl}
         htSeconds={htSeconds}
+        estimate={estimate}
         journalSeconds={Number(project.journal_seconds) || 0}
         blackoutEntry={blackout.entries[project.id]}
       />
@@ -58,6 +65,7 @@ export function ProjectEditor({
 
       <div className="section-h flex items-center gap-3">
         PROJECT DETAILS
+        <SaveStatusChip status={status} />
         <button type="button" className="btn ghost ml-auto" onClick={() => setShowDetails((v) => !v)}>
           {showDetails ? "HIDE DETAILS" : "EDIT DETAILS"}
         </button>
@@ -79,6 +87,7 @@ export function ProjectEditor({
           saving={saving}
           onSave={() => void save()}
           saveLabel="SAVE"
+          usdPerHour={usdPerHour}
           returnTo={`/projects/${project.id}`}
         />
       ) : null}
@@ -96,6 +105,7 @@ export function ProjectEditor({
         inReview={inReview}
         hasBirthday={hasBirthday}
         save={save}
+        pauseAutosave={pauseAutosave}
       />
 
       <div className="section-h">TIMELINE</div>

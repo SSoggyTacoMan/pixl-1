@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { countdown, type ShopItem } from "../shop-lib";
 import type { PriceState } from "./price-state";
 
-export function DetailPrice({ ps }: { ps: PriceState }) {
+export function DetailPrice({ ps, hint }: { ps: PriceState; hint?: string }) {
   return (
     <div className={`price detail-price${ps.cant ? " cant" : ""}`}>
       {ps.discountPct ? <span className="discount-tag">-{ps.discountPct}% OFF</span> : null}
@@ -15,6 +15,7 @@ export function DetailPrice({ ps }: { ps: PriceState }) {
           <img src="/img/pixel.png" alt="" />
           {ps.amount.toLocaleString()} PIXELS
           {ps.was !== undefined ? <span className="price-was">{ps.was.toLocaleString()} PIXELS</span> : null}
+          {hint && !ps.lockedIcon ? <span className="price-hours">{hint}</span> : null}
           {ps.breakdown ? <span className="price-hours">{ps.breakdown}</span> : null}
         </>
       ) : (

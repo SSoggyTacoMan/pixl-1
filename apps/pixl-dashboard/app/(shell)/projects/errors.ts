@@ -1,4 +1,5 @@
 // Project-specific error copy (ported from the old page's ERRORS map).
+import type { ActionDetails } from "@/lib/guarded-action-core";
 import { humanizeError } from "@/lib/errors";
 
 const ERRORS: Record<string, string> = {
@@ -55,4 +56,55 @@ const ERRORS: Record<string, string> = {
 
 export function projectError(code: string | null | undefined): string {
   return (code && ERRORS[code]) || humanizeError(code);
+}
+
+/**
+ * Like projectError, but uses the whitelisted server details (journal
+ * need/have/hours) for the old page's specific copy. `contentLength` is the
+ * journal body the player just submitted (known client-side).
+ */
+export function projectErrorWith(
+  code: string | null | undefined,
+  details?: ActionDetails,
+  ctx: { contentLength?: number } = {},
+): string {
+  const d = details ?? {};
+  if (code === "journal_too_short" && d.need != null && d.hours != null) {
+    const have = ctx.contentLength != null ? ` (you have ${ctx.contentLength})` : "";
+    return `Logging ${d.hours}h needs at least ${d.need} characters${have}.`;
+  }
+  if (code === "journal_images_required" && d.need != null) {
+    const have = d.have != null ? ` (you have ${d.have})` : "";
+    return `This entry needs ${d.need} image${d.need === 1 ? "" : "s"}${have}.`;
+  }
+  return projectError(code);
+}
+
+/** "Not quite there yet" dialog body for a Trial below its hours minimum. */
+export function trialHoursCopy(details?: ActionDetails): string {
+  const tail = "You can still ship it, you'll get pixels for the hours you put in, but not this Trial's prize.";
+  if (details?.need != null && details.have != null) {
+    return `This Trial needs at least ${details.need}h tracked, you're at ${details.have}h. ${tail}`;
+  }
+  return `This Trial needs more tracked hours than you have. ${tail}`;
+}
+
+const HCA_RECHECK_COPY: Record<string, { title: string; body: string }> = {
+  pending: {
+    title: "Still under review",
+    body: "Hack Club Auth has your verification as pending, so Pixl can't confirm it yet. Re-check once it's approved there.",
+  },
+  needs_submission: {
+    title: "Finish verifying",
+    body: "Hack Club Auth still needs you to finish identity verification. Do that at auth.hackclub.com, then re-check.",
+  },
+  unknown: {
+    title: "Verify with Hack Club Auth",
+    body: "Pixl doesn't have a verified status for your Hack Club account yet. Already verified? Re-check to pull your latest status from Hack Club Auth.",
+  },
+};
+
+/** Identity-check dialog copy keyed by the server's hca_status. */
+export function hcaRecheckCopy(status: string | undefined): { title: string; body: string } {
+  return status && Object.hasOwn(HCA_RECHECK_COPY, status) ? HCA_RECHECK_COPY[status] : HCA_RECHECK_COPY.unknown;
 }

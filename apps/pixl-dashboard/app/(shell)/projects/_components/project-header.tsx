@@ -3,12 +3,14 @@ import { Badge, Notice } from "@/components/ui/primitives";
 import { hours, shortDate } from "../format";
 import { statusInfo, type BlackoutEntry, type Project } from "../types";
 import { BlackoutChip } from "./blackout-chip";
+import type { ProjectEstimate } from "../../calc/estimates";
 import { CopyLinkButton } from "./copy-link";
 
 /**
  * Title, status chips, hero image and reviewer notes. Every number shown is
- * a server value (or a plain sum of two server values); payout estimates the
- * old page computed client-side are intentionally not shown.
+ * a server value (or a plain sum of two server values); the payout estimate
+ * chips are computed by the Server Component (calc/estimates.ts) and arrive
+ * as plain numbers.
  */
 export function ProjectHeader({
   project,
@@ -17,6 +19,7 @@ export function ProjectHeader({
   journalSeconds,
   blackoutEntry,
   collaborator,
+  estimate,
 }: {
   project: Project;
   imageUrl: string;
@@ -24,6 +27,7 @@ export function ProjectHeader({
   journalSeconds: number;
   blackoutEntry?: BlackoutEntry;
   collaborator?: boolean;
+  estimate?: ProjectEstimate | null;
 }) {
   const [label, cls] = statusInfo(project);
   return (
@@ -35,6 +39,7 @@ export function ProjectHeader({
         <span className="chip teal" title={`Hackatime: ${hours(htSeconds)} · Journal: ${hours(journalSeconds)}`}>
           {hours(htSeconds + journalSeconds)} TRACKED
         </span>
+        {estimate ? <EstimateChips estimate={estimate} /> : null}
         {project.pixels_earned ? <Badge tone="gold">+{Math.round(project.pixels_earned)} PX EARNED</Badge> : null}
         {project.is_peak ? (
           <Badge tone="gold" title="Nominated as a standout project by a reviewer">
@@ -65,6 +70,23 @@ export function ProjectHeader({
           Your hours cutoff was extended: we&apos;re counting your coding time from {shortDate(project.hours_extended_since)} onward.
         </Notice>
       ) : null}
+    </>
+  );
+}
+
+function EstimateChips({ estimate }: { estimate: ProjectEstimate }) {
+  const tracked = hours(estimate.trackedSeconds);
+  const hoursNote =
+    estimate.approvedHours > 0 ? `${tracked} tracked − ${estimate.approvedHours}h already paid out` : `${tracked} tracked`;
+  const pxNote = `At your current rate ($${estimate.usdPerHour.toFixed(2)}/hr). Rough estimate, actual review may differ.`;
+  return (
+    <>
+      <span className="chip teal" title={hoursNote} aria-label={`${hours(estimate.netHours * 3600)} new hours: ${hoursNote}`}>
+        {hours(estimate.netHours * 3600)} NEW
+      </span>
+      <span className="chip gold" title={pxNote} aria-label={`About ${estimate.px} pixels estimated. ${pxNote}`}>
+        ≈{estimate.px} PX EST.
+      </span>
     </>
   );
 }

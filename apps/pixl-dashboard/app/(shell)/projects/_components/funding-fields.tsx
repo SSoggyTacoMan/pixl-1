@@ -4,6 +4,7 @@ import { SafeImage } from "@/components/safe-image";
 import type { FormState, SetForm } from "./editor-state";
 import { FileButton } from "./file-button";
 import { Disclosure, OpenLink, Row } from "./form-bits";
+import { fundingHoursText } from "./funding-hours";
 
 /** Hardware-only: funding request (BOM, cart screenshots, amount) and "finished build". */
 export function HardwareFields({
@@ -11,11 +12,13 @@ export function HardwareFields({
   set,
   projectId,
   locked,
+  usdPerHour,
 }: {
   form: FormState;
   set: SetForm;
   projectId?: number;
   locked?: boolean;
+  usdPerHour?: number;
 }) {
   if (form.kind !== "hardware") return null;
   return (
@@ -80,6 +83,11 @@ export function HardwareFields({
             placeholder="0.00"
             onChange={(e) => set({ fundingUsd: e.target.value })}
           />
+          {fundingHoursText(Number(form.fundingUsd) || 0, usdPerHour) ? (
+            <span className="hint" aria-live="polite">
+              {fundingHoursText(Number(form.fundingUsd) || 0, usdPerHour)}
+            </span>
+          ) : null}
         </Row>
       </Disclosure>
       {form.projectType !== "cad" ? (

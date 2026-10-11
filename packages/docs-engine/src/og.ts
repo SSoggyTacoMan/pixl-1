@@ -4,19 +4,17 @@
 // third hand-copied palette. The heavy stroke and the accent bar carry the same
 // neo-brutalist look the page does.
 //
-// Reads the palette with node:fs rather than Bun.file: this module also runs
-// inside Vercel's Node.js serverless function runtime (the shop item preview
-// cards), which has no Bun global.
-import { readFileSync } from "node:fs";
+// The palette is a static JSON import (not a runtime file read) so the same
+// module works under Bun (build scripts) and inside Pixl Dashboard's bundled
+// Next.js server, which renders the shop/player link-preview cards on demand
+// and has no stable path back to packages/theme at runtime.
+import paletteJson from "../../theme/palette.json" with { type: "json" };
 import { Canvas, hex, type Rgb } from "./png.ts";
 import { drawText, textWidth, wrap, GLYPH_H } from "./font.ts";
 
 const W = 1200;
 const H = 630;
 
-const paletteJson = JSON.parse(
-  readFileSync(new URL("../../theme/palette.json", import.meta.url), "utf8"),
-);
 const LEDGER = paletteJson.web.light;
 
 export const BG = hex(LEDGER["panel-deep"]);
@@ -26,6 +24,7 @@ export const STROKE = hex(LEDGER.stroke);
 export const GOLD = hex(LEDGER.accent);
 export const INK = hex(LEDGER.ink);
 export const DIM = hex(LEDGER.dim);
+export const TEAL = hex(LEDGER.teal);
 
 export interface CardInput {
   title: string;

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { serverApi } from "@/lib/server-api";
 import { normalizeItems, type ShopItemsResponse } from "../shop-lib";
+import { earnRates } from "../../calc/estimates";
 import { ItemDetail, type CheckoutEligibility } from "./item-detail";
 import "../shop.css";
 
@@ -62,6 +63,7 @@ export default async function ShopItemPage({
           claimed={(data?.claimed ?? []).map(Number).includes(item.id)}
           pixels={wallet ? Number(wallet.pixels) : null}
           eligibility={toCheckout(elig)}
+          rates={earnRates()}
           verifyReturn={sp.addr_verified_return ? (sp.addr_verified === "1" ? "ok" : "failed") : null}
         />
       ) : (

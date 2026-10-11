@@ -8,7 +8,17 @@ import { ProjectForm } from "./project-form";
 import { TrialBrief } from "./trial-bits";
 import { useProjectForm } from "./use-project-form";
 
-export function NewProject({ trials, stats, trial }: { trials: Trial[]; stats: HtStats | null; trial: Trial | null }) {
+export function NewProject({
+  trials,
+  stats,
+  trial,
+  usdPerHour,
+}: {
+  trials: Trial[];
+  stats: HtStats | null;
+  trial: Trial | null;
+  usdPerHour: number;
+}) {
   const { form, set, save, saving, flash } = useProjectForm(null, trial?.id ?? null);
   return (
     <div>
@@ -35,6 +45,7 @@ export function NewProject({ trials, stats, trial }: { trials: Trial[]; stats: H
         saving={saving}
         onSave={() => void save()}
         saveLabel="CREATE PROJECT"
+        usdPerHour={usdPerHour}
         returnTo="/projects/new"
       />
     </div>

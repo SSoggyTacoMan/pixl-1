@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { bbstrip } from "@/components/markdown";
 import { SafeImage } from "@/components/safe-image";
+import type { EarnRates } from "../calc/estimates";
+import { hoursHint } from "./hours-hint";
 import { PriceTag } from "./price-tag";
 import { basePrice, isDiscounted, isPending, lockReason, metaBits, originalBasePrice, type ShopItem } from "./shop-lib";
 
-function Foot({ item, canAfford }: { item: ShopItem; canAfford: boolean }) {
+function Foot({ item, canAfford, hint }: { item: ShopItem; canAfford: boolean; hint: string }) {
   if (item.locked && item.unlockPending) {
     return (
       <div className="price-wrap">
@@ -41,6 +43,7 @@ function Foot({ item, canAfford }: { item: ShopItem; canAfford: boolean }) {
           cant={!canAfford}
           was={isDiscounted(item) ? originalBasePrice(item) : undefined}
         />
+        {hint ? <span className="price-hours">{hint}</span> : null}
         {item.beacon_locked ? (
           <span className="price-hours beacon-note">Uses a Beacon unlock ({item.beaconAvailable ?? 0} available)</span>
         ) : null}
@@ -53,10 +56,13 @@ function Foot({ item, canAfford }: { item: ShopItem; canAfford: boolean }) {
 export function ItemCard({
   item,
   canAfford,
+  rates,
   onToggleSave,
 }: {
   item: ShopItem;
   canAfford: boolean;
+  /** Per-hour earn rates computed server side (calc/estimates.ts). */
+  rates: EarnRates | null;
   onToggleSave: () => void;
 }) {
   const meta = metaBits(item);
@@ -83,7 +89,7 @@ export function ItemCard({
       <div className="item-desc">{bbstrip(item.description || "")}</div>
       {meta.length ? <div className="item-meta">{meta.join(" · ")}</div> : null}
       <div className="item-foot">
-        <Foot item={item} canAfford={canAfford} />
+        <Foot item={item} canAfford={canAfford} hint={hoursHint(basePrice(item), rates)} />
       </div>
     </div>
   );

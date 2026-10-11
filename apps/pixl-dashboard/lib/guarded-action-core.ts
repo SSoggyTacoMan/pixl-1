@@ -9,12 +9,19 @@
 //      fetch function, it returns a request description and this wrapper
 //      performs it, so a handler can't fan out to other endpoints
 //   4. a structured log line is written for every attempt
-//   5. the result is a typed { ok:true, data } | { ok:false, error }
+//   5. the result is a typed { ok:true, data } | { ok:false, error, details? }
 import type { z } from "zod";
 import type { SessionPayload } from "./session";
+import { pickDetails, type ActionDetails } from "./action-details";
 import { serverFetch, type HttpMethod, type ServerBody, type ServerResult } from "./server-api-core";
 
-export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string };
+export type { ActionDetails } from "./action-details";
+
+/**
+ * `details` carries only whitelisted primitive fields from the server's
+ * error body (see lib/action-details.ts), never the raw body.
+ */
+export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string; details?: ActionDetails };
 
 export interface ServerCall {
   method: HttpMethod;
@@ -100,7 +107,9 @@ export function createGuardedAction(deps: GuardDeps) {
       if (!res.ok) {
         const result = res.status === 401 || res.status === 403 ? "denied" : "error";
         deps.log({ ...base, ...who, target, result, status: res.status, error: res.error });
-        return { ok: false, error: res.status === 401 ? "unauthorized" : res.error };
+        if (res.status === 401) return { ok: false, error: "unauthorized" };
+        const details = pickDetails(res.data);
+        return details ? { ok: false, error: res.error, details } : { ok: false, error: res.error };
       }
 
       deps.log({ ...base, ...who, target, result: "ok", status: res.status, error: null });

@@ -3,10 +3,16 @@
 // Client-side wrapper around a guarded Server Action: pending flag, last
 // error (humanized), and a run() that resolves to the typed result.
 import { useCallback, useState, useTransition } from "react";
-import type { ActionResult } from "@/lib/guarded-action-core";
+import type { ActionDetails, ActionResult } from "@/lib/guarded-action-core";
 import { humanizeError } from "@/lib/errors";
 
-export function useAction<I, R>(action: (input: I) => Promise<ActionResult<R>>) {
+/** Turns an error code (+ optional whitelisted server details) into copy. */
+export type ErrorFormatter = (code: string, details?: ActionDetails) => string;
+
+export function useAction<I, R>(
+  action: (input: I) => Promise<ActionResult<R>>,
+  format: ErrorFormatter = humanizeError,
+) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
@@ -21,11 +27,11 @@ export function useAction<I, R>(action: (input: I) => Promise<ActionResult<R>>) 
           } catch {
             res = { ok: false, error: "network" };
           }
-          if (!res.ok) setError(humanizeError(res.error));
+          if (!res.ok) setError(format(res.error, res.details));
           resolve(res);
         });
       }),
-    [action],
+    [action, format],
   );
 
   return { run, pending, error, setError };

@@ -75,6 +75,13 @@ export async function loadCollaborators(id: number): Promise<{ collaborators: Co
   return d ? { collaborators: d.collaborators ?? [], isOwner: !!d.isOwner } : null;
 }
 
+/** Lifetime RE from the wallet (drives the payout rate); null if unavailable. */
+export async function loadWalletRe(): Promise<number | null> {
+  const d = await serverApi<{ re?: unknown }>("/api/profile/wallet");
+  const re = Number(d?.re);
+  return d && Number.isFinite(re) ? re : null;
+}
+
 export async function loadHasBirthday(): Promise<boolean> {
   const d = await serverApi<{ ok?: boolean; birthday?: unknown }>("/api/profile/eligibility");
   // Unknown counts as yes, so a failed fetch doesn't nag.

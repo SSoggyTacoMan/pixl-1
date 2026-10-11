@@ -8,7 +8,8 @@ import { Notice } from "@/components/ui/primitives";
 import { goTo } from "@/components/use-action";
 import { startAuthFlow } from "@/lib/actions/flows";
 import { shipProject, unshipProject } from "../actions";
-import { projectError } from "../errors";
+import { hcaRecheckCopy, projectError, trialHoursCopy } from "../errors";
+import type { ActionDetails } from "@/lib/guarded-action-core";
 import type { BlackoutState, HtStats, Project } from "../types";
 import { BlackoutPanel } from "./blackout-panel";
 import type { FormState } from "./editor-state";
@@ -26,6 +27,7 @@ export function ShipPanel({
   inReview,
   hasBirthday,
   save,
+  pauseAutosave,
 }: {
   project: Project;
   form: FormState;
@@ -35,11 +37,14 @@ export function ShipPanel({
   inReview: boolean;
   hasBirthday: boolean;
   save: () => Promise<number | null>;
+  /** Keeps the editor's autosave from firing while a ship/unship runs. */
+  pauseAutosave: <T>(fn: () => Promise<T>) => Promise<T>;
 }) {
   const router = useRouter();
   const [eligible, setEligible] = useState(!!project.eligibility_attested || inReview);
   const [note, setNote] = useState(project.ship_note ?? "");
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [details, setDetails] = useState<ActionDetails | undefined>(undefined);
   const [pending, setPending] = useState(false);
   const [msg, setMsg] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
 
@@ -52,7 +57,11 @@ export function ShipPanel({
     setDialog("confirm");
   }
 
-  async function ship(acceptNoTrialPrize = false) {
+  function ship(acceptNoTrialPrize = false) {
+    return pauseAutosave(() => doShip(acceptNoTrialPrize));
+  }
+
+  async function doShip(acceptNoTrialPrize: boolean) {
     setPending(true);
     setMsg({ tone: "good", text: "Saving, then checking your repo and demo..." });
     // Shipping uses what's saved, so persist the form (ticked Hackatime boxes included) first.
@@ -79,6 +88,7 @@ export function ShipPanel({
       return router.refresh();
     }
     setMsg(null);
+    setDetails(r.details);
     if (r.error === "trial_hours_below_minimum") return setDialog("trial_hours");
     if (r.error === "address_required") return setDialog("address");
     if (r.error === "hca_verification_required") return setDialog("hca");
@@ -93,7 +103,11 @@ export function ShipPanel({
     if (!r.ok || !goTo(r.data.url)) setMsg({ tone: "bad", text: projectError(r.ok ? "flow_failed" : r.error) });
   }
 
-  async function unship() {
+  function unship() {
+    return pauseAutosave(doUnship);
+  }
+
+  async function doUnship() {
     setPending(true);
     const r = await unshipProject({ id: project.id });
     setPending(false);
@@ -174,7 +188,7 @@ export function ShipPanel({
         open={dialog === "trial_hours"}
         onOpenChange={(o) => !o && setDialog(null)}
         title="Not quite there yet"
-        description="This Trial needs more tracked hours than you have. You can still ship it, you'll get pixels for the hours you put in, but not this Trial's prize."
+        description={trialHoursCopy(details)}
         confirmLabel="Ship anyway, no prize"
         pending={pending}
         onConfirm={() => ship(true)}
@@ -191,8 +205,8 @@ export function ShipPanel({
       <ConfirmDialog
         open={dialog === "hca"}
         onOpenChange={(o) => !o && setDialog(null)}
-        title="Identity check needed"
-        description="Hack Club Auth hasn't verified your identity yet. Once it has, re-check your status here and ship again."
+        title={hcaRecheckCopy(details?.hcaStatus).title}
+        description={hcaRecheckCopy(details?.hcaStatus).body}
         confirmLabel="Re-check status"
         pending={pending}
         onConfirm={() => flow("resync")}

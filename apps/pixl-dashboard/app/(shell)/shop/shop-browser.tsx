@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { Notice } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
 import { saveItem, unsaveItem } from "./actions";
+import type { EarnRates } from "../calc/estimates";
 import { ItemCard } from "./item-card";
 import { RegionSelect } from "./region-select";
 import { CATEGORIES, basePrice, isTrophy, trophyState, type ShopItem } from "./shop-lib";
@@ -27,12 +28,14 @@ export function ShopBrowser({
   claimed,
   region,
   pixels,
+  rates,
 }: {
   items: ShopItem[];
   xp: number;
   claimed: number[];
   region: string;
   pixels: number | null;
+  rates: EarnRates | null;
 }) {
   const [items, setItems] = useState(initialItems);
   const [q, setQ] = useState("");
@@ -143,7 +146,7 @@ export function ShopBrowser({
       {list.length > 0 ? (
         <div className="grid">
           {list.map((i) => (
-            <ItemCard key={i.id} item={i} canAfford={canAfford(i)} onToggleSave={() => toggleSave(i)} />
+            <ItemCard key={i.id} item={i} canAfford={canAfford(i)} rates={rates} onToggleSave={() => toggleSave(i)} />
           ))}
         </div>
       ) : null}

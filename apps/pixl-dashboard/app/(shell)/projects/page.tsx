@@ -8,6 +8,7 @@ import { ImportBox, type MacondoProject, type YswsShip } from "./_components/imp
 import { JoinCodeBox, PendingInvites, type PendingInvite } from "./_components/list-boxes";
 import { Legend, ProjectList } from "./_components/project-list";
 import { loadBlackout, loadProjects, loadStats } from "./data";
+import { TourReplayButton } from "./_tour/tour-provider";
 import "./projects.css";
 
 export const metadata = { title: "Projects" };
@@ -29,7 +30,8 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
     <>
       <PageHeader title="PROJECTS" sub="BUILD · JOURNAL · SHIP · GET PAID IN PIXELS.">
         <Legend projects={projects} />
-        <Link className="btn" href="/projects/new">
+        <TourReplayButton />
+        <Link id="new-btn" className="btn" href="/projects/new">
           + NEW PROJECT
         </Link>
       </PageHeader>

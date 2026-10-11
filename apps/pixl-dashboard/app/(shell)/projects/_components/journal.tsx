@@ -6,7 +6,7 @@ import { Markdown } from "@/components/markdown";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { Notice } from "@/components/ui/primitives";
 import { deleteJournal, editJournal, postJournal } from "../collab-actions";
-import { projectError } from "../errors";
+import { projectError, projectErrorWith } from "../errors";
 import { timeAgo } from "../format";
 import type { JournalEntry } from "../types";
 import { JournalForm, type JournalDraft } from "./journal-form";
@@ -49,7 +49,7 @@ export function Journal({ projectId, entries, locked }: { projectId: number; ent
     const r = await postJournal({ projectId, entry: d });
     setPending(false);
     if (!r.ok) {
-      setMsg({ tone: "bad", text: projectError(r.error) });
+      setMsg({ tone: "bad", text: projectErrorWith(r.error, r.details, { contentLength: d.content.length }) });
       return false;
     }
     try {
@@ -67,7 +67,7 @@ export function Journal({ projectId, entries, locked }: { projectId: number; ent
     const r = await editJournal({ projectId, entryId: id, entry: d });
     setPending(false);
     if (!r.ok) {
-      setMsg({ tone: "bad", text: projectError(r.error) });
+      setMsg({ tone: "bad", text: projectErrorWith(r.error, r.details, { contentLength: d.content.length }) });
       return false;
     }
     setEditing(null);
