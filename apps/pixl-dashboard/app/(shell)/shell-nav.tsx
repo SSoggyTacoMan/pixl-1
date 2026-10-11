@@ -43,7 +43,10 @@ export function ShellNav({
   communityRe: number;
 }) {
   const pathname = usePathname();
-  const activeSlug = pathname.split("/").filter(Boolean)[0] ?? "";
+  // Leaderboard lives under /explore but has its own nav entry.
+  const activeSlug = pathname.startsWith("/explore/leaderboard")
+    ? "leaderboard"
+    : (pathname.split("/").filter(Boolean)[0] ?? "");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [theme, setThemeState] = useState("light");
