@@ -323,15 +323,14 @@ func _mark_step_done() -> void:
 		return
 	await _api_post("/api/profile/onboarding", { "step": 1 })
 
-# Thin HTTPRequest wrappers (token appended like guide_hud.gd).
+# Thin HTTPRequest wrappers (Bearer auth via NetworkManager.auth_headers()).
 func _api_get(path: String) -> Dictionary:
 	if NetworkManager.session_token == "":
 		return {}
 	var req := HTTPRequest.new()
 	add_child(req)
 	var url := NetworkManager.SERVER_HTTP_URL + path
-	url += ("&" if path.contains("?") else "?") + "token=" + NetworkManager.session_token.uri_encode()
-	req.request(url, PackedStringArray(), HTTPClient.METHOD_GET)
+	req.request(url, NetworkManager.auth_headers(), HTTPClient.METHOD_GET)
 	var r: Array = await req.request_completed
 	req.queue_free()
 	if int(r[1]) != 200 or (r[3] as PackedByteArray).size() == 0:
@@ -344,8 +343,8 @@ func _api_post(path: String, payload: Dictionary) -> void:
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + path + "?token=" + NetworkManager.session_token.uri_encode()
-	req.request(url, PackedStringArray(["Content-Type: application/json"]),
+	var url := NetworkManager.SERVER_HTTP_URL + path
+	req.request(url, NetworkManager.auth_headers(["Content-Type: application/json"]),
 		HTTPClient.METHOD_POST, JSON.stringify(payload))
 	await req.request_completed
 	req.queue_free()

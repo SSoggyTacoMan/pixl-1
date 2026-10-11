@@ -239,7 +239,7 @@ func _muted(text: String) -> Label:
 func _api(method: int, path: String, cb: Callable) -> void:
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + path + "?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + path
 	req.request_completed.connect(func(_result, code, _headers, data):
 		var json = null
 		if data.size() > 0:
@@ -247,4 +247,4 @@ func _api(method: int, path: String, cb: Callable) -> void:
 		cb.call(code, json)
 		req.queue_free()
 	)
-	req.request(url, PackedStringArray(["Content-Type: application/json"]), method, "")
+	req.request(url, NetworkManager.auth_headers(["Content-Type: application/json"]), method, "")

@@ -447,11 +447,13 @@ func _on_lobby_denied(reason: String) -> void:
 func _api(method: int, path: String, params: Dictionary, cb: Callable) -> void:
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + path + "?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + path
 	var body := ""
 	if method == HTTPClient.METHOD_GET:
+		var sep := "?"
 		for k in params:
-			url += "&%s=%s" % [k, String(params[k]).uri_encode()]
+			url += "%s%s=%s" % [sep, k, String(params[k]).uri_encode()]
+			sep = "&"
 	else:
 		body = JSON.stringify(params)
 	req.request_completed.connect(func(_result, code, _headers, data):
@@ -461,4 +463,4 @@ func _api(method: int, path: String, params: Dictionary, cb: Callable) -> void:
 		cb.call(code, json)
 		req.queue_free()
 	)
-	req.request(url, PackedStringArray(["Content-Type: application/json"]), method, body)
+	req.request(url, NetworkManager.auth_headers(["Content-Type: application/json"]), method, body)

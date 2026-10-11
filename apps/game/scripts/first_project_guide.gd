@@ -37,10 +37,9 @@ const STEP_ACTIONS := [
 	"Ship it for review",
 ]
 # Where each step's action button goes. S_MEET is special-cased (it changes scene
-# to the lobby browser, not a web page) so its entry is unused. The Create step
-# hands off to the Builder Terminal with ?onboard=first-project, which kicks off
-# the dedicated project-creation walkthrough on the dash (see pixl.js maybeOnboard).
-const STEP_PAGES := ["", "projects?onboard=first-project", "docs/hackatime", "docs/first-site", "projects"]
+# to the lobby browser, not a web page) so its entry is unused. Pages open on
+# the Pixl Dashboard by plain path (no query string), see web_pages.gd.
+const STEP_PAGES := ["", "projects", "docs/hackatime", "docs/first-site", "projects"]
 const STEP_HINT := [
 	"Head through the Lobbies to the frontier and talk to Ridit, take his Trial, or just start your own project.",
 	"Name your project in the Builder Terminal, that tells the Core you're building.",
@@ -443,10 +442,9 @@ func _api_get(path: String) -> Dictionary:
 	var req := HTTPRequest.new()
 	add_child(req)
 	var url := NetworkManager.SERVER_HTTP_URL + path
-	url += ("&" if path.contains("?") else "?") + "token=" + NetworkManager.session_token.uri_encode()
 	# If request() itself fails, request_completed never fires - bail now so the
 	# caller's await can't hang forever (which would wedge _busy and stop polling).
-	if req.request(url, PackedStringArray(), HTTPClient.METHOD_GET) != OK:
+	if req.request(url, NetworkManager.auth_headers(), HTTPClient.METHOD_GET) != OK:
 		req.queue_free()
 		return {}
 	var r: Array = await req.request_completed

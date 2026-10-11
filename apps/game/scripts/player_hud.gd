@@ -417,7 +417,7 @@ func _open_tx_history() -> void:
 	_tx_box.add_child(loading)
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/profile/transactions?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/profile/transactions"
 	req.request_completed.connect(func(_result, code, _headers, data):
 		req.queue_free()
 		if not _tx_root.visible:
@@ -441,7 +441,7 @@ func _open_tx_history() -> void:
 		for t in txs:
 			_tx_box.add_child(_tx_row(t))
 	)
-	req.request(url, PackedStringArray(), HTTPClient.METHOD_GET)
+	req.request(url, NetworkManager.auth_headers(), HTTPClient.METHOD_GET)
 
 func _tx_reason(reason: String) -> String:
 	match reason:
@@ -545,7 +545,7 @@ func _fetch_wallet() -> void:
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/profile/wallet?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/profile/wallet"
 	req.request_completed.connect(func(_result, code, _headers, data):
 		req.queue_free()
 		if code != 200:
@@ -563,14 +563,14 @@ func _fetch_wallet() -> void:
 			float(json.get("re", 0)),
 		)
 	)
-	req.request(url, PackedStringArray(), HTTPClient.METHOD_GET)
+	req.request(url, NetworkManager.auth_headers(), HTTPClient.METHOD_GET)
 
 func _fetch_events() -> void:
 	if NetworkManager.session_token == "":
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/events/active?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/events/active"
 	req.request_completed.connect(func(_result, code, _headers, data):
 		req.queue_free()
 		if code != 200:
@@ -580,7 +580,7 @@ func _fetch_events() -> void:
 			return
 		_set_events(json.get("events", []))
 	)
-	req.request(url, PackedStringArray(), HTTPClient.METHOD_GET)
+	req.request(url, NetworkManager.auth_headers(), HTTPClient.METHOD_GET)
 
 func _set_events(events: Array) -> void:
 	if _event_label == null:
@@ -714,16 +714,6 @@ func _refresh_list() -> void:
 			you.add_theme_color_override("font_color", PixlTheme.color("gold"))
 			you.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			row.add_child(you)
-		var pid := String(entry[2])
-		if pid != "":
-			var view := Button.new()
-			view.theme_type_variation = &"StepButton"
-			view.text = "View"
-			_ssize(view, 14)
-			view.pressed.connect(func():
-				_list_root.visible = false
-				WebPages.open("explore#player=" + pid))
-			row.add_child(view)
 		_list_box.add_child(row)
 
 func _on_logged_in(display_name: String) -> void:

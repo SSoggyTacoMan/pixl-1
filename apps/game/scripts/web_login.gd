@@ -1,5 +1,10 @@
 extends RefCounted
 
+## Web login, code flow: the browser goes to the server's /auth/hackclub with a
+## `state` nonce we keep in localStorage, Hack Club Auth sends it back here as
+## `?code=...&state=...`, and the game trades the one-time code for a session
+## token with POST /auth/exchange. No session token is ever put in a URL.
+
 const _begin_js := """(function(){
 	try {
 		var ttl = 10 * 60 * 1000;
@@ -11,37 +16,51 @@ const _begin_js := """(function(){
 	} catch (e) { return ''; }
 })()"""
 
+# Where the server sends the browser back to: the play origin's root. Only
+# https origins are allowlisted server-side, so anything else is refused here.
+const _return_url_js := """(function(){
+	try {
+		if (location.protocol !== 'https:') return '';
+		return location.origin + '/';
+	} catch (e) { return ''; }
+})()"""
+
+# Reads code + state off the URL, always strips them (so a reload or a shared
+# link never replays them), and only hands the code back when state matches the
+# unexpired nonce this tab stored before leaving.
 const _take_js := """(function(){
-	var out = '';
-	var token = '', name = '', ln = '', isNew = false;
+	var code = '', state = '';
 	try {
 		var u = new URL(location.href);
 		var p = u.searchParams;
-		token = p.get('token') || '';
-		name = p.get('name') || '';
-		ln = p.get('ln') || '';
-		isNew = p.get('new') === '1';
+		code = p.get('code') || '';
+		state = p.get('state') || '';
 		var dirty = false;
-		['token', 'name', 'new', 'ln'].forEach(function(k){ if (p.has(k)) { p.delete(k); dirty = true; } });
-		if (dirty) history.replaceState({}, document.title, u.pathname + u.search + u.hash);
-	} catch (e) {}
-	try {
-		var stored = (localStorage.getItem('pixl_game_login_nonce') || '').split('.');
-		if (token && stored[0] && Number(stored[1]) > Date.now() && ln === stored[0]) {
-			localStorage.removeItem('pixl_game_login_nonce');
-			out = JSON.stringify({ token: token, name: name, isNew: isNew });
+		['code', 'state'].forEach(function(k){ if (p.has(k)) { p.delete(k); dirty = true; } });
+		if (dirty) {
+			var qs = p.toString();
+			history.replaceState({}, document.title, u.pathname + (qs ? '?' + qs : '') + u.hash);
 		}
 	} catch (e) {}
-	return out;
+	if (!code) return '';
+	try {
+		var stored = (localStorage.getItem('pixl_game_login_nonce') || '').split('.');
+		localStorage.removeItem('pixl_game_login_nonce');
+		if (state && stored[0] && Number(stored[1]) > Date.now() && state === stored[0]) return code;
+	} catch (e) {}
+	return '';
 })()"""
 
 static func begin() -> String:
 	var nonce = JavaScriptBridge.eval(_begin_js, true)
 	return String(nonce) if typeof(nonce) == TYPE_STRING else ""
 
-static func take() -> Dictionary:
-	var raw = JavaScriptBridge.eval(_take_js, true)
-	if typeof(raw) != TYPE_STRING or String(raw) == "":
-		return {}
-	var parsed = JSON.parse_string(String(raw))
-	return parsed if typeof(parsed) == TYPE_DICTIONARY else {}
+static func return_url() -> String:
+	var url = JavaScriptBridge.eval(_return_url_js, true)
+	return String(url) if typeof(url) == TYPE_STRING else ""
+
+## The verified one-time login code, or "" when this load isn't a login return
+## (or the state didn't match).
+static func take_code() -> String:
+	var code = JavaScriptBridge.eval(_take_js, true)
+	return String(code) if typeof(code) == TYPE_STRING else ""

@@ -92,9 +92,8 @@ func _fetch_npcs(world: String) -> Array:
 		return []
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/npcs?world=" + world.uri_encode() \
-		+ "&token=" + NetworkManager.session_token.uri_encode()
-	if req.request(url) != OK:
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/npcs?world=" + world.uri_encode()
+	if req.request(url, NetworkManager.auth_headers()) != OK:
 		req.queue_free()
 		return []
 	var res: Array = await req.request_completed

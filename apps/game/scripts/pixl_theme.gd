@@ -33,9 +33,9 @@ static func color(token: String) -> Color:
 static func current() -> String:
 	return Settings.theme_name
 
-## Boot-time entry point: picks up a theme choice already made on the web
-## shell (same localStorage key, read once at startup like pixl.js does),
-## falling back to whatever was last saved locally.
+## Boot-time entry point: on web, picks up the theme this browser last chose
+## in the game (its own `pixl_theme` localStorage key), falling back to
+## whatever was last saved locally.
 static func boot() -> void:
 	if OS.has_feature("web"):
 		var stored = JavaScriptBridge.eval("localStorage.getItem('pixl_theme')", true)
@@ -46,7 +46,7 @@ static func boot() -> void:
 static func set_theme(name: String) -> void:
 	Settings.set_theme_name(name)
 	if OS.has_feature("web"):
-		JavaScriptBridge.eval("localStorage.setItem('pixl_theme', '%s')" % name, true)
+		JavaScriptBridge.eval("localStorage.setItem('pixl_theme', %s)" % JSON.stringify(name), true)
 	apply()
 
 ## Repaints the one shared main_theme.tres resource in place - every scene

@@ -9,7 +9,7 @@
 [![Stars](https://img.shields.io/github/stars/Pixl-YSWS/Game?style=flat-square&color=yellow)](https://github.com/Pixl-YSWS/Game/stargazers)
 [![Forks](https://img.shields.io/github/forks/Pixl-YSWS/Game?style=flat-square)](https://github.com/Pixl-YSWS/Game/forks)
 
-[**▶ Play Now**](https://play.pixl.rsvp) · [RSVP](https://pixl.rsvp) · [Report a Bug](https://github.com/Pixl-YSWS/Game/issues) · [Request a Feature](https://github.com/Pixl-YSWS/Game/issues)
+[**▶ Play Now**](https://play.pixl.hackclub.com) · [Website](https://pixl.hackclub.com) · [Report a Bug](https://github.com/Pixl-YSWS/Game/issues) · [Request a Feature](https://github.com/Pixl-YSWS/Game/issues)
 
 </div>
 
@@ -80,19 +80,24 @@ Talk to the **Pip** NPC in your village to submit projects with a name, descript
 
 ## Authentication Flow
 
+The game is played on the web at `play.pixl.hackclub.com`; native builds can't log in.
+
 ```
-Client
-  └─▶ GET /auth/login
-        └─▶ Hack Club consent screen
-              └─▶ GET /auth/callback  (token exchange + /api/v1/me)
-                    └─▶ Redirect to client with #auth=<sessionToken>
-                          └─▶ Client stores token in localStorage
-                                └─▶ Sent in socket handshake → server/auth.ts validates
+Game (play.pixl.hackclub.com)
+  └─▶ GET {server}/auth/hackclub?redirect=<play origin>/&state=<local nonce>
+        └─▶ Hack Club Auth consent screen
+              └─▶ GET {server}/auth/callback
+                    └─▶ Redirect to <play origin>/?code=<one-time code>&state=<nonce>
+                          └─▶ Game checks state, strips the params, POST {server}/auth/exchange {code}
+                                └─▶ Session token saved in user://session.dat
 ```
 
-- Accounts and tokens are stored in the SQLite `accounts` table with a 30-day sliding session expiry.
-- Game state (position, pixels) is keyed by Hack Club account ID.
-- **One active session per account** - a new login kicks the previous session.
+- Every HTTP call sends `Authorization: Bearer <token>`; no token ever goes in a URL.
+- The WebSocket connects with no token and sends `{"type":"auth","token":"<jwt>"}` as its
+  first message; the server closes with 4401 if that is missing or invalid.
+- Logout calls `POST {server}/auth/logout` (Bearer) and clears the local session.
+- Pages like the dashboard, projects and shop open on `pixl.hackclub.com` in a new tab,
+  which has its own login - the game never hands its token to them.
 
 ---
 

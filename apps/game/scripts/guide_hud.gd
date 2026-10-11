@@ -93,7 +93,7 @@ func _fetch_onboarding(cb: Callable) -> void:
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/profile/onboarding?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/profile/onboarding"
 	req.request_completed.connect(func(_result, code, _headers, data):
 		req.queue_free()
 		if code != 200:
@@ -103,7 +103,7 @@ func _fetch_onboarding(cb: Callable) -> void:
 			return
 		cb.call(int(json.get("step", 0)))
 	)
-	req.request(url, PackedStringArray(), HTTPClient.METHOD_GET)
+	req.request(url, NetworkManager.auth_headers(), HTTPClient.METHOD_GET)
 
 # Advance the shared onboarding counter (forward-only server-side). Fire-and-forget.
 func _post_step(step: int) -> void:
@@ -111,9 +111,9 @@ func _post_step(step: int) -> void:
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/profile/onboarding?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/profile/onboarding"
 	req.request_completed.connect(func(_result, _code, _headers, _data): req.queue_free())
-	req.request(url, PackedStringArray(["Content-Type: application/json"]), HTTPClient.METHOD_POST, JSON.stringify({ "step": step }))
+	req.request(url, NetworkManager.auth_headers(["Content-Type: application/json"]), HTTPClient.METHOD_POST, JSON.stringify({ "step": step }))
 
 # End of the in-game leg: record progress and hand the player off to the web
 # dashboard, where the tour picks up automatically (server step is now 1).
