@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import sharp from "sharp";
-import { isRealImage } from "./imageValidation.js";
+import { isRealImage, sniffFormat } from "./imageValidation.js";
 
 function pixel() {
   return { create: { width: 2, height: 2, channels: 3 as const, background: { r: 1, g: 2, b: 3 } } };
@@ -50,5 +50,33 @@ describe("isRealImage", () => {
   test("rejects an unsupported declared MIME outright", async () => {
     const buf = await sharp(pixel()).png().toBuffer();
     expect(await isRealImage(buf, "image/gif")).toBe(false);
+  });
+});
+
+// The declared MIME is client-controlled and sharp picks its decoder from the
+// bytes, so anything that isn't PNG/JPEG/WebP by signature must be refused
+// before sharp ever sees it - an SVG labelled image/png used to reach librsvg.
+describe("sniffFormat", () => {
+  test("identifies PNG, JPEG and WebP by signature", async () => {
+    expect(sniffFormat(await sharp(pixel()).png().toBuffer())).toBe("png");
+    expect(sniffFormat(await sharp(pixel()).jpeg().toBuffer())).toBe("jpeg");
+    expect(sniffFormat(await sharp(pixel()).webp().toBuffer())).toBe("webp");
+  });
+
+  test("refuses SVG, GIF, TIFF, HEIF and short buffers", () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const svgBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), svg]);
+    const gif = Buffer.from("GIF89a\x01\x00\x01\x00", "latin1");
+    const tiff = Buffer.from([0x49, 0x49, 0x2a, 0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const heif = Buffer.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]);
+    for (const buf of [svg, svgBom, gif, tiff, heif, Buffer.from([0x89, 0x50])])
+      expect(sniffFormat(buf)).toBeNull();
+  });
+});
+
+describe("isRealImage with non-raster payloads", () => {
+  test("rejects an SVG claiming image/png", async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"/>');
+    expect(await isRealImage(svg, "image/png")).toBe(false);
   });
 });
