@@ -22,13 +22,13 @@ RUN bun run packages/docs-engine/build.ts
 # through the build (same issue apps/dashboard hit). Everything above (bun
 # install, docs-engine) still runs fine under Bun; only the build step itself
 # moves to Node.
-FROM node:22-slim AS node-build
+FROM node:26-slim AS node-build
 WORKDIR /repo
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=build /repo /repo
 RUN cd apps/web-shell && node node_modules/next/dist/bin/next build
 
-FROM node:22-slim AS runtime
+FROM node:26-slim AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
