@@ -17,7 +17,7 @@ export interface PendingReply {
   threadTs?: string;
   userId: string;
   isMention: boolean;
-  pixieFriendly: boolean;
+  pixieFriendly?: boolean;
   lastMsgTs?: string;
   timer?: ReturnType<typeof setTimeout>;
   /**
