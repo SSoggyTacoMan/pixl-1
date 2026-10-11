@@ -23,13 +23,19 @@ function secret(): string {
   return s;
 }
 
+// Only "web" tokens are Pixl Dashboard sessions. apps/server also issues
+// "game" tokens to the game; those, and tokens from before the game/web split
+// (no `client` claim), read as signed out here.
+export const SESSION_CLIENT = "web";
+
 export function verifySessionToken(token: string): SessionPayload | null {
   try {
     const decoded = jwt.verify(token, secret(), { algorithms: ["HS256"] });
     if (
       typeof decoded !== "object" ||
       typeof decoded.userId !== "string" ||
-      typeof decoded.displayName !== "string"
+      typeof decoded.displayName !== "string" ||
+      decoded.client !== SESSION_CLIENT
     ) {
       return null;
     }

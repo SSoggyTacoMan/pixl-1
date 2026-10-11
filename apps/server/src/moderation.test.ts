@@ -15,7 +15,7 @@ async function startTestApp(banState: (userId: string) => Promise<BanState>) {
   app.use(
     enforceActiveBans({
       banState,
-      verify: (token) => (token === "valid-token" ? { userId: "u1", displayName: "Test" } : null),
+      verify: (token) => (token === "valid-token" ? { userId: "u1", displayName: "Test", client: "web" as const, iat: 0 } : null),
     }),
   );
   app.post("/api/shop/buy/1", (_req, res) => res.json({ ok: true, bought: true }));

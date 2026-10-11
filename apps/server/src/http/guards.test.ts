@@ -46,7 +46,7 @@ beforeAll(async () => {
   app.get("/", (_req, res) => res.json({ ok: true }));
   app.get("/api/news", (_req, res) => res.json({ ok: true, news: [] }));
   app.get("/api/explore/players/:id/public", (_req, res) => res.json({ ok: true }));
-  app.get("/api/me", (req, res) => res.json({ ok: true, userId: req.session?.userId }));
+  app.get("/api/me", (req, res) => res.json({ ok: true, userId: req.session?.userId, client: req.session?.client }));
   app.post(
     "/api/things/:id",
     validate({ params: params({ id: v.id }), query: v.noQuery, body: z.object({ name: z.string().max(5) }) }),
@@ -63,7 +63,7 @@ afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
 });
 
-const tokenFor = (userId: string) => issueSessionToken({ userId, displayName: "T" });
+const tokenFor = (userId: string) => issueSessionToken({ client: "web", userId, displayName: "T" });
 const flush = () => new Promise((r) => setTimeout(r, 5));
 
 describe("origin allowlist", () => {
@@ -267,5 +267,23 @@ describe("validate()", () => {
     expect(row?.actor_id).toBe("u-validate");
     expect(row?.result).toBe("ok");
     expect(JSON.stringify(row?.meta)).not.toContain("Bearer");
+  });
+});
+
+describe("game and web session kinds", () => {
+  test("the HTTP API takes both kinds and exposes which one called", async () => {
+    for (const client of ["game", "web"] as const) {
+      const token = issueSessionToken({ client, userId: `u-${client}`, displayName: "T" });
+      const res = await fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, userId: `u-${client}`, client });
+    }
+  });
+
+  test("a pre-split token with no client claim is refused", async () => {
+    const jwt = (await import("jsonwebtoken")).default;
+    const legacy = jwt.sign({ userId: "u-legacy", displayName: "T" }, process.env.JWT_SECRET!, { algorithm: "HS256" });
+    const res = await fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${legacy}` } });
+    expect(res.status).toBe(401);
   });
 });

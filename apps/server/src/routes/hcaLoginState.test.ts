@@ -343,7 +343,7 @@ describe("login stores fresh HCA state before it hands out a session", () => {
 });
 
 describe("POST /auth/flow/resync", () => {
-  const token = () => issueSessionToken({ userId: "user-1", displayName: "Player" });
+  const token = () => issueSessionToken({ client: "web", userId: "user-1", displayName: "Player" });
   const start = (redirect: string, t?: string) =>
     callRoute(authRouter, "post", "/auth/flow/:name", {
       params: { name: "resync" },

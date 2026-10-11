@@ -1,5 +1,5 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
-import { verifySessionToken, type VerifiedSession } from "../auth/session.js";
+import { verifySessionToken, type SessionClient, type VerifiedSession } from "../auth/session.js";
 import { enforceSessionRevocation, type RevocationReader } from "../auth/revocation.js";
 import { enforceActiveBans, type BanState } from "../moderation.js";
 import { auditRequestThrottled } from "../audit.js";
@@ -9,6 +9,9 @@ import { bearerToken } from "./bearer.js";
 export interface RequestSession {
   userId: string;
   displayName: string;
+  // Which app the token was issued to. Both the game and the Pixl Dashboard
+  // call the HTTP API; handlers and audit use this to tell them apart.
+  client: SessionClient;
   slackId?: string;
   iat: number;
 }
@@ -54,6 +57,7 @@ export function verifyBearer(deps: RequireSessionDeps = {}): RequestHandler {
     req.session = {
       userId: session.userId,
       displayName: session.displayName,
+      client: session.client,
       ...(session.slackId ? { slackId: session.slackId } : {}),
       iat: session.iat,
     };

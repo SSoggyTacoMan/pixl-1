@@ -54,7 +54,7 @@ async function callAs(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   try {
-    const token = issueSessionToken({ userId: "user-1", displayName: "Player" });
+    const token = issueSessionToken({ client: "web", userId: "user-1", displayName: "Player" });
     const res = await fetch(`http://127.0.0.1:${port}${path}`, {
       method,
       headers: { "content-type": "application/json", ...bearer(token) },

@@ -7,13 +7,23 @@ beforeAll(() => {
 });
 
 describe("verifySessionToken", () => {
-  test("decodes a token signed with the matching secret", () => {
-    const token = jwt.sign({ userId: "u1", displayName: "Test User" }, process.env.JWT_SECRET!);
+  test("decodes a web token signed with the matching secret", () => {
+    const token = jwt.sign({ userId: "u1", displayName: "Test User", client: "web" }, process.env.JWT_SECRET!);
     expect(verifySessionToken(token)).toEqual({ userId: "u1", displayName: "Test User" });
   });
 
+  test("rejects a game token", () => {
+    const token = jwt.sign({ userId: "u1", displayName: "Test User", client: "game" }, process.env.JWT_SECRET!);
+    expect(verifySessionToken(token)).toBeNull();
+  });
+
+  test("rejects a pre-split token with no client claim", () => {
+    const token = jwt.sign({ userId: "u1", displayName: "Test User" }, process.env.JWT_SECRET!);
+    expect(verifySessionToken(token)).toBeNull();
+  });
+
   test("rejects a token signed with a different secret", () => {
-    const token = jwt.sign({ userId: "u1", displayName: "Test User" }, "wrong-secret");
+    const token = jwt.sign({ userId: "u1", displayName: "Test User", client: "web" }, "wrong-secret");
     expect(verifySessionToken(token)).toBeNull();
   });
 
@@ -22,7 +32,7 @@ describe("verifySessionToken", () => {
   });
 
   test("rejects an expired token", () => {
-    const token = jwt.sign({ userId: "u1", displayName: "Test User" }, process.env.JWT_SECRET!, {
+    const token = jwt.sign({ userId: "u1", displayName: "Test User", client: "web" }, process.env.JWT_SECRET!, {
       expiresIn: -10,
     });
     expect(verifySessionToken(token)).toBeNull();

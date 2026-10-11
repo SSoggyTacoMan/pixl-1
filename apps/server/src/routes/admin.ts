@@ -36,7 +36,8 @@ router.post(
   async (req, res) => {
     const userId = String(req.body.userId).trim().toLowerCase();
     const revokedAtMs = Date.now();
-    const result = await revokeUserSessions(userId, revokedAtMs);
+    // Moderation revokes both clients, the game and the Pixl Dashboard.
+    const result = await revokeUserSessions(userId, revokedAtMs, "all");
     if (result === "not_found") return res.status(404).json({ ok: false, error: "no such user" });
     if (result === "not_migrated") return res.status(503).json({ ok: false, error: "session revocation migration not applied" });
     if (result === "error") return res.status(500).json({ ok: false, error: "revocation failed" });

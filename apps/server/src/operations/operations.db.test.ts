@@ -876,7 +876,7 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
     const { default: express } = await import("express");
     const { default: router } = await import("../routes/operations.js");
     const { issueSessionToken } = await import("../auth/session.js");
-    token = (uid) => issueSessionToken({ userId: uid, displayName: "t" });
+    token = (uid) => issueSessionToken({ client: "web", userId: uid, displayName: "t" });
     const { authGate } = await import("../http/gate.js");
     const app = express();
     app.use(express.json());

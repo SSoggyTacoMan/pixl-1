@@ -3,7 +3,13 @@ import type { Server, IncomingMessage } from "http";
 import { verifySessionToken, type VerifiedSession } from "../auth/session.js";
 import { config } from "../config.generated.js";
 import { auditRequest, auditRequestThrottled } from "../audit.js";
-import { isSessionRevoked, lookupSessionRevokedAt, parseRevokedAt } from "../auth/revocation.js";
+import {
+  effectiveRevokedAt,
+  isSessionRevoked,
+  lookupSessionRevokedAt,
+  selectRevocation,
+  type RevocationRow,
+} from "../auth/revocation.js";
 import { consumeRateLimit, peekRateLimit, type RateLimitOptions } from "../rateLimit.js";
 import { requestIpKey } from "../clientIp.js";
 import { activeBan, censorChat, recordChatViolation } from "../moderation.js";
@@ -448,18 +454,21 @@ export function endUserSession(userId: string, revokedAtMs: number): boolean {
   return true;
 }
 
+// Connected players all hold game tokens, so the game cutoff applies (the
+// later of the all-clients and game-only cutoffs); a web logout never
+// closes a socket.
 export async function sweepRevokedSessions() {
   if (players.size === 0) return;
-  const { data, error } = await supabase
-    .from("users")
-    .select("id, sessions_revoked_at")
-    .in("id", [...players.keys()]);
+  const ids = [...players.keys()];
+  const { data, error } = await selectRevocation((columns) =>
+    supabase.from("users").select(`id, ${columns}`).in("id", ids),
+  );
   if (error) {
-    if (error.code !== "42703") console.error("Failed to sweep revoked sessions", error.message);
+    console.error("Failed to sweep revoked sessions", error.message);
     return;
   }
-  for (const row of data ?? []) {
-    const state = parseRevokedAt(row.sessions_revoked_at);
+  for (const row of (data ?? []) as (RevocationRow & { id: unknown })[]) {
+    const state = effectiveRevokedAt(row, "game");
     if (state.ok && state.revokedAtMs !== null) endUserSession(row.id as string, state.revokedAtMs);
   }
 }
@@ -524,7 +533,7 @@ setInterval(() => {
 // it sends must be {"type":"auth","token":"<jwt>"} within
 // WS_AUTH_TIMEOUT_MS. Until that succeeds the server sends nothing at all -
 // the client treats the first message it receives as "auth OK". A missing,
-// malformed, invalid, expired or revoked token closes with 4401.
+// malformed, invalid, expired, revoked or non-game token closes with 4401.
 export const WS_AUTH_TIMEOUT_MS = 5_000;
 export const WS_AUTH_FAILED = 4401;
 const MAX_AUTH_FRAME_BYTES = 4096;
@@ -550,7 +559,10 @@ export function parseWsAuth(
   if (typeof msg !== "object" || msg === null) return null;
   const { type, token } = msg as { type?: unknown; token?: unknown };
   if (type !== "auth" || typeof token !== "string" || token.length === 0) return null;
-  return verify(token);
+  // Only game tokens open a socket: a Pixl Dashboard ("web") token, or a
+  // pre-split token with no client claim, fails auth like a forged one.
+  const session = verify(token);
+  return session && session.client === "game" ? session : null;
 }
 
 function auditWsFailure(req: IncomingMessage, reason: string, userId?: string): void {
@@ -635,7 +647,7 @@ export function attachWebSocketServer(httpServer: Server) {
     ws.on("close", () => clearTimeout(authTimer));
 
     const startSession = async (session: VerifiedSession) => {
-      const revocation = await lookupSessionRevokedAt(session.userId);
+      const revocation = await lookupSessionRevokedAt(session.userId, "game");
       if (!revocation.ok) {
         ws.close(1013, "Try again later");
         return;

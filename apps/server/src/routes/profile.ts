@@ -50,8 +50,14 @@ router.post("/api/profile/name", validate({ query: v.noQuery, body: z.object({ n
     return res.status(500).json({ ok: false, reason: "Database error." });
   }
 
-  // Re-issue the session token so the embedded displayName matches the new one.
-  const fresh = issueSessionToken({ userId: session.userId, displayName: name, slackId: session.slackId });
+  // Re-issue the session token so the embedded displayName matches the new one,
+  // for the same client the caller's token was issued to.
+  const fresh = issueSessionToken({
+    userId: session.userId,
+    displayName: name,
+    client: session.client,
+    ...(session.slackId ? { slackId: session.slackId } : {}),
+  });
   res.json({ ok: true, name, token: fresh });
 });
 

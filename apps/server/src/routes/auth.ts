@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import { supabase, type UserRow } from "../db/client.js";
 import type { PgError } from "../db/pgCompat.js";
-import { issueSessionToken } from "../auth/session.js";
+import { issueSessionToken, type SessionClient } from "../auth/session.js";
 import { forgetCachedRevocation, revokeUserSessions } from "../auth/revocation.js";
 import { checkRedirect, CLIENT_STATE_RE, createLoginCodeStore, type LoginGrant } from "../auth/loginCodes.js";
 import { activeBan } from "../moderation.js";
@@ -309,13 +309,17 @@ router.post(
   },
   validate({ query: v.noQuery, body: z.object({ code: z.string().min(16).max(128) }) }),
   (req, res) => {
+    // The token's client kind comes only from who is calling, never from
+    // the body: the Pixl Dashboard's service key -> "web", the game's
+    // origin -> "game".
+    const client: SessionClient = req.service === "pixl-dashboard" ? "web" : "game";
     const grant = loginCodes.redeem(String(req.body.code));
     if (!grant) {
       auditRequestThrottled(req, {
         action: "auth.exchange",
         target: "POST /auth/exchange",
         result: "denied",
-        meta: { reason: "invalid_code", via: req.service ?? "game" },
+        meta: { reason: "invalid_code", via: req.service ?? "game", client },
       });
       return res.status(400).json({ ok: false, error: "invalid_code" });
     }
@@ -323,6 +327,7 @@ router.post(
     const token = issueSessionToken({
       userId: grant.userId,
       displayName: grant.displayName,
+      client,
       ...(grant.slackId ? { slackId: grant.slackId } : {}),
     });
     const actor = requestActor(req);
@@ -334,7 +339,7 @@ router.post(
       action: "auth.exchange",
       target: `user:${grant.userId}`,
       result: "ok",
-      meta: { via: req.service ?? "game", isNew: grant.isNew },
+      meta: { via: req.service ?? "game", client, isNew: grant.isNew },
     });
     res.json({
       ok: true,
@@ -346,24 +351,30 @@ router.post(
   },
 );
 
-// Revokes the caller's sessions. Session revocation is per user (see
-// auth/revocation.ts), so this signs the player out everywhere, game
-// included.
+// Revokes the caller's sessions for the caller's own client only (see
+// auth/revocation.ts): logging out of the Pixl Dashboard leaves the game
+// signed in and vice versa. Only a game logout closes the game socket.
 router.post(
   "/auth/logout",
   requireSession(),
   validate({ query: v.noQuery, body: v.empty }),
   async (req, res) => {
     const session = req.session!;
+    const client = session.client;
     const revokedAtMs = Date.now();
-    const result = await revokeUserSessions(session.userId, revokedAtMs);
+    const result = await revokeUserSessions(session.userId, revokedAtMs, client);
     if (result !== "revoked") {
-      auditRequest(req, { action: "auth.logout", target: `user:${session.userId}`, result: "error", meta: { reason: result } });
+      auditRequest(req, {
+        action: "auth.logout",
+        target: `user:${session.userId}`,
+        result: "error",
+        meta: { reason: result, client },
+      });
       return res.status(result === "not_found" ? 404 : 503).json({ ok: false, error: "logout_failed" });
     }
     forgetCachedRevocation(session.userId);
-    endUserSession(session.userId, revokedAtMs);
-    auditRequest(req, { action: "auth.logout", target: `user:${session.userId}`, result: "ok" });
+    if (client === "game") endUserSession(session.userId, revokedAtMs);
+    auditRequest(req, { action: "auth.logout", target: `user:${session.userId}`, result: "ok", meta: { client } });
     res.json({ ok: true });
   },
 );

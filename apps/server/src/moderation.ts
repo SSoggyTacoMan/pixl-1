@@ -524,7 +524,7 @@ export function enforceActiveBans(deps: EnforceActiveBansDeps = {}) {
         actorId: session.userId,
         target: req.method,
         result: "denied",
-        meta: { reason: "banned" },
+        meta: { reason: "banned", client: session.client },
       });
       res.status(403).json({ ok: false, error: "banned" });
       return;

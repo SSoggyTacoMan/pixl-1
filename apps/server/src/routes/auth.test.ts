@@ -707,6 +707,38 @@ describe("code exchange login", () => {
     }
   });
 
+  test("the token's client comes from the caller: service key -> web, game origin -> game; the body can't override it", async () => {
+    const users = mockUsersTable([]);
+    const hca = mockHcaFetch({ id: "hca-client-identity", first_name: "Client", last_name: "Kind" });
+    const app = await startTestApp();
+    const freshCode = async () =>
+      new URL((await driveHcaCallback(app.baseUrl)).headers.get("location")!).searchParams.get("code")!;
+    const post = async (headers: Record<string, string>, body: Record<string, unknown>) => {
+      const res = await fetch(`${app.baseUrl}/auth/exchange`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      return verifySessionToken(((await res.json()) as { token: string }).token);
+    };
+    try {
+      expect((await post({ "x-pixl-service-key": DASHBOARD_KEY }, { code: await freshCode() }))?.client).toBe("web");
+      expect((await post({ Origin: "https://play.pixl.hackclub.com" }, { code: await freshCode() }))?.client).toBe("game");
+      // A client field in the body is stripped, never honored.
+      expect(
+        (await post({ Origin: "https://play.pixl.hackclub.com" }, { code: await freshCode(), client: "web" }))?.client,
+      ).toBe("game");
+      expect(
+        (await post({ "x-pixl-service-key": DASHBOARD_KEY }, { code: await freshCode(), client: "game" }))?.client,
+      ).toBe("web");
+    } finally {
+      users.restore();
+      hca.restore();
+      await app.close();
+    }
+  });
+
   test("a player with no name on file from HCA needs a legal name", async () => {
     const users = mockUsersTable([]);
     const hca = mockHcaFetch({ id: "hca-nameless-identity", primary_email: "x@example.com" });
@@ -765,7 +797,7 @@ describe("POST /auth/flow/:name", () => {
     // Revocation and ban lookups read users/bans; nothing is revoked or banned.
     const users = mockUsersTable([]);
     const app = await startTestApp();
-    const token = issueSessionToken({ userId: "flow-user", displayName: "Flow" });
+    const token = issueSessionToken({ client: "web", userId: "flow-user", displayName: "Flow" });
     const post = (name: string, redirect: string) =>
       fetch(`${app.baseUrl}/auth/flow/${name}`, {
         method: "POST",

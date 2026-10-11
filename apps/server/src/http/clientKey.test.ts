@@ -30,7 +30,7 @@ describe("clientIpFor", () => {
 
 describe("rateLimitKeyFor", () => {
   test("a verified session is limited per player, otherwise per client", () => {
-    const token = issueSessionToken({ userId: "u-rl", displayName: "R" });
+    const token = issueSessionToken({ client: "web", userId: "u-rl", displayName: "R" });
     expect(rateLimitKeyFor(req({ authorization: `Bearer ${token}` }))).toBe("user:u-rl");
     expect(rateLimitKeyFor(req({ authorization: "Bearer forged.x.y" }))).not.toStartWith("user:");
     expect(rateLimitKeyFor(req({ "x-forwarded-for": "203.0.113.7", "x-pixl-service-key": DASH }))).toBe("203.0.113.7");

@@ -90,7 +90,7 @@ if (!adminUrl) {
   function issueAt(userId: string, ms: number): string {
     setSystemTime(new Date(ms));
     try {
-      return issueSessionToken({ userId, displayName: "t" });
+      return issueSessionToken({ client: "game", userId, displayName: "t" });
     } finally {
       setSystemTime();
     }
@@ -357,6 +357,28 @@ if (!adminUrl) {
       await game.sweepRevokedSessions();
       expect(relogin.ws.readyState).toBe(WebSocket.OPEN);
       expect((await dial(old).closed).code).toBe(4401);
+    });
+
+    test("a web logout leaves the game socket open; a game logout closes it", async () => {
+      const user = await createUser();
+      const live = dial(issueAt(user, Date.now() - 30_000));
+      await live.waitFor(["init"]);
+
+      expect(await rev.revokeUserSessions(user, Date.now(), "web")).toBe("revoked");
+      await game.sweepRevokedSessions();
+      expect(live.ws.readyState).toBe(WebSocket.OPEN);
+
+      expect(await rev.revokeUserSessions(user, Date.now(), "game")).toBe("revoked");
+      await game.sweepRevokedSessions();
+      expect((await live.closed).code).toBe(4001);
+    });
+
+    test("a web token is refused with 4401 even when nothing is revoked", async () => {
+      const user = await createUser();
+      const web = issueSessionToken({ client: "web", userId: user, displayName: "t" });
+      const client = dial(web);
+      expect((await client.closed).code).toBe(4401);
+      expect(client.messages.some((m) => m.type === "init")).toBe(false);
     });
 
     test("when revocation state cannot be read the socket is refused with a retryable close", async () => {

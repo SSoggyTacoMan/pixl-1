@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import jwt from "jsonwebtoken";
 import { issueSessionToken } from "../auth/session.js";
 import { isAllowedWsOrigin, parseWsAuth, WS_AUTH_FAILED, WS_AUTH_TIMEOUT_MS } from "./gameServer.js";
 
@@ -10,13 +11,13 @@ describe("WebSocket auth", () => {
   });
 
   test("the first frame must be {type:auth, token}", () => {
-    const token = issueSessionToken({ userId: "u-ws", displayName: "W" });
+    const token = issueSessionToken({ client: "game", userId: "u-ws", displayName: "W" });
     expect(parseWsAuth(JSON.stringify({ type: "auth", token }), false)?.userId).toBe("u-ws");
     expect(parseWsAuth(Buffer.from(JSON.stringify({ type: "auth", token })), false)?.userId).toBe("u-ws");
   });
 
   test("anything else fails auth", () => {
-    const token = issueSessionToken({ userId: "u-ws", displayName: "W" });
+    const token = issueSessionToken({ client: "game", userId: "u-ws", displayName: "W" });
     expect(parseWsAuth(JSON.stringify({ type: "auth", token }), true)).toBeNull();
     expect(parseWsAuth(JSON.stringify({ type: "move", token }), false)).toBeNull();
     expect(parseWsAuth(JSON.stringify({ type: "auth" }), false)).toBeNull();
@@ -24,6 +25,15 @@ describe("WebSocket auth", () => {
     expect(parseWsAuth("not json", false)).toBeNull();
     expect(parseWsAuth("null", false)).toBeNull();
     expect(parseWsAuth(JSON.stringify({ type: "auth", token: "x".repeat(5000) }), false)).toBeNull();
+  });
+
+  test("only game tokens authenticate: web tokens and pre-split tokens fail", () => {
+    const web = issueSessionToken({ client: "web", userId: "u-ws", displayName: "W" });
+    expect(parseWsAuth(JSON.stringify({ type: "auth", token: web }), false)).toBeNull();
+    const legacy = jwt.sign({ userId: "u-ws", displayName: "W" }, process.env.JWT_SECRET!, { algorithm: "HS256" });
+    expect(parseWsAuth(JSON.stringify({ type: "auth", token: legacy }), false)).toBeNull();
+    const game = issueSessionToken({ client: "game", userId: "u-ws", displayName: "W" });
+    expect(parseWsAuth(JSON.stringify({ type: "auth", token: game }), false)?.client).toBe("game");
   });
 
   test("the contract constants the game relies on", () => {
@@ -77,6 +87,20 @@ describe("WebSocket auth over a real socket", () => {
       c.ws.send(JSON.stringify({ type: "move", posX: 1, posY: 2 }));
       expect((await c.closed).code).toBe(4401);
       expect(c.received).toEqual([]);
+    });
+  });
+
+  test("a web token or a pre-split token in the first frame closes with 4401", async () => {
+    const web = issueSessionToken({ client: "web", userId: "u-ws", displayName: "W" });
+    const legacy = jwt.sign({ userId: "u-ws", displayName: "W" }, process.env.JWT_SECRET!, { algorithm: "HS256" });
+    await withServer(async (url) => {
+      for (const token of [web, legacy]) {
+        const c = open(url, "https://play.pixl.hackclub.com");
+        expect(await c.opened).toBe(true);
+        c.ws.send(JSON.stringify({ type: "auth", token }));
+        expect((await c.closed).code).toBe(4401);
+        expect(c.received).toEqual([]);
+      }
     });
   });
 

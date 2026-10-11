@@ -189,7 +189,7 @@ describe("POST /api/uploads", () => {
     const quota = mockQuotaRpc("grant");
     const app = await startTestApp();
     try {
-      const token = issueSessionToken({ userId: "upload-test-safe", displayName: "x" });
+      const token = issueSessionToken({ client: "web", userId: "upload-test-safe", displayName: "x" });
       const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
         headers: { ...bearer(token), "Content-Type": "image/png" },
@@ -214,7 +214,7 @@ describe("POST /api/uploads", () => {
     const quota = mockQuotaRpc("grant");
     const app = await startTestApp();
     try {
-      const token = issueSessionToken({ userId: "upload-test-fake-bytes", displayName: "x" });
+      const token = issueSessionToken({ client: "web", userId: "upload-test-fake-bytes", displayName: "x" });
       const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
         headers: { ...bearer(token), "Content-Type": "image/png" },
@@ -238,7 +238,7 @@ describe("POST /api/uploads", () => {
     const quota = mockQuotaRpc("deny");
     const app = await startTestApp();
     try {
-      const token = issueSessionToken({ userId: "upload-test-quota", displayName: "x" });
+      const token = issueSessionToken({ client: "web", userId: "upload-test-quota", displayName: "x" });
       const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
         headers: { ...bearer(token), "Content-Type": "image/png" },
@@ -262,7 +262,7 @@ describe("POST /api/uploads", () => {
     const quota = mockQuotaRpc("grant");
     const app = await startTestApp();
     try {
-      const token = issueSessionToken({ userId: "upload-test-cdn-rejected", displayName: "x" });
+      const token = issueSessionToken({ client: "web", userId: "upload-test-cdn-rejected", displayName: "x" });
       const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
         headers: { ...bearer(token), "Content-Type": "image/png" },
@@ -286,7 +286,7 @@ describe("POST /api/uploads", () => {
     const quota = mockQuotaRpc("grant");
     const app = await startTestApp();
     try {
-      const token = issueSessionToken({ userId: "upload-test-cdn-server-error", displayName: "x" });
+      const token = issueSessionToken({ client: "web", userId: "upload-test-cdn-server-error", displayName: "x" });
       const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
         headers: { ...bearer(token), "Content-Type": "image/png" },
@@ -310,7 +310,7 @@ describe("POST /api/uploads", () => {
     const quota = mockQuotaRpc("grant");
     const app = await startTestApp();
     try {
-      const token = issueSessionToken({ userId: "upload-test-cdn-network-error", displayName: "x" });
+      const token = issueSessionToken({ client: "web", userId: "upload-test-cdn-network-error", displayName: "x" });
       const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
         headers: { ...bearer(token), "Content-Type": "image/png" },
@@ -334,7 +334,7 @@ describe("POST /api/uploads", () => {
     const quota = mockQuotaRpc("grant");
     const app = await startTestApp();
     try {
-      const token = issueSessionToken({ userId: "upload-test-cdn-malformed", displayName: "x" });
+      const token = issueSessionToken({ client: "web", userId: "upload-test-cdn-malformed", displayName: "x" });
       const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
         headers: { ...bearer(token), "Content-Type": "image/png" },
@@ -359,7 +359,7 @@ describe("POST /api/uploads", () => {
     db.rpc = (async () => ({ data: null, error: { message: "connection refused" } })) as typeof db.rpc;
     const app = await startTestApp();
     try {
-      const token = issueSessionToken({ userId: "upload-test-quota-error", displayName: "x" });
+      const token = issueSessionToken({ client: "web", userId: "upload-test-quota-error", displayName: "x" });
       const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
         headers: { ...bearer(token), "Content-Type": "image/png" },
