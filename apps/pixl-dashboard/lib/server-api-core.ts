@@ -84,6 +84,8 @@ export function errorCode(data: unknown, status: number): string {
     const d = data as Record<string, unknown>;
     if (typeof d.error === "string" && d.error) return d.error;
     if (typeof d.message === "string" && d.message) return d.message;
+    // Some routes (e.g. referral apply) explain a failure only in `reason`.
+    if (typeof d.reason === "string" && d.reason) return d.reason;
   }
   if (status === 0) return "server_unreachable";
   return `http_${status}`;

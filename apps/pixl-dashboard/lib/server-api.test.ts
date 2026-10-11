@@ -87,5 +87,7 @@ describe("serverFetch", () => {
   test("errorCode falls back to the status", () => {
     expect(errorCode(null, 502)).toBe("http_502");
     expect(errorCode({ message: "m" }, 400)).toBe("m");
+    expect(errorCode({ ok: false, reason: "own_code" }, 400)).toBe("own_code");
+    expect(errorCode({ error: "e", reason: "r" }, 400)).toBe("e");
   });
 });
