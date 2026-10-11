@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requirePagePerm, requireGuidelinesAck } from "@/lib/guard";
+import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { getHideReviewers } from "@/lib/liveModeServer";
 import { reviewerName } from "@/lib/liveMode";
 import { listReviewAudits } from "@/lib/db";
@@ -32,10 +32,10 @@ const VERDICT_BADGE: Record<string, { label: string; variant: "success" | "info"
 };
 
 export default async function ReviewLogPage() {
-  const access = await requirePagePerm(["review"]);
+  const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
   const hideReviewers = await getHideReviewers();
-  if (!access.isSuper) redirect("/review");
+  if (!access.isOwner) redirect("/review");
   const log = await listReviewAudits();
 
   return (

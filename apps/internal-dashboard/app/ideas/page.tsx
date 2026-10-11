@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { liveName } from "@/lib/liveMode";
 import { listIdeas } from "@/lib/db";
@@ -24,7 +24,7 @@ export default async function IdeasPage({
 }: {
   searchParams: Promise<{ q?: string; error?: string }>;
 }) {
-  await requirePagePerm(["ideas"]);
+  await requirePage("owner");
   const live = await getLiveMode();
   const { q, error } = await searchParams;
   const ideas = await listIdeas(q);

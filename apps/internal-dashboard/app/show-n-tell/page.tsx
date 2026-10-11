@@ -1,4 +1,4 @@
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listShowNTellRounds, listShowNTellEntries, searchShippableProjects } from "@/lib/db";
 import {
   createShowNTellRound,
@@ -26,7 +26,7 @@ export default async function ShowNTellPage({
 }: {
   searchParams: Promise<{ q?: string; round?: string }>;
 }) {
-  await requirePagePerm(["show_n_tell"]);
+  await requirePage("owner");
   const { q, round: roundParam } = await searchParams;
 
   const rounds = await listShowNTellRounds();

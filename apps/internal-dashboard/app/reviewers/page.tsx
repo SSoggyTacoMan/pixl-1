@@ -1,16 +1,14 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import {
-  requireAdmin,
-  isSecondPassReviewer,
+  requirePage,
   EDIT_SUBMISSION,
   ownerSlackIds,
   secondPassSlackIds,
   NO_REVIEW,
+  SECOND_PASS,
 } from "@/lib/guard";
 import {
   listAdmins,
-  listSuperAdminIds,
   reviewerStatsBySlackId,
   displayNamesBySlackId,
   type ReviewerStats,
@@ -78,24 +76,21 @@ export default async function ReviewersPage({
 }: {
   searchParams: Promise<{ q?: string; page?: string }>;
 }) {
-  const access = await requireAdmin();
-  if (!access.isSuper) redirect("/");
+  const access = await requirePage("owner");
   const { q, page } = await searchParams;
 
-  const [admins, stats, superIds] = await Promise.all([
-    listAdmins(),
-    reviewerStatsBySlackId(),
-    listSuperAdminIds(),
-  ]);
+  const [admins, stats] = await Promise.all([listAdmins(), reviewerStatsBySlackId()]);
   const tableReviewers = admins.filter((a) => a.permissions.includes("review"));
   const inTable = new Set(tableReviewers.map((r) => r.slack_id));
   const blocked = new Set(
     admins.filter((a) => a.permissions.includes(NO_REVIEW)).map((a) => a.slack_id),
   );
-  // Super admins hold every permission, so they review whether or not they
-  // have an admins row , same as the env owners they sit alongside.
-  const owners = new Set([...ownerSlackIds(), ...superIds]);
-  const implicit = [...new Set([...owners, ...secondPassSlackIds()])].filter(
+  // Owners (ADMIN_SLACK_IDS) review whether or not they have an admins row.
+  const owners = new Set(ownerSlackIds());
+  const secondPassIds = secondPassSlackIds();
+  const isFinalReviewer = (id: string, perms: string[]) =>
+    perms.includes(SECOND_PASS) || (secondPassIds.length > 0 ? secondPassIds.includes(id) : owners.has(id));
+  const implicit = [...owners].filter(
     (id) => !inTable.has(id) && !blocked.has(id),
   );
   const allReviewers = [
@@ -240,7 +235,7 @@ export default async function ReviewersPage({
                             admin
                           </Badge>
                         )}
-                        {isSecondPassReviewer(r.slack_id, r.permissions, owners.has(r.slack_id)) && (
+                        {isFinalReviewer(r.slack_id, r.permissions) && (
                           <Badge variant="success" className="text-[0.65rem] uppercase tracking-wide">
                             second pass
                           </Badge>

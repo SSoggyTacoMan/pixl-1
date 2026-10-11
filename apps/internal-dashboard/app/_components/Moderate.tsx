@@ -6,7 +6,6 @@ import {
   banPlayer,
   deletePlayerAccount,
   liftBan,
-  proposeBan,
   resetPlayerPosition,
   sendNotification,
   unbanIdea,
@@ -93,36 +92,6 @@ export function BanForm({
       <SubmitBtn className="bg-brand text-white hover:bg-brand/90" disabled={isBanned}>
         {isBanned ? "Already banned" : "Ban"}
       </SubmitBtn>
-    </form>
-  );
-}
-
-// Moderators can't ban outright , this proposes one for an admin to confirm
-// or reject (see /bans "Proposed" tab).
-export function ProposeBanForm({ userId, compact = false }: { userId: string; compact?: boolean }) {
-  return (
-    <form action={proposeBan} className="flex gap-2 items-center flex-wrap">
-      <input type="hidden" name="userId" value={userId} />
-      <Input
-        name="reason"
-        placeholder="Reason"
-        maxLength={1000}
-        className={compact ? "text-sm w-32" : "text-sm flex-1 min-w-32"}
-        required
-      />
-      <Select name="hours" defaultValue="24">
-        <SelectTrigger size="sm" className="text-sm">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="1">1 hour</SelectItem>
-          <SelectItem value="24">1 day</SelectItem>
-          <SelectItem value="168">7 days</SelectItem>
-          <SelectItem value="720">30 days</SelectItem>
-          <SelectItem value="0">Permanent</SelectItem>
-        </SelectContent>
-      </Select>
-      <SubmitBtn className="bg-amber-600 text-white hover:bg-amber-700">Propose ban</SubmitBtn>
     </form>
   );
 }

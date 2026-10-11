@@ -1,4 +1,4 @@
-import { requirePagePerm, requireGuidelinesAck } from "@/lib/guard";
+import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { getHideReviewers } from "@/lib/liveModeServer";
 import { reviewerName } from "@/lib/liveMode";
 import { db, payoutTotalsBySlackId, type ReviewAuditRow } from "@/lib/db";
@@ -37,7 +37,7 @@ function fmtDur(secs: number): string {
 }
 
 export default async function ReviewStatsPage() {
-  const access = await requirePagePerm(["review"]);
+  const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
   // While live, other reviewers show as "Reviewer" (Show reviewer names
   // button in the tab bar reveals them); masked here on the server so the
@@ -56,7 +56,7 @@ export default async function ReviewStatsPage() {
   // reviewer, not a scoreboard stat, and reading it as a ranking gets it
   // wrong (repo/demo-open-rate used to live here too, removed in favor of
   // lifetime pixels won, a real scoreboard stat everyone can see).
-  const showAuditColumns = access.isSuper;
+  const showAuditColumns = access.isOwner;
 
   // Calendar windows in UTC (see packages/config's own UTC convention) -
   // "this week" starts Monday, matching an ISO week rather than a rolling

@@ -38,19 +38,12 @@ import {
   type CreditReviewerResult,
   activeDashEvents,
   communityGoalShipCount,
-  addReportViewer,
-  removeReportViewer,
   addHelper,
   removeHelper,
   addFulfiller,
   removeFulfiller,
-  addModerator,
-  removeModerator,
-  addSuperAdmin,
-  removeSuperAdmin,
-  listSuperAdmins,
-  insertBanProposal,
   getBanProposal,
+  getTeamChange,
   decideBanProposal,
   nextReviewId,
   EVENT_TYPES,
@@ -78,35 +71,28 @@ import { generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
 import { serializeGroups } from "@/lib/shopOptions";
 import { SHOP_REGIONS, type ShopRegion } from "@/lib/shopRegions";
 import { SHOP_CATEGORIES, type ShopCategory } from "@/lib/shopCategories";
-import { kickOnlinePlayer, uploadSubmissionImage } from "@/lib/gameServer";
+import { kickOnlinePlayer, uploadSubmissionImage, uploadImageBuffer } from "@/lib/gameServer";
+import { sniffFormat } from "@/lib/imageSniff";
 import { dmOrEmail } from "@/lib/notify";
 import { announceReview } from "@/lib/reviewChannel";
 import { REVIEW_REWARD_COOKIE, REVIEW_REWARD_MAX_AGE } from "@/lib/reviewReward";
 import { assertSafeExternalUrl } from "@/lib/urlSafety";
 import { safeRedirectPath, isSafeUrl } from "@/lib/safeUrl";
 import {
-  requirePerm,
-  requireSuper,
-  requireReportViewer,
-  requireFulfiller,
-  requireModerator,
-  requireWarnAccess,
-  isSuperAdmin,
+  guardedAction,
   ownerSlackIds,
   secondPassSlackIds,
-  SUBADMIN_PERMISSIONS,
+  reviewerPermsOnly,
+  REVIEW,
   NO_REVIEW,
   SECOND_PASS,
   EDIT_SUBMISSION,
-  SPONSOR,
-  SPONSOR_BASE_PERMS,
   REVIEW_HARDWARE_ONLY,
   REVIEW_SOFTWARE_ONLY,
   type AdminAccess,
-  type Permission,
   type ReviewQueueScope,
-  getAccess,
 } from "@/lib/guard";
+import { audit } from "@/lib/audit";
 import { GUIDELINES_VERSION } from "@/lib/guidelines";
 import { applyBlackoutDecision } from "@/lib/operationsReview";
 import { BLACKOUT_SLUG, getBlackoutEntry, operationRpc } from "@/lib/operations";
@@ -140,7 +126,7 @@ async function nextReviewPath(
       viewer: access.session.slackId,
       by,
       canSecondPass: access.canSecondPass,
-      isSuper: access.isSuper,
+      isSuper: access.isOwner,
       excludeId: justReviewedId,
       prefer: stage === "second_review" ? "second_review" : "shipped",
       reviewQueues: access.reviewQueues,
@@ -187,8 +173,7 @@ async function hasSelfReviewException(slackId: string): Promise<boolean> {
   return !!data && new Date(data.expires_at as string).getTime() > Date.now();
 }
 
-export async function grantSelfReviewException(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const grantSelfReviewException = guardedAction("grantSelfReviewException", "owner", async (access, formData: FormData): Promise<void> => {
   const slackId = String(formData.get("slackId") ?? "").trim();
   const days = Math.max(1, Math.min(30, Number(formData.get("days") ?? 7) || 7));
   if (!slackId) return;
@@ -198,18 +183,17 @@ export async function grantSelfReviewException(formData: FormData): Promise<void
     .upsert({ slack_id: slackId, granted_by: actorName(access), expires_at: expiresAt });
   if (error) throw new Error(error.message);
   revalidatePath("/admins");
-}
+});
 
-export async function revokeSelfReviewException(formData: FormData): Promise<void> {
-  await requireSuper();
+export const revokeSelfReviewException = guardedAction("revokeSelfReviewException", "owner", async (access, formData: FormData): Promise<void> => {
   const slackId = String(formData.get("slackId") ?? "").trim();
   if (!slackId) return;
   await db.from("self_review_exceptions").delete().eq("slack_id", slackId);
   revalidatePath("/admins");
-}
+});
 
-export async function warnPlayer(formData: FormData): Promise<void> {
-  const by = await requireWarnAccess();
+export const warnPlayer = guardedAction("warnPlayer", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
   const userId = String(formData.get("userId") ?? "");
   const message = String(formData.get("message") ?? "").trim() || DEFAULT_WARNING;
   if (!userId) return;
@@ -232,7 +216,7 @@ export async function warnPlayer(formData: FormData): Promise<void> {
   );
   await logModAction(userId, "warn", message, by);
   revalidatePath("/", "layout");
-}
+});
 
 function readSeconds(value: FormDataEntryValue | null): number {
   const n = Number(String(value ?? "0"));
@@ -517,14 +501,13 @@ async function voidFirstPassPayouts(
   if (error) console.error("voidFirstPassPayouts failed", error.message);
 }
 
-// Lets a super admin change the per-verdict reviewer payout rate from the
+// Lets an owner change the per-verdict reviewer payout rate from the
 // Admins page without a code change/redeploy - e.g. temporarily paying out
 // on needs_changes during a review push, or adjusting the approval rate for
 // a particular occasion. Both fields are clamped to a sane non-negative
 // range; 0 disables payouts for that verdict entirely (recordSettledPayout
 // skips entirely when the resolved rate is 0).
-export async function updateReviewPayoutSettings(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const updateReviewPayoutSettings = guardedAction("updateReviewPayoutSettings", "owner", async (access, formData: FormData): Promise<void> => {
   const clamp = (raw: FormDataEntryValue | null): number => {
     const n = Number(String(raw ?? "0"));
     if (!Number.isFinite(n) || n < 0) return 0;
@@ -543,7 +526,7 @@ export async function updateReviewPayoutSettings(formData: FormData): Promise<vo
     .eq("id", 1);
   if (error) console.error("updateReviewPayoutSettings failed", error.message);
   revalidatePath("/admins");
-}
+});
 
 // How a reviewer is credited in maker-facing notes. Prefers the Slack @handle;
 // never leaks a raw Slack user id (login stores the id as the name when Slack
@@ -605,8 +588,7 @@ async function claimedHoursForCollaborator(
 // both fall back to approved_hours ?? hours per entry, so this immediately
 // changes the overall claimed/credited total shown and enforced everywhere
 // else on the review page, no separate "recompute total" step needed.
-export async function setJournalHours(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const setJournalHours = guardedAction("setJournalHours", "reviewer", async (access, formData: FormData): Promise<void> => {
   const journalId = Number(formData.get("journalId") ?? 0);
   const projectId = Number(formData.get("projectId") ?? 0);
   if (!journalId || !projectId) return;
@@ -664,7 +646,7 @@ export async function setJournalHours(formData: FormData): Promise<void> {
   }
 
   revalidatePath(`/review/${projectId}`);
-}
+});
 
 async function acceptedCollaboratorUserIds(projectId: number): Promise<string[]> {
   const { data } = await db
@@ -886,15 +868,12 @@ async function creditBeneficiary(
 // lib/aiReview.ts) from the same objective facts a reviewer already has open
 // on the page - commits, journals, Hackatime numbers, trust factor, cross-YSWS
 // duplicate check. The button is visible to every reviewer (so they know the
-// feature exists and can ask an admin to run it), but only requireSuper()
-// passes actually generate a draft - this never proposes a verdict or
+// feature exists and can ask an admin to run it), but only owners
+// actually generate a draft - this never proposes a verdict or
 // credited hours, and nothing it returns is saved/submitted on its own, the
 // reviewer copies whatever they want into the real form fields themselves.
-export async function generateAiReviewDraftAction(
-  projectId: number,
-  reviewerHours?: number,
-): Promise<AiReviewDraft> {
-  await requireSuper();
+export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftAction", "owner", async (access, projectId: number,
+  reviewerHours?: number,): Promise<AiReviewDraft> => {
   if (!projectId) throw new Error("Missing project id");
 
   const { data: p, error } = await db
@@ -951,15 +930,14 @@ export async function generateAiReviewDraftAction(
     yswsMatches,
     styleExamples,
   });
-}
+});
 
 // Two-pass review. A shipped project always gets a first pass from *some*
 // reviewer , even a final reviewer's first look on a fresh 'shipped' project is
 // only a proposal, same as anyone else's. It moves to 'second_review' and needs
 // a DIFFERENT final reviewer to confirm or overturn it before pixels are
 // credited. "Request changes" bounces it back to the maker from either stage.
-export async function reviewProject(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const reviewProject = guardedAction("reviewProject", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   // Pixels this verdict pays the reviewer, shown as "+N pixels" on their next page.
   let rewardPx = 0;
@@ -1001,7 +979,7 @@ export async function reviewProject(formData: FormData): Promise<void> {
   const own = await isOwnProject(access, current.user_id);
   if (
     stage === "shipped" &&
-    !access.isSuper &&
+    !access.isOwner &&
     own &&
     !(await hasSelfReviewException(access.session.slackId))
   )
@@ -1016,7 +994,7 @@ export async function reviewProject(formData: FormData): Promise<void> {
   if (isProposedBan) {
     if (!access.canSecondPass)
       redirect(`${back}?error=${encodeURIComponent("You don't have second-pass review access.")}`);
-    if (!access.isSuper && current.first_pass_by === by)
+    if (!access.isOwner && current.first_pass_by === by)
       redirect(`${back}?error=${encodeURIComponent("A different reviewer must confirm or overturn this ban proposal.")}`);
   } else if (stage === "second_review") {
     // A real approve/needs_changes/ban verdict at second_review is now the
@@ -1025,8 +1003,8 @@ export async function reviewProject(formData: FormData): Promise<void> {
     // gives it, same as the rest of Spot check's gating.
     if (current.second_pass_verdict !== "not_fraud")
       redirect(`${back}?error=${encodeURIComponent("This still needs a fraud triage (Fraud / Not fraud) before a final verdict.")}`);
-    if (!access.isSuper)
-      redirect(`${back}?error=${encodeURIComponent("Only a super admin gives the final verdict, in Spot check.")}`);
+    if (!access.isOwner)
+      redirect(`${back}?error=${encodeURIComponent("Only an owner gives the final verdict, in Spot check.")}`);
   }
   if (!note)
     redirect(`${back}?error=${encodeURIComponent("Feedback is required for every verdict.")}`);
@@ -1733,11 +1711,10 @@ export async function reviewProject(formData: FormData): Promise<void> {
   const nextPath = await nextReviewPath(access, by, stage, projectId);
   revalidatePath("/review");
   redirect(nextPath);
-}
+});
 
 // Reviewers can re-grade the difficulty level (L1–L4) a maker self-assigned.
-export async function setProjectLevel(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const setProjectLevel = guardedAction("setProjectLevel", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const level = Number(formData.get("level") ?? 0);
@@ -1770,14 +1747,13 @@ export async function setProjectLevel(formData: FormData): Promise<void> {
   );
   revalidatePath(back);
   redirect(back);
-}
+});
 
 // A reviewer can correct the hardware funding grant a maker asked for (e.g.
 // the cart total didn't match, or an item got swapped out) before approving ,
 // this is what the payout calculator and the approval-time deduction actually
 // use, so it has to be settled before the verdict is submitted.
-export async function updateFundingAmount(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const updateFundingAmount = guardedAction("updateFundingAmount", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const back = `/review/${projectId}`;
@@ -1808,7 +1784,7 @@ export async function updateFundingAmount(formData: FormData): Promise<void> {
   );
   revalidatePath(back);
   redirect(back);
-}
+});
 
 // Undoes whatever referral side effects this specific project caused for a
 // beneficiary, if any , counterpart to the boost/reward grants in
@@ -1853,9 +1829,8 @@ async function reverseReferralForRevokedProject(
   }
 }
 
-export async function reReviewProject(formData: FormData): Promise<void> {
+export const reReviewProject = guardedAction("reReviewProject", "owner", async (access, formData: FormData): Promise<void> => {
   // Send back to review is a staff action , admins only (not plain reviewers).
-  const access = await requirePerm("ban");
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   if (!projectId) return;
@@ -1940,14 +1915,13 @@ export async function reReviewProject(formData: FormData): Promise<void> {
   });
   if (notifyError) console.error("re-review notification failed", notifyError.message);
   revalidatePath("/", "layout");
-}
+});
 
 // A free-form internal note on a project, unrelated to any verdict - just
 // context for whoever looks at this project next (see
 // drizzle/0195_project_notes.sql). Any reviewer can add one, on any project,
 // at any review stage.
-export async function addProjectNote(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const addProjectNote = guardedAction("addProjectNote", "reviewer", async (access, formData: FormData): Promise<void> => {
   const projectId = Number(formData.get("projectId") ?? 0);
   const body = String(formData.get("body") ?? "").trim().slice(0, 2000);
   if (!projectId || !body) return;
@@ -1969,7 +1943,7 @@ export async function addProjectNote(formData: FormData): Promise<void> {
   if (error) console.error("addProjectNote", error.message);
   revalidatePath(`/projects/${projectId}`);
   revalidatePath(`/review/${projectId}`);
-}
+});
 
 // A final reviewer correcting the player-facing title/description/image ,
 // these are the exact same columns the player's own project page and the
@@ -1983,14 +1957,13 @@ export async function addProjectNote(formData: FormData): Promise<void> {
 // Manually skips Robert's fraud review for a project parked in fraud_review
 // (e.g. no Hackatime data for Robert to score) and moves it straight to Spot
 // check, same shape as robertOutcome.ts's reviewPatch but with no score.
-export async function skipRobertPass(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const skipRobertPass = guardedAction("skipRobertPass", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const back = `/review/${projectId}`;
   if (!projectId) return;
-  if (!access.canSecondPass && !access.isSuper)
-    redirect(`${back}?error=${encodeURIComponent("Only a final reviewer or a super admin can skip Robert's review.")}`);
+  if (!access.canSecondPass && !access.isOwner)
+    redirect(`${back}?error=${encodeURIComponent("Only a final reviewer or an owner can skip Robert's review.")}`);
 
   const { data: project, error } = await db
     .from("projects")
@@ -2014,10 +1987,9 @@ export async function skipRobertPass(formData: FormData): Promise<void> {
   await logModAction(project.user_id as string, "project_robert_skipped", `${project.name}: skipped Robert's fraud review`, by);
   revalidatePath("/review");
   redirect(back);
-}
+});
 
-export async function applySubmissionEdits(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const applySubmissionEdits = guardedAction("applySubmissionEdits", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const back = `/review/${projectId}`;
@@ -2076,12 +2048,12 @@ export async function applySubmissionEdits(formData: FormData): Promise<void> {
   await logModAction(
     current.user_id,
     "project_edited",
-    `${edits.name ?? current.name}: ${access.canSecondPass ? "final reviewer" : "a super admin"} edited ${Object.keys(edits).join(", ")}`,
+    `${edits.name ?? current.name}: ${access.canSecondPass ? "final reviewer" : "an owner"} edited ${Object.keys(edits).join(", ")}`,
     by,
   );
   revalidatePath(`/review/${projectId}`);
   revalidatePath(`/projects/${projectId}`);
-}
+});
 
 // A final reviewer looking at a second_review project isn't confident enough
 // to confirm or overturn the first pass , send it back to the front of the
@@ -2092,8 +2064,7 @@ export async function applySubmissionEdits(formData: FormData): Promise<void> {
 // something outside their control (flaky demo, ambiguous scope, etc).
 // Distinct from reReviewProject, which reopens a project that already got a
 // FINAL verdict.
-export async function sendBackToFirstPass(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const sendBackToFirstPass = guardedAction("sendBackToFirstPass", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
@@ -2162,7 +2133,7 @@ export async function sendBackToFirstPass(formData: FormData): Promise<void> {
   );
   revalidatePath("/review");
   redirect("/review");
-}
+});
 
 // A final reviewer sends a second_review project back to its owner as an
 // editable draft (the reviewer-side counterpart of the player's own unship,
@@ -2171,8 +2142,7 @@ export async function sendBackToFirstPass(formData: FormData): Promise<void> {
 // every review field is wiped (see unshipResetFields) and the player and any
 // accepted collaborators are told. The first-pass reviewer's payout follows
 // the same rule as a send-back: paid in full unless this was their mistake.
-export async function unshipProject(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const unshipProject = guardedAction("unshipProject", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
@@ -2239,12 +2209,11 @@ export async function unshipProject(formData: FormData): Promise<void> {
   revalidatePath("/review");
   revalidatePath(`/projects/${projectId}`);
   redirect("/review");
-}
+});
 
 // Second pass now runs its own fraud checks (Telescreen) via the checklist
 // below, so there's no separate fraud stage left to skip.
-export async function updateSecondPassChecklist(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const updateSecondPassChecklist = guardedAction("updateSecondPassChecklist", "reviewer", async (access, formData: FormData): Promise<void> => {
   if (!access.canSecondPass) redirect(`/review?error=${encodeURIComponent("Only a final reviewer can update this.")}`);
   const projectId = Number(formData.get("projectId") ?? 0);
   const field = String(formData.get("field") ?? "");
@@ -2264,12 +2233,11 @@ export async function updateSecondPassChecklist(formData: FormData): Promise<voi
   if (error) console.error("updateSecondPassChecklist failed", error.message);
   revalidatePath(back);
   redirect(back);
-}
+});
 
 // Manual pixel correction from the Pixels tab. Deducts (or grants) whole
 // pixels with a mandatory reason; owners only, everything lands in the ledger.
-export async function adjustPixels(formData: FormData): Promise<void> {
-  const access = await requirePerm("pixels");
+export const adjustPixels = guardedAction("adjustPixels", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const userId = String(formData.get("userId") ?? "").trim();
   const amount = Math.round(Number(formData.get("amount") ?? 0));
@@ -2306,10 +2274,9 @@ export async function adjustPixels(formData: FormData): Promise<void> {
   await dmOrEmail(userId, title, body);
   revalidatePath("/pixels");
   redirect("/pixels?adjusted=1");
-}
+});
 
-export async function archiveProject(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const archiveProject = guardedAction("archiveProject", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const unarchive = formData.get("unarchive") === "1";
@@ -2331,7 +2298,7 @@ export async function archiveProject(formData: FormData): Promise<void> {
     by,
   );
   revalidatePath("/", "layout");
-}
+});
 
 // One person on the project: the owner, or an accepted collaborator. Each one
 // gets their own Airtable row (their own name/address/birthday, their own
@@ -2556,8 +2523,7 @@ async function pushPersonToAirtable(
   return null;
 }
 
-export async function sendProjectToAirtable(formData: FormData): Promise<void> {
-  await requirePerm("ban");
+export const sendProjectToAirtable = guardedAction("sendProjectToAirtable", "owner", async (access, formData: FormData): Promise<void> => {
   const projectId = Number(formData.get("projectId") ?? 0);
   if (!projectId) return;
   const back = `/projects/${projectId}`;
@@ -2568,7 +2534,7 @@ export async function sendProjectToAirtable(formData: FormData): Promise<void> {
   }
 
   revalidatePath(back);
-}
+});
 
 // A beneficiary's pixel payout for `hours` on this project, as if `hours` had
 // been the true credited figure all along - same rate formula creditBeneficiary
@@ -2603,8 +2569,7 @@ async function repriceForHours(
 // Owners/super-admins only: this DMs the player(s) and can cancel their
 // orders, a bigger blast radius than the "pixels" permission's manual
 // grant/deduct tool.
-export async function deflateProjectHours(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const deflateProjectHours = guardedAction("deflateProjectHours", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const back = `/projects/${projectId}`;
@@ -2719,7 +2684,7 @@ export async function deflateProjectHours(formData: FormData): Promise<void> {
   );
 
   revalidatePath(back);
-}
+});
 
 // Any reviewer can nominate a project as a "Beacon" - a cosmetic badge shown
 // wherever the project is displayed publicly (explore, project page), never
@@ -2727,8 +2692,7 @@ export async function deflateProjectHours(formData: FormData): Promise<void> {
 // staff actions above, since this is a grading call any reviewer can make.
 // Internal name (isPeak, is_peak, project_peak_marked) stays as-is, this is
 // a display rename only, not worth a DB migration.
-export async function toggleProjectPeak(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const toggleProjectPeak = guardedAction("toggleProjectPeak", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const isPeak = formData.get("isPeak") === "1";
@@ -2750,7 +2714,7 @@ export async function toggleProjectPeak(formData: FormData): Promise<void> {
     by,
   );
   revalidatePath("/", "layout");
-}
+});
 
 // Normally only hours from hackatimeCutoffUnix onward count (see
 // HACKATIME_CUTOFF in apps/server). Some projects are legitimately started
@@ -2759,8 +2723,7 @@ export async function toggleProjectPeak(formData: FormData): Promise<void> {
 // hackatime_seconds accordingly. Requires a note so it's auditable, and only
 // raises the stored total (never used to quietly lower it, ReviewForm's own
 // "credited hours" field already covers lowering).
-export async function extendHoursCutoff(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const extendHoursCutoff = guardedAction("extendHoursCutoff", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
   const projectId = Number(formData.get("projectId") ?? 0);
@@ -2787,7 +2750,7 @@ export async function extendHoursCutoff(formData: FormData): Promise<void> {
   // Super-admins are already trusted with bigger self-adjacent calls
   // (deflateProjectHours et al) - a plain reviewer still can't touch their
   // own project's cutoff, self-review = cheating.
-  if (!access.isSuper && (await isOwnProject(access, project.user_id)))
+  if (!access.isOwner && (await isOwnProject(access, project.user_id)))
     redirect(`${back}?error=${encodeURIComponent("You can't act on your own project.")}`);
   // Draft/shipped/second_review/needs_changes are all fair game - a reviewer
   // may want to set this up before the player even ships. approved is too
@@ -2845,10 +2808,9 @@ export async function extendHoursCutoff(formData: FormData): Promise<void> {
   );
   revalidatePath(back);
   redirect(back);
-}
+});
 
-export async function rejectProject(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const rejectProject = guardedAction("rejectProject", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
@@ -2889,10 +2851,9 @@ export async function rejectProject(formData: FormData): Promise<void> {
 
   await dmOrEmail(project.user_id, "Project rejected", body);
   revalidatePath("/", "layout");
-}
+});
 
-export async function unrejectProject(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const unrejectProject = guardedAction("unrejectProject", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   if (!projectId) return;
@@ -2914,10 +2875,9 @@ export async function unrejectProject(formData: FormData): Promise<void> {
   });
   if (notifyError) console.error("unreject notification failed", notifyError.message);
   revalidatePath("/", "layout");
-}
+});
 
-export async function banProject(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const banProject = guardedAction("banProject", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
@@ -2963,10 +2923,9 @@ export async function banProject(formData: FormData): Promise<void> {
 
   await dmOrEmail(project.user_id, "Project banned", body);
   revalidatePath("/", "layout");
-}
+});
 
-export async function unbanProject(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const unbanProject = guardedAction("unbanProject", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   if (!projectId) return;
@@ -2988,18 +2947,17 @@ export async function unbanProject(formData: FormData): Promise<void> {
   });
   if (notifyError) console.error("unban notification failed", notifyError.message);
   revalidatePath("/", "layout");
-}
+});
 
 // Any reviewer can put a project's review on hold: blocks submitting any
 // verdict (first pass, final pass, extend cutoff, send back, ban) while set,
 // but the project stays visible in the queue as normal. No expiry - stays
-// held until the reviewer who set it, or a super admin, releases it (see
+// held until the reviewer who set it, or an owner, releases it (see
 // canReleaseHold below). hold_by stores the same "Name (SlackID)" format as
 // first_pass_by/ban_by (not the player-facing reviewerLabel - a hold is
 // never shown to the player), so the setter's id can be recovered reliably
 // for that release check instead of matching on a display name.
-export async function holdReview(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const holdReview = guardedAction("holdReview", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 500);
@@ -3025,31 +2983,29 @@ export async function holdReview(formData: FormData): Promise<void> {
   await logModAction(project.user_id, "review_held", `${project.name}: ${reason}`, by);
   revalidatePath(`/review/${projectId}`);
   revalidatePath("/review");
-}
+});
 
 // Global "live mode" (see lib/liveMode.ts): hides players' real identities
 // across the whole dashboard so it can be screen-shared. A cookie, not a DB flag,
 // so it only ever affects the person who flipped it.
-export async function setLiveMode(formData: FormData): Promise<void> {
-  if (!(await getAccess())) throw new Error("Not signed in");
+export const setLiveMode = guardedAction("setLiveMode", "staff", async (access, formData: FormData): Promise<void> => {
   const on = formData.get("on") === "1";
   const jar = await cookies();
   jar.set(LIVE_MODE_COOKIE, on ? "1" : "0", { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 12 });
   // Every new live session starts with other reviewers' names hidden again.
   jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
   revalidatePath("/", "layout");
-}
+});
 
 // The "Show reviewer names" button: while live, reveals (or re-hides) other
 // reviewers' names. A session cookie, cleared again by setLiveMode.
-export async function setShowReviewerNames(formData: FormData): Promise<void> {
-  if (!(await getAccess())) throw new Error("Not signed in");
+export const setShowReviewerNames = guardedAction("setShowReviewerNames", "staff", async (access, formData: FormData): Promise<void> => {
   const show = formData.get("show") === "1";
   const jar = await cookies();
   if (show) jar.set(LIVE_SHOW_REVIEWERS_COOKIE, "1", { httpOnly: true, sameSite: "lax", path: "/" });
   else jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
   revalidatePath("/", "layout");
-}
+});
 
 // Extracts the Slack id from an actorName()-formatted string ("Name (SlackID)"),
 // used to tell whether the caller is the same reviewer who set a hold.
@@ -3057,8 +3013,7 @@ function slackIdFromActorName(label: string): string {
   return label.match(/\(([^)]+)\)\s*$/)?.[1] ?? "";
 }
 
-export async function releaseReviewHold(formData: FormData): Promise<void> {
-  const access = await requirePerm("review");
+export const releaseReviewHold = guardedAction("releaseReviewHold", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
   const returnTo = safeRedirectPath(formData.get("returnTo"), `/review/${projectId}`);
@@ -3072,7 +3027,7 @@ export async function releaseReviewHold(formData: FormData): Promise<void> {
   if (!current?.hold_by) return; // nothing held, nothing to do
 
   const setById = slackIdFromActorName(current.hold_by as string);
-  if (!access.isSuper && setById !== access.session.slackId)
+  if (!access.isOwner && setById !== access.session.slackId)
     redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("Only the reviewer who held this, or an admin, can release it.")}`);
 
   const { data: project, error } = await db
@@ -3088,7 +3043,7 @@ export async function releaseReviewHold(formData: FormData): Promise<void> {
   await logModAction(project.user_id, "review_hold_released", project.name, by);
   revalidatePath(`/review/${projectId}`);
   revalidatePath("/review");
-}
+});
 
 // Shared review-form draft (technical features, hackatime evidence, notes,
 // deflation reason, note-to-player, hours/tier) - see review_draft on
@@ -3100,11 +3055,8 @@ export async function releaseReviewHold(formData: FormData): Promise<void> {
 // is a first-pass reviewer's own second visit, or another first-pass
 // reviewer picking up someone else's queue, sees the same in-progress notes
 // too, not just a spot-checking super.
-export async function saveReviewDraft(
-  projectId: number,
-  draft: Record<string, string | number>,
-): Promise<void> {
-  const access = await requirePerm("review");
+export const saveReviewDraft = guardedAction("saveReviewDraft", "reviewer", async (access, projectId: number,
+  draft: Record<string, string | number>,): Promise<void> => {
   if (!projectId) return;
   const { error } = await db
     .from("projects")
@@ -3116,14 +3068,13 @@ export async function saveReviewDraft(
     .eq("id", projectId)
     .in("status", ["shipped", "second_review"]);
   if (error) console.error("saveReviewDraft failed", error.message);
-}
+});
 
 // Accept/reject a public form submission (pixl.hackclub.com/form/*, see
 // apps/server/src/routes/forms.ts). DMs the submitter directly by Slack id -
 // they never got a Pixl account, so there's no notifications row or
 // notifyOwner() to reuse here.
-export async function decideFormSubmission(formData: FormData): Promise<void> {
-  const access = await requirePerm("forms");
+export const decideFormSubmission = guardedAction("decideFormSubmission", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const decision = String(formData.get("decision") ?? "");
   const note = String(formData.get("note") ?? "").trim().slice(0, 1000);
@@ -3158,14 +3109,13 @@ export async function decideFormSubmission(formData: FormData): Promise<void> {
   }
 
   revalidatePath("/forms");
-}
+});
 
 // "Keep for later" - moves a pending submission into its own section on the
 // Forms tab without deciding on it (status stays 'pending'), and DMs the
 // applicant that they cleared a first pass with a second round to come. Not
 // a real decision - accept/reject is still a separate, later action.
-export async function markFormSubmissionInteresting(formData: FormData): Promise<void> {
-  const access = await requirePerm("forms");
+export const markFormSubmissionInteresting = guardedAction("markFormSubmissionInteresting", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const note = String(formData.get("note") ?? "").trim().slice(0, 1000);
   if (!id) return;
@@ -3194,12 +3144,11 @@ export async function markFormSubmissionInteresting(formData: FormData): Promise
   }
 
   revalidatePath("/forms");
-}
+});
 
 // Reverts a "kept for later" mark back to plain pending, no DM - for an
 // accidental click or a change of mind before any real decision was made.
-export async function unmarkFormSubmissionInteresting(formData: FormData): Promise<void> {
-  await requirePerm("forms");
+export const unmarkFormSubmissionInteresting = guardedAction("unmarkFormSubmissionInteresting", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -3209,14 +3158,13 @@ export async function unmarkFormSubmissionInteresting(formData: FormData): Promi
     .eq("status", "pending");
   if (error) console.error("unmarkFormSubmissionInteresting failed", error.message);
   revalidatePath("/forms");
-}
+});
 
 // Lets an admin add/edit/remove questions and set a close date on a public
 // form (pixl.hackclub.com/form/*) from the Forms tab, without a deploy -
 // apps/server/src/routes/forms.ts reads this table live. questionsJson is a
 // JSON-encoded array of {key, label} built client-side by FormEditor.
-export async function saveFormConfig(formData: FormData): Promise<void> {
-  const access = await requirePerm("forms");
+export const saveFormConfig = guardedAction("saveFormConfig", "owner", async (access, formData: FormData): Promise<void> => {
   const formKey = String(formData.get("formKey") ?? "").trim();
   const title = String(formData.get("title") ?? "").trim().slice(0, 200);
   const description = String(formData.get("description") ?? "").trim().slice(0, 2000);
@@ -3262,7 +3210,7 @@ export async function saveFormConfig(formData: FormData): Promise<void> {
   if (error) console.error("saveFormConfig failed", error.message);
 
   revalidatePath("/forms");
-}
+});
 
 // Keeps an active review's claim (reviewing_by/reviewing_at, see claimReview
 // and REVIEW_LOCK_MS in lib/db.ts) alive while the reviewer is actually still
@@ -3270,15 +3218,14 @@ export async function saveFormConfig(formData: FormData): Promise<void> {
 // component. Only ever refreshes a claim the caller already holds (the
 // reviewing_by match), so it can neither steal someone else's claim nor
 // resurrect one that already expired and was picked up by someone else.
-export async function heartbeatReview(projectId: number): Promise<void> {
-  const access = await requirePerm("review");
+export const heartbeatReview = guardedAction("heartbeatReview", "reviewer", async (access, projectId: number): Promise<void> => {
   if (!projectId) return;
   await db
     .from("projects")
     .update({ reviewing_at: new Date().toISOString() })
     .eq("id", projectId)
     .eq("reviewing_by", access.session.slackId);
-}
+});
 
 // Gives up an active review's claim early - called by ReviewHeartbeat once
 // the tab has been hidden/unfocused for 5+ minutes straight, rather than
@@ -3286,18 +3233,16 @@ export async function heartbeatReview(projectId: number): Promise<void> {
 // reviewer isn't blocked from picking up a project someone just isn't
 // actively looking at anymore. Same ownership guard as heartbeatReview: only
 // ever clears a claim the caller currently holds.
-export async function releaseReviewClaim(projectId: number): Promise<void> {
-  const access = await requirePerm("review");
+export const releaseReviewClaim = guardedAction("releaseReviewClaim", "reviewer", async (access, projectId: number): Promise<void> => {
   if (!projectId) return;
   await db
     .from("projects")
     .update({ reviewing_by: "", reviewing_at: null })
     .eq("id", projectId)
     .eq("reviewing_by", access.session.slackId);
-}
+});
 
-export async function banIdea(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const banIdea = guardedAction("banIdea", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const ideaId = Number(formData.get("ideaId") ?? 0);
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
@@ -3330,10 +3275,9 @@ export async function banIdea(formData: FormData): Promise<void> {
   });
   if (notifyError) console.error("idea ban notification failed", notifyError.message);
   revalidatePath("/ideas");
-}
+});
 
-export async function unbanIdea(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const unbanIdea = guardedAction("unbanIdea", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const ideaId = Number(formData.get("ideaId") ?? 0);
   if (!ideaId) return;
@@ -3355,10 +3299,9 @@ export async function unbanIdea(formData: FormData): Promise<void> {
   });
   if (notifyError) console.error("idea unban notification failed", notifyError.message);
   revalidatePath("/ideas");
-}
+});
 
-export async function banPlayer(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const banPlayer = guardedAction("banPlayer", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const userId = String(formData.get("userId") ?? "");
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
@@ -3390,55 +3333,9 @@ export async function banPlayer(formData: FormData): Promise<void> {
   lines.push("If you believe this is a mistake, reach out to the Pixl team.");
   await dmOrEmail(userId, "Banned from Pixl", lines.join("\n\n"));
   revalidatePath("/", "layout");
-}
+});
 
-// Everyone who can confirm a ban proposal: super admins (env owners and the
-// super_admins table both) plus sub-admins explicitly holding the "ban"
-// permission.
-async function banConfirmerSlackIds(): Promise<string[]> {
-  const [admins, supers] = await Promise.all([listAdmins(), listSuperAdmins()]);
-  const withBanPerm = admins.filter((a) => a.permissions.includes("ban")).map((a) => a.slack_id);
-  return [
-    ...new Set([...ownerSlackIds(), ...supers.map((s) => s.slack_id), ...withBanPerm]),
-  ];
-}
-
-// Moderators can't ban directly , they propose one, and an admin/owner with
-// the "ban" permission confirms or rejects it (see confirmBanProposal /
-// rejectBanProposal below).
-export async function proposeBan(formData: FormData): Promise<void> {
-  const session = await requireModerator();
-  const by = `${session.name} (${session.slackId})`;
-  const userId = String(formData.get("userId") ?? "");
-  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
-  const hours = Number(formData.get("hours") ?? 0);
-  if (!userId || !reason) return;
-  await insertBanProposal(userId, reason, hours, by);
-  await logModAction(userId, "ban_proposed", hours > 0 ? `${hours}h , ${reason}` : `permanent , ${reason}`, by);
-
-  const { data: player } = await db
-    .from("users")
-    .select("display_name, real_name")
-    .eq("id", userId)
-    .maybeSingle();
-  const playerName = playerLabel(player, userId);
-  const durationText = hours > 0 ? `${hours}h` : "permanent";
-  const text = `${session.name} proposed a ${durationText} ban for ${playerName}: ${reason}\n\nReview it: ${DASH_URL}/bans`;
-  const confirmers = await banConfirmerSlackIds();
-  await Promise.all(
-    confirmers.map((slackId) =>
-      dmUser(slackId, text).catch((e) =>
-        console.error("ban proposal DM failed", slackId, (e as Error).message),
-      ),
-    ),
-  );
-
-  revalidatePath("/reports");
-  revalidatePath("/bans");
-}
-
-export async function confirmBanProposal(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const confirmBanProposal = guardedAction("confirmBanProposal", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
@@ -3472,10 +3369,9 @@ export async function confirmBanProposal(formData: FormData): Promise<void> {
   await dmOrEmail(proposal.user_id, "Banned from Pixl", lines.join("\n\n"));
   revalidatePath("/", "layout");
   revalidatePath("/bans");
-}
+});
 
-export async function rejectBanProposal(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const rejectBanProposal = guardedAction("rejectBanProposal", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
@@ -3484,10 +3380,9 @@ export async function rejectBanProposal(formData: FormData): Promise<void> {
   await decideBanProposal(id, "rejected", by);
   await logModAction(proposal.user_id, "ban_rejected", `proposed by ${proposal.proposed_by}`, by);
   revalidatePath("/bans");
-}
+});
 
-export async function liftBan(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const liftBan = guardedAction("liftBan", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const userId = String(formData.get("userId") ?? "");
   if (!userId) return;
@@ -3514,22 +3409,14 @@ export async function liftBan(formData: FormData): Promise<void> {
     );
   }
   revalidatePath("/", "layout");
-}
+});
 
 // Mass moderation from the Players page: one action applied to every selected
 // player, with the same guards, mod log entries and DMs as the single-player
 // versions. Capped so a stray select-all can't nuke the whole playerbase.
-export async function massPlayerAction(formData: FormData): Promise<void> {
+export const massPlayerAction = guardedAction("massPlayerAction", "owner", async (access, formData: FormData): Promise<void> => {
   const action = String(formData.get("massAction") ?? "");
-  const permFor: Record<string, Permission> = {
-    warn: "warn",
-    notify: "notify",
-    ban: "ban",
-    unban: "ban",
-  };
-  const perm = permFor[action];
-  if (!perm) return;
-  const access = await requirePerm(perm);
+  if (!["warn", "notify", "ban", "unban"].includes(action)) return;
   const by = actorName(access);
 
   const back = safeRedirectPath(formData.get("back"), "/players");
@@ -3629,10 +3516,9 @@ export async function massPlayerAction(formData: FormData): Promise<void> {
       `${verb} ${ids.length} player${ids.length === 1 ? "" : "s"}.`,
     )}`,
   );
-}
+});
 
-export async function sendNotification(formData: FormData): Promise<void> {
-  const access = await requirePerm("notify");
+export const sendNotification = guardedAction("sendNotification", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const title = String(formData.get("title") ?? "").trim().slice(0, 100);
   const body = String(formData.get("body") ?? "").trim().slice(0, 500);
@@ -3691,7 +3577,7 @@ export async function sendNotification(formData: FormData): Promise<void> {
   }
   revalidatePath("/", "layout");
   if (backTo) redirect(`${backTo}?sent=${rows.length}`);
-}
+});
 
 export interface PlayerHit {
   id: string;
@@ -3701,8 +3587,7 @@ export interface PlayerHit {
 
 // Typeahead for the notify page: find players by display name so an admin can
 // pick one instead of guessing the exact spelling.
-export async function searchPlayers(query: string): Promise<PlayerHit[]> {
-  await requirePerm("notify");
+export const searchPlayers = guardedAction("searchPlayers", "owner", async (access, query: string): Promise<PlayerHit[]> => {
   const clean = query.replace(/[%_,()\\]/g, " ").trim();
   if (clean.length < 2) return [];
   const { data, error } = await db
@@ -3720,52 +3605,41 @@ export async function searchPlayers(query: string): Promise<PlayerHit[]> {
     name: (u.real_name as string) || (u.display_name as string) || "(unnamed)",
     hasSlack: Boolean(u.slack_id),
   }));
-}
+});
 
-function readSubadminPerms(formData: FormData, existing: string[]): string[] {
-  const perms = formData
-    .getAll("perms")
-    .map(String)
-    .filter((p) => (SUBADMIN_PERMISSIONS as readonly string[]).includes(p));
-  if (existing.includes("review")) perms.push("review");
-  if (existing.includes(NO_REVIEW)) perms.push(NO_REVIEW);
-  if (existing.includes(SECOND_PASS)) perms.push(SECOND_PASS);
-  if (existing.includes(SPONSOR)) perms.push(SPONSOR);
-  return perms;
-}
-
-async function logTeamChange(
+// Every team change is one `team.change` audit_log row (replacing the old
+// team_log table). The meta carries before/after so the Team log can show it
+// and undoTeamChange can revert it. Slack ids and names of staff only, never
+// player data.
+async function recordTeamChange(
+  access: AdminAccess,
   slackId: string,
   name: string,
-  action: string,
+  change: string,
   before: string[],
   after: string[],
-  actor: string,
-  reason: string,
-): Promise<void> {
-  const { error } = await db.from("team_log").insert({
-    slack_id: slackId,
-    name,
-    action,
-    before,
-    after,
-    actor,
-    reason,
-  });
-  if (error) console.error("team log insert failed", error.message);
-}
-
-// Set someone's team permissions: empty = off the team entirely. Every change
-// lands in team_log so it can be undone.
-async function setTeamPerms(
-  slackId: string,
-  name: string,
-  permissions: string[],
-  action: string,
-  actor: string,
-  addedBy?: string,
   reason = "",
 ): Promise<void> {
+  await audit({
+    action: "team.change",
+    result: "ok",
+    slackId: access.session.slackId,
+    target: `slack:${slackId}`,
+    meta: { slack_id: slackId, name, change, before, after, actor: actorName(access), reason },
+  });
+}
+
+// Set someone's reviewer permissions: empty = no admins row at all. Only the
+// review permission and its markers may be stored (see lib/roles.ts).
+async function setTeamPerms(
+  access: AdminAccess,
+  slackId: string,
+  name: string,
+  requested: string[],
+  change: string,
+  reason = "",
+): Promise<void> {
+  const permissions = reviewerPermsOnly(requested);
   const existing = await getAdmin(slackId);
   if (permissions.length === 0) {
     if (!existing) return;
@@ -3777,181 +3651,22 @@ async function setTeamPerms(
         slack_id: slackId,
         name: name || existing?.name || slackId,
         permissions,
-        added_by: existing?.added_by || addedBy || "",
+        added_by: existing?.added_by || actorName(access),
       },
       { onConflict: "slack_id" },
     );
     if (error) throw new Error(error.message);
   }
-  await logTeamChange(
+  await recordTeamChange(
+    access,
     slackId,
     name || existing?.name || slackId,
-    action,
+    change,
     existing?.permissions ?? [],
     permissions,
-    actor,
     reason,
   );
   revalidatePath("/", "layout");
-}
-
-// Super admins hold every permission and are the only role that can hand
-// permissions out, promote other supers, or demote one. Env owners
-// (ADMIN_SLACK_IDS) are supers too but have no table row, so they can't be
-// demoted from here , that's deliberate, it's the lockout escape hatch.
-export async function addSuperAdminAction(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
-  const name = String(formData.get("name") ?? "").trim();
-  if (!/^[UW][A-Z0-9]{6,}$/.test(slackId))
-    redirect(
-      `/admins?serror=${encodeURIComponent("Enter a valid Slack member ID (starts with U).")}`,
-    );
-  await addSuperAdmin(slackId, name, actorName(access));
-  await logTeamChange(
-    slackId,
-    name || slackId,
-    "super added",
-    [],
-    ["super admin"],
-    actorName(access),
-    "",
-  );
-  await dmTeam(
-    slackId,
-    [
-      "You're a Pixl super admin now. 👑",
-      "That's full access to the dashboard: every permission, plus the ability to grant permissions and promote other super admins.",
-      `Sign in with Slack here: ${DASH_URL}`,
-    ].join("\n\n"),
-  );
-  revalidatePath("/", "layout");
-}
-
-export async function removeSuperAdminAction(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  const reason = String(formData.get("reason") ?? "").trim().slice(0, 500);
-  if (!slackId || !reason) return;
-  // Demoting yourself mid-session is the one move that can't be undone from
-  // the UI afterwards , another super has to do it.
-  if (slackId === access.session.slackId)
-    redirect(
-      `/admins?serror=${encodeURIComponent("You can't remove your own super admin access , ask another super admin.")}`,
-    );
-  const row = (await listSuperAdmins()).find((r) => r.slack_id === slackId);
-  if (!row) return;
-  await removeSuperAdmin(slackId);
-  await logTeamChange(
-    slackId,
-    row.name || slackId,
-    "super removed",
-    ["super admin"],
-    [],
-    actorName(access),
-    reason,
-  );
-  await dmRemoved(slackId, "Your Pixl super admin access has been removed.", reason);
-  revalidatePath("/", "layout");
-}
-
-export async function addAdmin(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  const name = String(formData.get("name") ?? "").trim();
-  if (!slackId) return;
-  const existing = await getAdmin(slackId);
-  const perms = readSubadminPerms(formData, existing?.permissions ?? []);
-  await setTeamPerms(
-    slackId,
-    name,
-    perms,
-    existing ? "updated" : "added",
-    actorName(access),
-    actorName(access),
-  );
-  if (!existing && perms.length > 0)
-    await dmTeam(
-      slackId,
-      [
-        "Welcome to the Pixl mod team! 🎉",
-        `You now have access to the Pixl dashboard with these permissions: ${perms.filter((p) => p !== "review").join(", ")}.`,
-        `Sign in with Slack here: ${DASH_URL}`,
-      ].join("\n\n"),
-    );
-}
-
-// Grants the Sponsor role in one go: warn, tickets (answer/resolve/fulfill),
-// review, and the SECOND_PASS marker (final-pass review), tagged with the
-// SPONSOR marker so the admin list can label them. Unions onto whatever perms
-// they already hold rather than clobbering them , same as addReviewer layering
-// on top of an existing admin. A super can still tick on any other permission
-// for this person afterward from the normal per-admin form below.
-export async function addSponsor(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  const name = String(formData.get("name") ?? "").trim();
-  if (!slackId) return;
-  const existing = await getAdmin(slackId);
-  const perms = [
-    ...new Set([
-      ...(existing?.permissions.filter((p) => p !== NO_REVIEW) ?? []),
-      ...SPONSOR_BASE_PERMS,
-      SECOND_PASS,
-      SPONSOR,
-    ]),
-  ];
-  await setTeamPerms(
-    slackId,
-    name,
-    perms,
-    existing ? "updated" : "added",
-    actorName(access),
-    actorName(access),
-    "",
-  );
-  await dmTeam(
-    slackId,
-    [
-      "You're a Pixl sponsor now! 🎉",
-      "That's warn, ticket handling (answer/resolve/fulfill), and review access, including the final pass , your approvals credit pixels.",
-      `Sign in with Slack here: ${DASH_URL}`,
-    ].join("\n\n"),
-  );
-}
-
-export async function updateAdminPerms(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  if (!slackId) return;
-  const existing = await getAdmin(slackId);
-  if (!existing) return;
-  await setTeamPerms(
-    slackId,
-    existing.name,
-    readSubadminPerms(formData, existing.permissions),
-    "updated",
-    actorName(access),
-  );
-}
-
-export async function removeAdmin(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  const reason = String(formData.get("reason") ?? "").trim().slice(0, 500);
-  if (!slackId || !reason) return;
-  const existing = await getAdmin(slackId);
-  if (!existing) return;
-  await setTeamPerms(
-    slackId,
-    existing.name,
-    existing.permissions.includes("review") ? ["review"] : [],
-    "removed",
-    actorName(access),
-    undefined,
-    reason,
-  );
-  await dmRemoved(slackId, "You've been removed from the Pixl mod team.", reason);
 }
 
 async function dmTeam(slackId: string, text: string): Promise<void> {
@@ -3971,41 +3686,41 @@ async function dmRemoved(slackId: string, headline: string, reason: string): Pro
   );
 }
 
-// Review rights that don't come from a "review" entry in the admins table:
-// super admins hold every permission, and SECOND_PASS_SLACK_IDS grants it in
-// the env. Taking review away from one of these writes a NO_REVIEW marker
-// instead of dropping a permission that was never stored.
-async function isImplicitReviewer(slackId: string): Promise<boolean> {
-  return (await isSuperAdmin(slackId)) || secondPassSlackIds().includes(slackId);
+// Owners review without an admins row. Taking review away from one writes a
+// NO_REVIEW marker instead of dropping a permission that was never stored.
+function isImplicitReviewer(slackId: string): boolean {
+  return ownerSlackIds().includes(slackId);
 }
 
-// Promote a reviewer to final (second-pass) reviewer, or take it back. The
+const SLACK_ID_RE = /^[UW][A-Z0-9]{6,}$/;
+
+/// Promote a reviewer to final (second-pass) reviewer, or take it back. The
 // grant lives as a SECOND_PASS marker in their admins row, alongside whatever
 // SECOND_PASS_SLACK_IDS says (env grants can only be changed in the env).
-export async function setSecondPass(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const setSecondPass = guardedAction("team.setSecondPass", "owner", async (access, formData: FormData): Promise<void> => {
   const slackId = String(formData.get("slackId") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
   const enable = formData.get("enable") === "1";
   if (!slackId) return;
   const existing = await getAdmin(slackId);
+  if (enable && !existing?.permissions.includes(REVIEW) && !isImplicitReviewer(slackId))
+    throw new Error("Add them as a reviewer first.");
   const kept = (existing?.permissions ?? []).filter((p) => p !== SECOND_PASS);
   const permissions = enable ? [...kept, SECOND_PASS] : kept;
   const already = existing?.permissions.includes(SECOND_PASS) ?? false;
   if (enable === already) return;
   await setTeamPerms(
+    access,
     slackId,
     name,
     permissions,
     enable ? "promoted to final reviewer" : "final reviewer removed",
-    actorName(access),
-    actorName(access),
   );
   if (enable)
     await dmTeam(
       slackId,
       [
-        "You've been promoted to final reviewer on Pixl! 🎉",
+        "You've been promoted to final reviewer on Pixl!",
         `You now handle the second pass: your approvals are the ones that credit pixels. The second-review queue is waiting for you: ${DASH_URL}/review`,
       ].join("\n\n"),
     );
@@ -4014,13 +3729,12 @@ export async function setSecondPass(formData: FormData): Promise<void> {
       slackId,
       "Your final-reviewer role on Pixl has been removed , you can still review first passes as usual. Contact the team if you think this is a mistake.",
     );
-}
+});
 
 // Let a reviewer edit submission details (title, image, repo/demo links,
 // description) without making them a final reviewer: just an EDIT_SUBMISSION
 // marker in their admins row. They have to be on the team already.
-export async function setEditSubmission(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const setEditSubmission = guardedAction("team.setEditSubmission", "owner", async (access, formData: FormData): Promise<void> => {
   const slackId = String(formData.get("slackId") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
   const enable = formData.get("enable") === "1";
@@ -4031,29 +3745,27 @@ export async function setEditSubmission(formData: FormData): Promise<void> {
   if (enable === already) return;
   const kept = existing.permissions.filter((p) => p !== EDIT_SUBMISSION);
   await setTeamPerms(
+    access,
     slackId,
     name,
     enable ? [...kept, EDIT_SUBMISSION] : kept,
     enable ? "edit submission access granted" : "edit submission access removed",
-    actorName(access),
-    actorName(access),
   );
   await dmTeam(
     slackId,
     enable
       ? [
-          "You can now edit submission details on the Pixl review dashboard 🎉",
+          "You can now edit submission details on the Pixl review dashboard.",
           "On a project's review page, open the \"Edit submission\" section to fix the title, image, repo/demo links and description. It applies right away, everywhere the project shows up, and it's separate from your verdict. Nothing else about your reviewer access changes.",
         ].join("\n\n")
       : "Your access to edit submission details on the Pixl review dashboard has been removed. You can still review as usual. Contact the team if you think this is a mistake.",
   );
-}
+});
 
 // Restrict a reviewer to one queue (software/hardware), or clear the
 // restriction back to both. Stored the same way as SECOND_PASS: a marker in
 // their admins row, mutually exclusive with its counterpart.
-export async function setReviewQueueAccess(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const setReviewQueueAccess = guardedAction("team.setReviewQueueAccess", "owner", async (access, formData: FormData): Promise<void> => {
   const slackId = String(formData.get("slackId") ?? "").trim();
   const name = String(formData.get("name") ?? "").trim();
   const scope = String(formData.get("scope") ?? "both") as ReviewQueueScope;
@@ -4064,131 +3776,92 @@ export async function setReviewQueueAccess(formData: FormData): Promise<void> {
   );
   const marker = scope === "hardware" ? REVIEW_HARDWARE_ONLY : scope === "software" ? REVIEW_SOFTWARE_ONLY : null;
   const permissions = marker ? [...kept, marker] : kept;
-  await setTeamPerms(
-    slackId,
-    name,
-    permissions,
-    `review queue access set to ${scope}`,
-    actorName(access),
-    actorName(access),
-  );
+  await setTeamPerms(access, slackId, name, permissions, `review queue access set to ${scope}`);
   const label = scope === "both" ? "both the software and hardware queues" : `the ${scope} queue only`;
   await dmTeam(slackId, `Your Pixl review queue access was changed , you can now review ${label}.`);
-}
+});
 
-export async function addReviewer(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
+export const addReviewer = guardedAction("team.addReviewer", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
   const name = String(formData.get("name") ?? "").trim();
-  if (!slackId) return;
+  if (!SLACK_ID_RE.test(slackId)) throw new Error("Enter a valid Slack member ID (starts with U).");
   const existing = await getAdmin(slackId);
   const kept = (existing?.permissions ?? []).filter((p) => p !== NO_REVIEW);
-  // Env admins review by default: lifting their block is enough, no row needed.
-  const implicit = await isImplicitReviewer(slackId);
-  const permissions = implicit ? kept : [...new Set([...kept, "review"])];
+  // Owners review by default: lifting their block is enough, no row needed.
+  const implicit = isImplicitReviewer(slackId);
+  const permissions = implicit ? kept : [...new Set([...kept, REVIEW])];
   const wasReviewer =
     !existing?.permissions.includes(NO_REVIEW) &&
-    (existing?.permissions.includes("review") || implicit);
-  await setTeamPerms(
-    slackId,
-    name,
-    permissions,
-    existing ? "updated" : "added",
-    actorName(access),
-    actorName(access),
-  );
+    (existing?.permissions.includes(REVIEW) || implicit);
+  await setTeamPerms(access, slackId, name, permissions, existing ? "updated" : "added");
   if (!wasReviewer)
     await dmTeam(
       slackId,
       [
-        "Welcome to the Pixl review team! 🎉",
+        "Welcome to the Pixl review team!",
         `You now have access to the review queue on the Pixl dashboard , projects shipped by players are waiting for your verdict: ${DASH_URL}/review`,
         "Happy reviewing!",
       ].join("\n\n"),
     );
-}
+});
 
-export async function removeReviewer(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const removeReviewer = guardedAction("team.removeReviewer", "owner", async (access, formData: FormData): Promise<void> => {
   const slackId = String(formData.get("slackId") ?? "").trim();
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 500);
   if (!slackId || !reason) return;
   const existing = await getAdmin(slackId);
-  const implicit = await isImplicitReviewer(slackId);
+  const implicit = isImplicitReviewer(slackId);
   if (!existing && !implicit) return;
-  const permissions = (existing?.permissions ?? []).filter((p) => p !== "review");
-  if (implicit && !permissions.includes(NO_REVIEW)) permissions.push(NO_REVIEW);
-  await setTeamPerms(
-    slackId,
-    existing?.name ?? "",
-    permissions,
-    "removed",
-    actorName(access),
-    actorName(access),
-    reason,
-  );
+  // Dropping "review" drops every review marker with it: they mean nothing
+  // without the permission, and a stale second_pass would come back to life
+  // on a later re-add.
+  const permissions = implicit ? [NO_REVIEW] : [];
+  await setTeamPerms(access, slackId, existing?.name ?? "", permissions, "removed", reason);
   await dmRemoved(slackId, "You've been removed from the Pixl review team.", reason);
   redirect("/reviewers");
-}
+});
 
-// Helpers manage the ticket queue. Owners add/remove them here; the same
-// `helpers` table is also managed from the Pixorpheus Slack bot.
-export async function addHelperAction(formData: FormData): Promise<void> {
-  await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  if (!slackId) return;
+// Helpers manage the ticket queue. Owners add/remove them from /admins (or
+// /tickets); the same `helpers` table is also managed from the Pixorpheus
+// Slack bot.
+export const addHelperAction = guardedAction("team.addHelper", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
+  if (!SLACK_ID_RE.test(slackId)) throw new Error("Enter a valid Slack member ID (starts with U).");
   await addHelper(slackId);
+  await recordTeamChange(access, slackId, slackId, "helper added", [], ["helper"]);
   revalidatePath("/tickets");
-}
+  revalidatePath("/admins");
+});
 
-export async function removeHelperAction(formData: FormData): Promise<void> {
-  await requireSuper();
+export const removeHelperAction = guardedAction("team.removeHelper", "owner", async (access, formData: FormData): Promise<void> => {
   const slackId = String(formData.get("slackId") ?? "").trim();
   if (!slackId) return;
   await removeHelper(slackId);
+  await recordTeamChange(access, slackId, slackId, "helper removed", ["helper"], []);
   revalidatePath("/tickets");
-}
+  revalidatePath("/admins");
+});
 
-// Fulfillers work the shop-order queue. Owners add/remove them here, same
-// shape as the ticket helpers list.
-export async function addFulfillerAction(formData: FormData): Promise<void> {
-  await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  if (!slackId) return;
+// Fulfillers work the shop-order queue. Same shape as the ticket helpers list.
+export const addFulfillerAction = guardedAction("team.addFulfiller", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
+  if (!SLACK_ID_RE.test(slackId)) throw new Error("Enter a valid Slack member ID (starts with U).");
   await addFulfiller(slackId);
+  await recordTeamChange(access, slackId, slackId, "fulfiller added", [], ["fulfiller"]);
   revalidatePath("/fulfillment");
-}
+  revalidatePath("/admins");
+});
 
-export async function removeFulfillerAction(formData: FormData): Promise<void> {
-  await requireSuper();
+export const removeFulfillerAction = guardedAction("team.removeFulfiller", "owner", async (access, formData: FormData): Promise<void> => {
   const slackId = String(formData.get("slackId") ?? "").trim();
   if (!slackId) return;
   await removeFulfiller(slackId);
+  await recordTeamChange(access, slackId, slackId, "fulfiller removed", ["fulfiller"], []);
   revalidatePath("/fulfillment");
-}
+  revalidatePath("/admins");
+});
 
-// Moderators are an owner-managed allow-list (see lib/guard.ts) , granted
-// from the Reports page since seeing reports is the core of the role.
-export async function addModeratorAction(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
-  const name = String(formData.get("name") ?? "").trim();
-  if (!/^[UW][A-Z0-9]{6,}$/.test(slackId))
-    redirect(`/reports?verror=${encodeURIComponent("Enter a valid Slack member ID (starts with U).")}`);
-  await addModerator(slackId, name, actorName(access));
-  revalidatePath("/reports");
-}
-
-export async function removeModeratorAction(formData: FormData): Promise<void> {
-  await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  if (!slackId) return;
-  await removeModerator(slackId);
-  revalidatePath("/reports");
-}
-
-export async function kickPlayer(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const kickPlayer = guardedAction("kickPlayer", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const userId = String(formData.get("userId") ?? "");
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 100);
@@ -4196,14 +3869,13 @@ export async function kickPlayer(formData: FormData): Promise<void> {
   const kicked = await kickOnlinePlayer(userId, reason);
   if (kicked) await logModAction(userId, "kick", reason || "(no reason)", by);
   revalidatePath("/online");
-}
+});
 
 // Clears every saved (user, scene) row so the player spawns at each scene's
 // default next time they connect. If they're currently online we also kick
 // them , otherwise their in-memory position just gets written straight back
 // on disconnect (see gameServer.ts persist()), undoing the reset.
-export async function resetPlayerPosition(formData: FormData): Promise<void> {
-  const access = await requirePerm("ban");
+export const resetPlayerPosition = guardedAction("resetPlayerPosition", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const userId = String(formData.get("userId") ?? "");
   if (!userId) return;
@@ -4223,12 +3895,11 @@ export async function resetPlayerPosition(formData: FormData): Promise<void> {
     by,
   );
   revalidatePath(`/players/${userId}`);
-}
+});
 
 // Owners only , touches the identity fields the review/export pipeline and
 // DMs key off of.
-export async function updatePlayerInfo(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const updatePlayerInfo = guardedAction("updatePlayerInfo", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const userId = String(formData.get("userId") ?? "");
   const displayName = String(formData.get("displayName") ?? "").trim().slice(0, 60);
@@ -4249,14 +3920,13 @@ export async function updatePlayerInfo(formData: FormData): Promise<void> {
     by,
   );
   revalidatePath(`/players/${userId}`);
-}
+});
 
 // Owners only , irreversible. Every FK back to users(id) cascades (see
 // drizzle/0019_user_delete_cascade.sql), including mod_actions, so there's no
 // row left to log this against afterwards , console.log is the only record
 // that survives.
-export async function deletePlayerAccount(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+export const deletePlayerAccount = guardedAction("deletePlayerAccount", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const userId = String(formData.get("userId") ?? "");
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
@@ -4286,50 +3956,22 @@ export async function deletePlayerAccount(formData: FormData): Promise<void> {
   console.log(`[admin] ${by} deleted account ${playerName} (${userId}): ${reason}`);
   revalidatePath("/players");
   redirect(`/players?done=${encodeURIComponent(`Deleted ${playerName}'s account.`)}`);
-}
+});
 
-// Upload a shop image to Supabase Storage (public "shop" bucket, created on
-// first use) and return its public URL. Resized/re-encoded to WebP first,
-// shop images are shown at most at 300×300 (the item detail page), but
-// admins often upload straight-from-phone photos that can be several MB,
-// which made shop pages painfully slow to load. Capping at 900×900 (a 3x
-// retina margin) and re-encoding to WebP keeps every upload small regardless
-// of what was submitted.
+/// Upload a shop image to the Hack Club CDN through the server's
+// /api/admin/uploads (service-key authenticated) and return its URL.
+// Resized/re-encoded to WebP first: shop images are shown at most at 300x300,
+// but admins often upload straight-from-phone photos that can be several MB.
+// The magic-byte sniff runs BEFORE sharp ever sees the bytes - sharp decodes
+// by content, so an SVG or other exotic format must never reach it.
 async function uploadShopImageBuffer(raw: Buffer): Promise<string> {
-  const base = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_KEY;
-  if (!base || !key) throw new Error("Supabase is not configured");
-  const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`;
+  if (!sniffFormat(raw)) throw new Error("Only PNG, JPEG or WebP images can be uploaded.");
   const { default: sharp } = await import("sharp");
-  const body = await sharp(raw)
+  const body = await sharp(raw, { failOn: "error" })
     .resize({ width: 900, height: 900, fit: "inside", withoutEnlargement: true })
     .webp({ quality: 82 })
     .toBuffer();
-  const upload = () =>
-    fetch(`${base}/storage/v1/object/shop/${name}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        apikey: key,
-        "Content-Type": "image/webp",
-      },
-      body,
-    });
-  let res = await upload();
-  if (res.status === 400 || res.status === 404) {
-    await fetch(`${base}/storage/v1/bucket`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        apikey: key,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ id: "shop", name: "shop", public: true }),
-    });
-    res = await upload();
-  }
-  if (!res.ok) throw new Error(`image upload failed (${res.status})`);
-  return `${base}/storage/v1/object/public/shop/${name}`;
+  return uploadImageBuffer(body);
 }
 
 async function uploadShopImage(file: File): Promise<string> {
@@ -4385,8 +4027,7 @@ function readOptions(raw: string): string[] {
 // field so old bookmarked/scripted submits with just that field still work);
 // each region can override the shared `price` via a `price_<REGION>` field,
 // e.g. `price_INDIA`, a region with no such field just uses `price`.
-export async function addShopItem(formData: FormData): Promise<void> {
-  const access = await requirePerm("shop");
+export const addShopItem = guardedAction("addShopItem", "owner", async (access, formData: FormData): Promise<void> => {
   const name = String(formData.get("name") ?? "").trim().slice(0, 60);
   const description = String(formData.get("description") ?? "").trim().slice(0, 300);
   const basePrice = Math.max(0, Math.round(Number(formData.get("price") ?? 0)));
@@ -4458,7 +4099,7 @@ export async function addShopItem(formData: FormData): Promise<void> {
     if (inserted) await notifyShopInsert(inserted as ShopRowSnapshot);
   }
   revalidatePath("/shop");
-}
+});
 
 // Shown as a banner on /shop instead of letting the action throw, which in
 // production only surfaces as an opaque "Minified React error #441".
@@ -4466,8 +4107,7 @@ function shopItemError(region: string, message: string): never {
   redirect(`/shop?region=${encodeURIComponent(region)}&shopError=${encodeURIComponent(message)}`);
 }
 
-export async function updateShopItem(formData: FormData): Promise<void> {
-  await requirePerm("shop");
+export const updateShopItem = guardedAction("updateShopItem", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const name = String(formData.get("name") ?? "").trim().slice(0, 60);
   const description = String(formData.get("description") ?? "").trim().slice(0, 300);
@@ -4722,7 +4362,7 @@ export async function updateShopItem(formData: FormData): Promise<void> {
   }
 
   revalidatePath("/shop");
-}
+});
 
 // Reprices an item across every region in one save, so an admin doesn't have
 // to switch the region tab and reopen "Edit item" per region. Matched by name
@@ -4731,8 +4371,7 @@ export async function updateShopItem(formData: FormData): Promise<void> {
 // renders all of SHOP_REGIONS) is left untouched; a region with no existing
 // row for this item is a no-op update, not an insert , stocking a brand new
 // region still goes through "Add an item" on that region's tab.
-export async function updateShopItemPrices(formData: FormData): Promise<void> {
-  await requirePerm("shop");
+export const updateShopItemPrices = guardedAction("updateShopItemPrices", "owner", async (access, formData: FormData): Promise<void> => {
   const name = String(formData.get("item_name") ?? "").trim();
   if (!name) return;
 
@@ -4777,7 +4416,7 @@ export async function updateShopItemPrices(formData: FormData): Promise<void> {
   );
 
   revalidatePath("/shop");
-}
+});
 
 // Powers the /shop-detail page: one save per item that can touch every
 // region's price, its price-source link, and (for configurator items like the
@@ -4860,8 +4499,7 @@ function resolveConfigGroupsForRegion(
   }));
 }
 
-export async function updateShopItemRegionDetails(formData: FormData): Promise<void> {
-  await requirePerm("shop");
+export const updateShopItemRegionDetails = guardedAction("updateShopItemRegionDetails", "owner", async (access, formData: FormData): Promise<void> => {
   const name = String(formData.get("item_name") ?? "").trim();
   if (!name) return;
   const silent = formData.get("silent") === "1";
@@ -4941,7 +4579,7 @@ export async function updateShopItemRegionDetails(formData: FormData): Promise<v
 
   revalidatePath("/shop-detail");
   revalidatePath("/shop");
-}
+});
 
 // Hide/show an item. Regular items have one row per region (same name), and
 // the dashboard only shows one region tab at a time - toggling just the row
@@ -4950,8 +4588,7 @@ export async function updateShopItemRegionDetails(formData: FormData): Promise<v
 // by-name-across-regions pattern instead. Trophies (unlock_xp > 0) aren't
 // region-scoped and only ever have one row, so they keep the simple
 // single-row toggle.
-export async function toggleShopItem(formData: FormData): Promise<void> {
-  await requirePerm("shop");
+export const toggleShopItem = guardedAction("toggleShopItem", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const active = String(formData.get("active") ?? "") === "1";
   if (!id) return;
@@ -4980,10 +4617,9 @@ export async function toggleShopItem(formData: FormData): Promise<void> {
     await notifyShopUpdates(before as ShopRowSnapshot[], after as ShopRowSnapshot[]);
   }
   revalidatePath("/shop");
-}
+});
 
-export async function deleteShopItem(formData: FormData): Promise<void> {
-  await requirePerm("shop");
+export const deleteShopItem = guardedAction("deleteShopItem", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { data: removed } = await db.from("shop_items").select("*").eq("id", id).maybeSingle();
@@ -4991,7 +4627,7 @@ export async function deleteShopItem(formData: FormData): Promise<void> {
   if (error) throw new Error(error.message);
   if (removed) await notifyShopDelete(removed as ShopRowSnapshot);
   revalidatePath("/shop");
-}
+});
 
 // ---- Personal shop items -------------------------------------------------
 // An item made for ONE player (reserved_user_id, see drizzle/0212): it only
@@ -5020,8 +4656,7 @@ async function findPlayerForPersonalItem(
   return data && data.length === 1 ? data[0] : null;
 }
 
-export async function createPersonalShopItem(formData: FormData): Promise<void> {
-  const access = await requirePerm("shop");
+export const createPersonalShopItem = guardedAction("createPersonalShopItem", "owner", async (access, formData: FormData): Promise<void> => {
   const name = String(formData.get("name") ?? "").trim().slice(0, 60);
   const description = String(formData.get("description") ?? "").trim().slice(0, 300);
   const price = Math.round(Number(formData.get("price") ?? 0));
@@ -5085,10 +4720,9 @@ export async function createPersonalShopItem(formData: FormData): Promise<void> 
     actorName(access),
   );
   revalidatePath("/shop");
-}
+});
 
-export async function setPersonalShopItemActive(formData: FormData): Promise<void> {
-  const access = await requirePerm("shop");
+export const setPersonalShopItemActive = guardedAction("setPersonalShopItemActive", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const active = formData.get("active") === "1";
   if (!id) return;
@@ -5124,10 +4758,9 @@ export async function setPersonalShopItemActive(formData: FormData): Promise<voi
     actorName(access),
   );
   revalidatePath("/shop");
-}
+});
 
-export async function deletePersonalShopItem(formData: FormData): Promise<void> {
-  const access = await requirePerm("shop");
+export const deletePersonalShopItem = guardedAction("deletePersonalShopItem", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { data: item } = await db
@@ -5146,7 +4779,7 @@ export async function deletePersonalShopItem(formData: FormData): Promise<void> 
   if (error) throw new Error(error.message);
   await logModAction(item.reserved_user_id as string, "personal_item_deleted", String(item.name), actorName(access));
   revalidatePath("/shop");
-}
+});
 
 export interface ShopCsvRow {
   key: string; // stable per-row id assigned client-side, echoed back so results line up
@@ -5162,10 +4795,7 @@ export interface ShopCsvRow {
 // Bulk-upload preview step: tell the client which rows already have a
 // same-name-and-region item in the shop, so it can ask the admin to
 // replace or skip each one before anything is written.
-export async function checkShopItemsConflicts(
-  rows: ShopCsvRow[],
-): Promise<Record<string, { id: number; price: number; description: string }>> {
-  await requirePerm("shop");
+export const checkShopItemsConflicts = guardedAction("checkShopItemsConflicts", "owner", async (access, rows: ShopCsvRow[],): Promise<Record<string, { id: number; price: number; description: string }>> => {
   const names = [...new Set(rows.map((r) => r.name).filter(Boolean))];
   if (names.length === 0) return {};
   const { data, error } = await db
@@ -5188,17 +4818,14 @@ export async function checkShopItemsConflicts(
     if (hit) out[r.key] = hit;
   }
   return out;
-}
+});
 
 // Bulk-upload commit step. `resolutions[row.key]` is "replace" or "skip" for
 // rows that checkShopItemsConflicts flagged as already existing; rows with no
 // conflict are always inserted.
-export async function commitShopItemsCsv(
-  rows: ShopCsvRow[],
+export const commitShopItemsCsv = guardedAction("commitShopItemsCsv", "owner", async (access, rows: ShopCsvRow[],
   conflicts: Record<string, number>, // key -> existing shop_items.id
-  resolutions: Record<string, "replace" | "skip">,
-): Promise<{ added: number; replaced: number; skipped: number; errors: string[] }> {
-  const access = await requirePerm("shop");
+  resolutions: Record<string, "replace" | "skip">,): Promise<{ added: number; replaced: number; skipped: number; errors: string[] }> => {
   let added = 0;
   let replaced = 0;
   let skipped = 0;
@@ -5242,13 +4869,12 @@ export async function commitShopItemsCsv(
   }
   revalidatePath("/shop");
   return { added, replaced, skipped, errors };
-}
+});
 
 // Claim an unclaimed (pending) order: the fulfiller has placed the real order
 // and now owns it. It moves into their queue at the 'ordered' stage (placed, not
 // yet credited by HCB) and nobody else advances it unless they reassign it.
-export async function claimOrder(formData: FormData): Promise<void> {
-  const access = await requireFulfiller();
+export const claimOrder = guardedAction("claimOrder", "fulfiller", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { data: order } = await db
@@ -5282,13 +4908,12 @@ export async function claimOrder(formData: FormData): Promise<void> {
   });
   await logOrderAction(id, "order_claimed", "claimed and placed", actorName(access), order);
   revalidatePath("/fulfillment");
-}
+});
 
 // Over budget: the cheapest the fulfiller could find it for is more than the
 // player's pixels are worth. Nothing gets ordered , the flag parks it for an
 // owner to decide (source it anyway, talk to the player, or cancel & refund).
-export async function flagOrderOverBudget(formData: FormData): Promise<void> {
-  const access = await requireFulfiller();
+export const flagOrderOverBudget = guardedAction("flagOrderOverBudget", "fulfiller", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const note = String(formData.get("flagNote") ?? "").trim().slice(0, 300);
   if (!id || !note) return;
@@ -5304,11 +4929,10 @@ export async function flagOrderOverBudget(formData: FormData): Promise<void> {
   if (error) throw new Error(error.message);
   await logOrderAction(id, "order_flagged", `over budget: ${note}`, actorName(access));
   revalidatePath("/fulfillment");
-}
+});
 
 // Owner has dealt with it, put the order back in the normal flow.
-export async function clearOrderFlag(formData: FormData): Promise<void> {
-  const access = await requirePerm("fulfillment");
+export const clearOrderFlag = guardedAction("clearOrderFlag", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -5318,7 +4942,7 @@ export async function clearOrderFlag(formData: FormData): Promise<void> {
   if (error) throw new Error(error.message);
   await logOrderAction(id, "order_flag_cleared", "over-budget flag cleared", actorName(access));
   revalidatePath("/fulfillment");
-}
+});
 
 // Owner of an order re-checks the caller is the fulfiller who claimed it (or lets
 // a super take it over via reassignOrder). Advancing a claimed order past the
@@ -5363,8 +4987,7 @@ async function logOrderAction(
 // The HCB link and actual cost are required here, not at claim time - the
 // transaction doesn't exist yet when an order is merely claimed, it exists
 // once HCB has actually credited the card.
-export async function markOrderCredited(formData: FormData): Promise<void> {
-  const access = await requireFulfiller();
+export const markOrderCredited = guardedAction("markOrderCredited", "fulfiller", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   // The transaction or grant this order was actually paid from - required so
@@ -5420,7 +5043,7 @@ export async function markOrderCredited(formData: FormData): Promise<void> {
   }
   await logOrderAction(id, "order_credited", "HCB credited the card", actorName(access));
   revalidatePath("/fulfillment");
-}
+});
 
 // Flat pixel payout to whoever ships an order - see shipOrder below and
 // creditFulfillerPixels in lib/db.ts. Was 3px ($0.21) at the old $0.07/px
@@ -5431,8 +5054,7 @@ const FULFILLMENT_PAYOUT_PIXELS = 2;
 // The order shipped: credited -> shipped with a tracking number. The number is
 // DM'd to the buyer by Pixo and also lands as an in-game notification. Only the
 // claiming fulfiller can ship it, and tracking is required.
-export async function shipOrder(formData: FormData): Promise<void> {
-  const access = await requireFulfiller();
+export const shipOrder = guardedAction("shipOrder", "fulfiller", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const tracking = String(formData.get("tracking") ?? "").trim().slice(0, 120);
   if (!id) return;
@@ -5511,13 +5133,12 @@ export async function shipOrder(formData: FormData): Promise<void> {
     }
   }
   revalidatePath("/fulfillment");
-}
+});
 
 // Close a shipped order out: shipped -> done, once the buyer has it in hand.
 // Any super can mark it done (it's the final administrative close, not a queue
 // advance), and it's a no-op on anything that isn't shipped.
-export async function markOrderDone(formData: FormData): Promise<void> {
-  const access = await requirePerm("fulfillment");
+export const markOrderDone = guardedAction("markOrderDone", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -5528,7 +5149,7 @@ export async function markOrderDone(formData: FormData): Promise<void> {
   if (error) throw new Error(error.message);
   await logOrderAction(id, "order_done", "closed out as delivered", actorName(access));
   revalidatePath("/fulfillment");
-}
+});
 
 // Corrects an already-claimed order's fulfillment paper trail - the HCB link,
 // actual cost, and tracking number - after the fact. Every other action here
@@ -5538,8 +5159,7 @@ export async function markOrderDone(formData: FormData): Promise<void> {
 // deliberately not gated by status (works on ordered/credited/shipped/done
 // alike). Owner-level, same as reassign/cancel/mark done above - this rewrites
 // financial records, not just queue state.
-export async function updateOrderFulfillmentInfo(formData: FormData): Promise<void> {
-  const access = await requirePerm("fulfillment");
+export const updateOrderFulfillmentInfo = guardedAction("updateOrderFulfillmentInfo", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const hcbLink = String(formData.get("hcbLink") ?? "").trim().slice(0, 300);
@@ -5586,13 +5206,12 @@ export async function updateOrderFulfillmentInfo(formData: FormData): Promise<vo
     actorName(access),
   );
   revalidatePath("/fulfillment");
-}
+});
 
 // Take over a claimed order that isn't yet shipped/cancelled. Escape hatch for
 // when the original fulfiller can't finish it , the caller becomes the new owner
 // and the order stays at its current stage.
-export async function reassignOrder(formData: FormData): Promise<void> {
-  const access = await requirePerm("fulfillment");
+export const reassignOrder = guardedAction("reassignOrder", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -5603,14 +5222,13 @@ export async function reassignOrder(formData: FormData): Promise<void> {
   if (error) throw new Error(error.message);
   await logOrderAction(id, "order_reassigned", `taken over by ${actorName(access)}`, actorName(access));
   revalidatePath("/fulfillment");
-}
+});
 
 // Cancel a live order (pending / ordered / credited) and refund the pixels , e.g.
 // a blocked Amazon account killed it. The refund + status flip happen inside
 // cancel_shop_order so they can't drift apart; it's idempotent, so a double-click
 // won't refund twice and a shipped order is a no-op.
-export async function cancelOrder(formData: FormData): Promise<void> {
-  const access = await requirePerm("fulfillment");
+export const cancelOrder = guardedAction("cancelOrder", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const note = String(formData.get("note") ?? "").trim().slice(0, 300);
   if (!id) return;
@@ -5648,12 +5266,11 @@ export async function cancelOrder(formData: FormData): Promise<void> {
   );
   revalidatePath("/fulfillment");
   revalidatePath("/pixels");
-}
+});
 
 // Backfill player-card photos from Slack for everyone who has a slack_id but
 // no photo yet. New sign-ups get theirs automatically from the game server.
-export async function syncSlackAvatars(): Promise<void> {
-  await requireSuper();
+export const syncSlackAvatars = guardedAction("syncSlackAvatars", "owner", async (access): Promise<void> => {
   const avatars = await slackAvatars();
   if (avatars.size === 0)
     redirect(`/players?error=${encodeURIComponent("Slack returned no profile photos , check SLACK_BOT_TOKEN.")}`);
@@ -5677,10 +5294,9 @@ export async function syncSlackAvatars(): Promise<void> {
   redirect(
     `/players?done=${encodeURIComponent(`Filled ${updated} player card photo${updated === 1 ? "" : "s"} from Slack.`)}`,
   );
-}
+});
 
-export async function addSidequest(formData: FormData): Promise<void> {
-  const access = await requirePerm("sidequests");
+export const addSidequest = guardedAction("addSidequest", "owner", async (access, formData: FormData): Promise<void> => {
   const name = String(formData.get("name") ?? "").trim().slice(0, 80);
   const region = String(formData.get("region") ?? "").trim().slice(0, 40);
   const npc = String(formData.get("npc") ?? "").trim().slice(0, 40);
@@ -5709,10 +5325,9 @@ export async function addSidequest(formData: FormData): Promise<void> {
   }
   revalidatePath("/sidequests");
   redirect("/sidequests?created=1");
-}
+});
 
-export async function toggleSidequest(formData: FormData): Promise<void> {
-  await requirePerm("sidequests");
+export const toggleSidequest = guardedAction("toggleSidequest", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -5721,10 +5336,9 @@ export async function toggleSidequest(formData: FormData): Promise<void> {
     .eq("id", id);
   if (error) console.error("toggleSidequest", error.message);
   revalidatePath("/sidequests");
-}
+});
 
-export async function updateSidequest(formData: FormData): Promise<void> {
-  await requirePerm("sidequests");
+export const updateSidequest = guardedAction("updateSidequest", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const name = String(formData.get("name") ?? "").trim().slice(0, 80);
@@ -5749,10 +5363,9 @@ export async function updateSidequest(formData: FormData): Promise<void> {
   }
   revalidatePath("/sidequests");
   redirect("/sidequests?saved=1");
-}
+});
 
-export async function deleteSidequest(formData: FormData): Promise<void> {
-  await requirePerm("sidequests");
+export const deleteSidequest = guardedAction("deleteSidequest", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db.from("sidequests").delete().eq("id", id);
@@ -5765,7 +5378,7 @@ export async function deleteSidequest(formData: FormData): Promise<void> {
     redirect(`/sidequests?error=${encodeURIComponent(msg)}`);
   }
   revalidatePath("/sidequests");
-}
+});
 
 // ── NPCs ────────────────────────────────────────────────────────────────────
 // An NPC used to be a hand-placed node in the game's village.tscn/open_world.tscn,
@@ -5854,8 +5467,7 @@ function npcError(error: { message: string; code?: string }): string {
   return "Couldn't save the NPC.";
 }
 
-export async function addNpc(formData: FormData): Promise<void> {
-  const access = await requirePerm("sidequests");
+export const addNpc = guardedAction("addNpc", "owner", async (access, formData: FormData): Promise<void> => {
   const fail = (msg: string): never =>
     redirect(`/sidequests?tab=npcs&error=${encodeURIComponent(msg)}`);
   const fields = npcFields(formData, fail);
@@ -5868,10 +5480,9 @@ export async function addNpc(formData: FormData): Promise<void> {
   }
   revalidatePath("/sidequests");
   redirect("/sidequests?tab=npcs&created=npc");
-}
+});
 
-export async function updateNpc(formData: FormData): Promise<void> {
-  await requirePerm("sidequests");
+export const updateNpc = guardedAction("updateNpc", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const fail = (msg: string): never =>
@@ -5884,10 +5495,9 @@ export async function updateNpc(formData: FormData): Promise<void> {
   }
   revalidatePath("/sidequests");
   redirect("/sidequests?tab=npcs&saved=npc");
-}
+});
 
-export async function toggleNpc(formData: FormData): Promise<void> {
-  await requirePerm("sidequests");
+export const toggleNpc = guardedAction("toggleNpc", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -5896,10 +5506,9 @@ export async function toggleNpc(formData: FormData): Promise<void> {
     .eq("id", id);
   if (error) console.error("toggleNpc", error.message);
   revalidatePath("/sidequests");
-}
+});
 
-export async function deleteNpc(formData: FormData): Promise<void> {
-  await requirePerm("sidequests");
+export const deleteNpc = guardedAction("deleteNpc", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db.from("npcs").delete().eq("id", id);
@@ -5908,10 +5517,9 @@ export async function deleteNpc(formData: FormData): Promise<void> {
     redirect(`/sidequests?tab=npcs&error=${encodeURIComponent("Couldn't delete the NPC.")}`);
   }
   revalidatePath("/sidequests");
-}
+});
 
-export async function createEvent(formData: FormData): Promise<void> {
-  const access = await requirePerm("events");
+export const createEvent = guardedAction("createEvent", "owner", async (access, formData: FormData): Promise<void> => {
   const type = String(formData.get("type") ?? "");
   const fail = (msg: string) => redirect(`/events?error=${encodeURIComponent(msg)}`);
   if (!(type in EVENT_TYPES)) fail("Pick an event type.");
@@ -5964,10 +5572,9 @@ export async function createEvent(formData: FormData): Promise<void> {
   }
   revalidatePath("/", "layout");
   redirect("/events?created=1");
-}
+});
 
-export async function stopEvent(formData: FormData): Promise<void> {
-  await requirePerm("events");
+export const stopEvent = guardedAction("stopEvent", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -5977,39 +5584,37 @@ export async function stopEvent(formData: FormData): Promise<void> {
     .is("stopped_at", null);
   if (error) console.error("stopEvent", error.message);
   revalidatePath("/", "layout");
-}
+});
 
-export async function deleteEvent(formData: FormData): Promise<void> {
-  await requirePerm("events");
+export const deleteEvent = guardedAction("deleteEvent", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db.from("events").delete().eq("id", id);
   if (error) console.error("deleteEvent", error.message);
   revalidatePath("/", "layout");
-}
+});
 
-export async function undoTeamChange(formData: FormData): Promise<void> {
-  const access = await requireSuper();
+// Reverts one `team.change` audit row (the id comes from the Team log).
+// Legacy team_log rows from before the relaunch aren't undoable.
+export const undoTeamChange = guardedAction("team.undo", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
-  const { data } = await db.from("team_log").select("*").eq("id", id).single();
-  if (!data) return;
-  // Super-admin grants are logged here but don't live in `admins` , undoing
-  // one through setTeamPerms would write a bogus permission row. Promote or
-  // demote from the Super admins card instead.
-  if (String(data.action).startsWith("super ")) return;
-  await setTeamPerms(
-    String(data.slack_id),
-    String(data.name),
-    (data.before ?? []) as string[],
-    "undo",
-    actorName(access),
-    actorName(access),
-  );
-}
+  const row = await getTeamChange(id);
+  if (!row || !row.slack_id) return;
+  const list = { helper: [addHelper, removeHelper], fulfiller: [addFulfiller, removeFulfiller] } as const;
+  const m = row.action.match(/^(helper|fulfiller) (added|removed)$/);
+  if (m) {
+    const [add, remove] = list[m[1] as "helper" | "fulfiller"];
+    await (m[2] === "added" ? remove : add)(row.slack_id);
+    await recordTeamChange(access, row.slack_id, row.name, "undo", row.after, row.before);
+    revalidatePath("/", "layout");
+    return;
+  }
+  await setTeamPerms(access, row.slack_id, row.name, row.before, "undo");
+});
 
-export async function resolveReport(formData: FormData): Promise<void> {
-  const session = await requireReportViewer();
+export const resolveReport = guardedAction("resolveReport", "owner", async (access, formData: FormData): Promise<void> => {
+  const session = access.session;
   const id = Number(formData.get("id") ?? 0);
   const dismissed = formData.get("action") === "dismiss";
   if (!id) return;
@@ -6044,27 +5649,9 @@ export async function resolveReport(formData: FormData): Promise<void> {
     await dmOrEmail(updated.reporter_id, title, body);
   }
   revalidatePath("/reports");
-}
+});
 
-// Grant/revoke is a super-admin-only action, distinct from being able to
-// view reports, otherwise any report viewer (a widely-granted role that
-// also includes moderators) could add or remove other viewers and widen
-// access to reports full of chat logs, addresses, and other PII.
-export async function addReportViewerAction(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
-  if (!/^[UW][A-Z0-9]{6,}$/.test(slackId))
-    redirect(`/reports?verror=${encodeURIComponent("Enter a valid Slack member ID (starts with U).")}`);
-  await addReportViewer(slackId, actorName(access));
-  revalidatePath("/reports");
-}
 
-export async function removeReportViewerAction(formData: FormData): Promise<void> {
-  const access = await requireSuper();
-  const slackId = String(formData.get("slackId") ?? "").trim();
-  if (slackId && slackId !== access.session.slackId) await removeReportViewer(slackId);
-  revalidatePath("/reports");
-}
 
 function parseRewards(raw: string): { icon: string; label: string }[] {
   return String(raw ?? "")
@@ -6079,8 +5666,7 @@ function parseRewards(raw: string): { icon: string; label: string }[] {
     });
 }
 
-export async function addVaultLevel(formData: FormData): Promise<void> {
-  await requirePerm("goals");
+export const addVaultLevel = guardedAction("addVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
   const level = Number(formData.get("level") ?? 0);
   const energy_required = Number(formData.get("energy_required") ?? 0);
   const title = String(formData.get("title") ?? "").trim().slice(0, 80);
@@ -6101,10 +5687,9 @@ export async function addVaultLevel(formData: FormData): Promise<void> {
   }
   revalidatePath("/community-goals");
   redirect("/community-goals?saved=1");
-}
+});
 
-export async function updateVaultLevel(formData: FormData): Promise<void> {
-  await requirePerm("goals");
+export const updateVaultLevel = guardedAction("updateVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const patch = {
@@ -6125,10 +5710,9 @@ export async function updateVaultLevel(formData: FormData): Promise<void> {
   }
   revalidatePath("/community-goals");
   redirect("/community-goals?saved=1");
-}
+});
 
-export async function toggleVaultLevel(formData: FormData): Promise<void> {
-  await requirePerm("goals");
+export const toggleVaultLevel = guardedAction("toggleVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -6137,16 +5721,15 @@ export async function toggleVaultLevel(formData: FormData): Promise<void> {
     .eq("id", id);
   if (error) console.error("toggleVaultLevel", error.message);
   revalidatePath("/community-goals");
-}
+});
 
-export async function deleteVaultLevel(formData: FormData): Promise<void> {
-  await requirePerm("goals");
+export const deleteVaultLevel = guardedAction("deleteVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db.from("vault_levels").delete().eq("id", id);
   if (error) console.error("deleteVaultLevel", error.message);
   revalidatePath("/community-goals");
-}
+});
 
 // posted_at is writable so a post can be backdated to when the thing actually
 // happened, rather than when someone got round to writing it up.
@@ -6157,8 +5740,7 @@ function newsPostedAt(formData: FormData): string | undefined {
   return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
 }
 
-export async function addNews(formData: FormData): Promise<void> {
-  await requirePerm("news");
+export const addNews = guardedAction("addNews", "owner", async (access, formData: FormData): Promise<void> => {
   const body = String(formData.get("body") ?? "").trim().slice(0, 500);
   const link_url = String(formData.get("link_url") ?? "").trim().slice(0, 500);
   if (!body)
@@ -6176,10 +5758,9 @@ export async function addNews(formData: FormData): Promise<void> {
   }
   revalidatePath("/news");
   redirect("/news?saved=1");
-}
+});
 
-export async function updateNews(formData: FormData): Promise<void> {
-  await requirePerm("news");
+export const updateNews = guardedAction("updateNews", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const link_url = String(formData.get("link_url") ?? "").trim().slice(0, 500);
@@ -6196,10 +5777,9 @@ export async function updateNews(formData: FormData): Promise<void> {
   }
   revalidatePath("/news");
   redirect("/news?saved=1");
-}
+});
 
-export async function toggleNews(formData: FormData): Promise<void> {
-  await requirePerm("news");
+export const toggleNews = guardedAction("toggleNews", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -6208,19 +5788,17 @@ export async function toggleNews(formData: FormData): Promise<void> {
     .eq("id", id);
   if (error) console.error("toggleNews", error.message);
   revalidatePath("/news");
-}
+});
 
-export async function deleteNews(formData: FormData): Promise<void> {
-  await requirePerm("news");
+export const deleteNews = guardedAction("deleteNews", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db.from("news").delete().eq("id", id);
   if (error) console.error("deleteNews", error.message);
   revalidatePath("/news");
-}
+});
 
-export async function addStoryNode(formData: FormData): Promise<void> {
-  await requirePerm("story");
+export const addStoryNode = guardedAction("addStoryNode", "owner", async (access, formData: FormData): Promise<void> => {
   const s = (k: string, max: number) => String(formData.get(k) ?? "").trim().slice(0, max);
   const title = s("title", 120);
   if (!title)
@@ -6242,10 +5820,9 @@ export async function addStoryNode(formData: FormData): Promise<void> {
   }
   revalidatePath("/story");
   redirect("/story?saved=1");
-}
+});
 
-export async function updateStoryNode(formData: FormData): Promise<void> {
-  await requirePerm("story");
+export const updateStoryNode = guardedAction("updateStoryNode", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const s = (k: string, max: number) => String(formData.get(k) ?? "").trim().slice(0, max);
@@ -6269,10 +5846,9 @@ export async function updateStoryNode(formData: FormData): Promise<void> {
   }
   revalidatePath("/story");
   redirect("/story?saved=1");
-}
+});
 
-export async function toggleStoryNode(formData: FormData): Promise<void> {
-  await requirePerm("story");
+export const toggleStoryNode = guardedAction("toggleStoryNode", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -6281,32 +5857,29 @@ export async function toggleStoryNode(formData: FormData): Promise<void> {
     .eq("id", id);
   if (error) console.error("toggleStoryNode", error.message);
   revalidatePath("/story");
-}
+});
 
-export async function deleteStoryNode(formData: FormData): Promise<void> {
-  await requirePerm("story");
+export const deleteStoryNode = guardedAction("deleteStoryNode", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db.from("story_nodes").delete().eq("id", id);
   if (error) console.error("deleteStoryNode", error.message);
   revalidatePath("/story");
-}
+});
 
 // A first-time reviewer confirms they read the YSWS guidelines. Requires the
 // review permission (so only actual reviewers can ack), records the current
 // version against their Slack id, then drops them into the review queue.
-export async function acknowledgeGuidelines() {
-  const access = await requirePerm("review");
+export const acknowledgeGuidelines = guardedAction("acknowledgeGuidelines", "reviewer", async (access) => {
   await ackGuidelines(access.session.slackId, GUIDELINES_VERSION);
   redirect("/review");
-}
+});
 
 // Escape hatch off the same gate: records the ack (so they aren't bounced back
 // to the gate every page load) without requiring the read-through, but pings
 // every owner via Pixo DM so a skip never goes unnoticed. Fire-and-forget,
 // a Slack hiccup shouldn't block the reviewer from reaching the queue.
-export async function skipGuidelines() {
-  const access = await requirePerm("review");
+export const skipGuidelines = guardedAction("skipGuidelines", "reviewer", async (access) => {
   await ackGuidelines(access.session.slackId, GUIDELINES_VERSION);
   const handle = (await slackHandle(access.session.slackId)) ?? access.session.slackId;
   const text = `:fast_forward: <@${access.session.slackId}> (${handle}) skipped the reviewer guidelines gate instead of reading it before entering the review queue.`;
@@ -6314,10 +5887,9 @@ export async function skipGuidelines() {
     console.error("skipGuidelines notify", (e as Error).message),
   );
   redirect("/review");
-}
+});
 
-export async function createShowNTellRound(formData: FormData): Promise<void> {
-  const access = await requirePerm("show_n_tell");
+export const createShowNTellRound = guardedAction("createShowNTellRound", "owner", async (access, formData: FormData): Promise<void> => {
   const title = String(formData.get("title") ?? "").trim().slice(0, 120);
   if (!title) return;
   const { error } = await db.from("show_n_tell_rounds").insert({
@@ -6326,13 +5898,12 @@ export async function createShowNTellRound(formData: FormData): Promise<void> {
   });
   if (error) throw new Error(error.message);
   revalidatePath("/show-n-tell");
-}
+});
 
 // Only one round is open at a time (the DB's partial unique index backstops
 // this) - closing every other round first means the client just calls this
 // on whichever round it wants live, no separate "close the old one" step.
-export async function openShowNTellRound(formData: FormData): Promise<void> {
-  await requirePerm("show_n_tell");
+export const openShowNTellRound = guardedAction("openShowNTellRound", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error: closeError } = await db
@@ -6347,10 +5918,9 @@ export async function openShowNTellRound(formData: FormData): Promise<void> {
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidatePath("/show-n-tell");
-}
+});
 
-export async function closeShowNTellRound(formData: FormData): Promise<void> {
-  await requirePerm("show_n_tell");
+export const closeShowNTellRound = guardedAction("closeShowNTellRound", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db
@@ -6359,10 +5929,9 @@ export async function closeShowNTellRound(formData: FormData): Promise<void> {
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidatePath("/show-n-tell");
-}
+});
 
-export async function addShowNTellEntry(formData: FormData): Promise<void> {
-  const access = await requirePerm("show_n_tell");
+export const addShowNTellEntry = guardedAction("addShowNTellEntry", "owner", async (access, formData: FormData): Promise<void> => {
   const roundId = Number(formData.get("roundId") ?? 0);
   const projectId = Number(formData.get("projectId") ?? 0);
   if (!roundId || !projectId) return;
@@ -6375,13 +5944,12 @@ export async function addShowNTellEntry(formData: FormData): Promise<void> {
   // the entry's already there either way.
   if (error && !error.message?.includes("duplicate")) throw new Error(error.message);
   revalidatePath("/show-n-tell");
-}
+});
 
 // A freeform entry not backed by any real projects row - e.g. something shown
 // live at an event that was never entered into Pixl. Stored with project_id
 // null and a custom_name instead (see 0167_show_n_tell_custom_entries.sql).
-export async function addCustomShowNTellEntry(formData: FormData): Promise<void> {
-  const access = await requirePerm("show_n_tell");
+export const addCustomShowNTellEntry = guardedAction("addCustomShowNTellEntry", "owner", async (access, formData: FormData): Promise<void> => {
   const roundId = Number(formData.get("roundId") ?? 0);
   const customName = String(formData.get("customName") ?? "").trim().slice(0, 120);
   if (!roundId || !customName) return;
@@ -6392,13 +5960,12 @@ export async function addCustomShowNTellEntry(formData: FormData): Promise<void>
   });
   if (error) throw new Error(error.message);
   revalidatePath("/show-n-tell");
-}
+});
 
-export async function removeShowNTellEntry(formData: FormData): Promise<void> {
-  await requirePerm("show_n_tell");
+export const removeShowNTellEntry = guardedAction("removeShowNTellEntry", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!id) return;
   const { error } = await db.from("show_n_tell_entries").delete().eq("id", id);
   if (error) throw new Error(error.message);
   revalidatePath("/show-n-tell");
-}
+});

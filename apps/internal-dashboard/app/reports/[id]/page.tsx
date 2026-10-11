@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireReportViewer, getAccess, canView, isModerator } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { getReport, listChatFor, reportCounts } from "@/lib/db";
 import { resolveReport } from "@/app/actions";
 import { slackHandle } from "@/lib/slack";
-import { BanForm, ProposeBanForm, WarnForm } from "@/app/_components/Moderate";
+import { BanForm, WarnForm } from "@/app/_components/Moderate";
 import { PendingButton } from "@/app/_components/PendingButton";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -26,22 +26,18 @@ export default async function ReportDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireReportViewer();
+  await requirePage("owner");
   if (await getLiveMode()) return <LiveBlocked what="Reports" />;
   const { id } = await params;
   const report = await getReport(Number(id));
   if (!report) notFound();
 
-  const [chat, access, targetHandle, counts, moderator] = await Promise.all([
+  // Reports are owner-only, so whoever is here can warn and ban.
+  const [chat, targetHandle, counts] = await Promise.all([
     listChatFor(report.target_id, 10),
-    getAccess(),
     slackHandle(report.target_slack),
     reportCounts(report.target_id, report.reporter_id),
-    isModerator(),
   ]);
-  const canBan = !!access && canView(access, ["ban"]);
-  const canWarn = (!!access && canView(access, ["warn"])) || moderator;
-  const canProposeBan = !canBan && moderator;
 
   // Serial reporters get deanonymized to viewers; heavily-reported targets get
   // flagged for a closer look.
@@ -200,29 +196,27 @@ export default async function ReportDetailPage({
           )}
         </div>
 
-        {(canWarn || canBan || canProposeBan) && (
+        {(
           <div className="flex flex-col gap-2 pt-2 border-t border-border">
             <div className="text-xs text-muted-foreground">
               On the reported player (<span className="font-medium">{report.target_name}</span>)
             </div>
             <div className="flex gap-3 flex-wrap items-center">
-              {canWarn && <WarnForm userId={report.target_id} compact />}
-              {canBan && <BanForm userId={report.target_id} compact />}
-              {canProposeBan && <ProposeBanForm userId={report.target_id} compact />}
+              <WarnForm userId={report.target_id} compact />
+              <BanForm userId={report.target_id} compact />
             </div>
           </div>
         )}
 
-        {revealReporter && (canWarn || canBan || canProposeBan) && (
+        {revealReporter && (
           <div className="flex flex-col gap-2 pt-2 border-t border-border">
             <div className="text-xs text-muted-foreground">
               On the reporter (<span className="font-medium">{report.reporter_name}</span>) , for false or
               abusive reports
             </div>
             <div className="flex gap-3 flex-wrap items-center">
-              {canWarn && <WarnForm userId={report.reporter_id} compact />}
-              {canBan && <BanForm userId={report.reporter_id} compact />}
-              {canProposeBan && <ProposeBanForm userId={report.reporter_id} compact />}
+              <WarnForm userId={report.reporter_id} compact />
+              <BanForm userId={report.reporter_id} compact />
             </div>
           </div>
         )}
@@ -230,11 +224,6 @@ export default async function ReportDetailPage({
           <div className="text-xs text-muted-foreground">
             {report.status} by {report.handled_by}
             {report.handled_at ? ` · ${new Date(report.handled_at).toLocaleString()}` : ""}
-          </div>
-        )}
-        {!canBan && !canWarn && !canProposeBan && (
-          <div className="text-xs text-muted-foreground">
-            You can resolve reports, but banning/warning needs admin or moderator permissions.
           </div>
         )}
       </Card>

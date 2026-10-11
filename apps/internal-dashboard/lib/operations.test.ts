@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ALL_PERMISSIONS, SUBADMIN_PERMISSIONS } from "./guard";
+import { REVIEWER_PERMISSIONS } from "./roles";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TRIAL_HOLD_NOTE, effectiveStatusOf, maxApprovableHours, settleNoteText, type BlackoutEntry } from "./operations";
@@ -59,10 +59,8 @@ const entry = (over: Partial<BlackoutEntry> = {}): BlackoutEntry => ({
 });
 
 describe("operation permission model", () => {
-  test("17. operations is its own permission, grantable from /admins, not implied by review", () => {
-    expect(ALL_PERMISSIONS).toContain("operations");
-    expect(SUBADMIN_PERMISSIONS).toContain("operations");
-    expect(ALL_PERMISSIONS).toContain("review");
+  test("17. operations is owner-only: no admins-row permission can grant it", () => {
+    expect(REVIEWER_PERMISSIONS as readonly string[]).not.toContain("operations");
   });
 });
 
@@ -127,10 +125,11 @@ describe("reviewer input", () => {
     expect(settleNoteText(TRIAL_HOLD_NOTE)).toContain("Trial prize pending");
     expect(settleNoteText("not credited on the normal payout")).toBe("not credited on the normal payout");
   });
-  test("every operations admin action checks the operations permission before doing anything", () => {
+  test("every operations admin action is an owner-only guardedAction", () => {
     const src = readFileSync(join(import.meta.dir, "../app/operations/actions.ts"), "utf8");
-    const fns = [...src.matchAll(/export async function (\w+)\([^)]*\)[^{]*\{\n([^\n]+)/g)];
+    expect(src).not.toMatch(/export async function/);
+    const fns = [...src.matchAll(/export const (\w+) = guardedAction\("\w+", "(\w+)"/g)];
     expect(fns.map((m) => m[1]).sort()).toEqual(["createOperation", "operationControl"]);
-    for (const m of fns) expect(m[2]).toContain('await requirePerm("operations")');
+    for (const m of fns) expect(m[2]).toBe("owner");
   });
 });

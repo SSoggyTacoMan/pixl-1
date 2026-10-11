@@ -1,15 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getHelperAccess } from "@/lib/guard";
+import { NextResponse } from "next/server";
+import { guardedRoute } from "@/lib/guard";
 import { resolveTicketFromDash } from "@/lib/tickets";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(
-  _req: NextRequest,
-  { params }: { params: Promise<{ ts: string }> },
-) {
-  const access = await getHelperAccess();
-  if (!access) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+type Ctx = { params: Promise<{ ts: string }> };
+
+export const POST = guardedRoute<Ctx>("api.tickets.resolve", "helper", async (access, _req, { params }) => {
   const { ts } = await params;
   const result = await resolveTicketFromDash(ts, {
     slackId: access.session.slackId,
@@ -17,4 +14,4 @@ export async function POST(
   });
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: 502 });
   return NextResponse.json({ ok: true, alreadyClosed: result.alreadyClosed ?? false });
-}
+});

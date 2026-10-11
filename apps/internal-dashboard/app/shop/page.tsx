@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listShopItems, listPersonalShopItems, listShopOptionStock, listSidequests, SHOP_REGIONS, SHOP_REGION_LABELS, SHOP_CATEGORIES, SHOP_CATEGORY_LABELS, type ShopRegion } from "@/lib/db";
 import { addShopItem, toggleShopItem, deleteShopItem, updateShopItem, updateShopItemPrices } from "@/app/actions";
 import { PendingButton } from "@/app/_components/PendingButton";
@@ -35,7 +35,7 @@ export default async function ShopPage({
 }: {
   searchParams: Promise<{ page?: string; region?: string; q?: string; personalError?: string; shopError?: string }>;
 }) {
-  const access = await requirePagePerm(["shop"]);
+  const access = await requirePage("owner");
   const { page, region: rawRegion, q, personalError, shopError } = await searchParams;
   const region: ShopRegion = (SHOP_REGIONS as readonly string[]).includes(rawRegion ?? "")
     ? (rawRegion as ShopRegion)

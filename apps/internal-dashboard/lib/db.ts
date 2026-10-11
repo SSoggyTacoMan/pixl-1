@@ -9,7 +9,7 @@ import { reviewerName } from "./liveMode";
 // stays importable while Next prerenders static pages (e.g. /_not-found)
 // where env vars may be absent.
 export { db } from "./pgCompat";
-import { db } from "./pgCompat";
+import { db, sql } from "./pgCompat";
 
 export interface UserRow {
   id: string;
@@ -362,8 +362,14 @@ export async function displayNamesBySlackId(ids: string[]): Promise<Map<string, 
   return out;
 }
 
+// Team changes (reviewer/helper/fulfiller grants) are written to audit_log as
+// `team.change` rows by recordTeamChange in app/actions.ts; the meta carries
+// what the old team_log table did. team_log itself is no longer written, but
+// its rows are still read so the history from before the relaunch stays
+// visible (source "legacy", not undoable).
 export interface TeamLogRow {
   id: number;
+  source: "audit" | "legacy";
   slack_id: string;
   name: string;
   action: string;
@@ -374,17 +380,66 @@ export interface TeamLogRow {
   created_at: string;
 }
 
-export async function listTeamLog(limit = 20): Promise<TeamLogRow[]> {
-  const { data, error } = await db
-    .from("team_log")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(limit);
-  if (error) {
-    console.error("listTeamLog", error.message);
-    return [];
+export interface TeamChangeMeta {
+  slack_id: string;
+  name: string;
+  change: string;
+  before: string[];
+  after: string[];
+  actor: string;
+  reason: string;
+}
+
+function teamRowFromAudit(r: { id: number | string; at: string | Date; meta: unknown }): TeamLogRow {
+  const m = (typeof r.meta === "string" ? JSON.parse(r.meta) : r.meta) as Partial<TeamChangeMeta>;
+  return {
+    id: Number(r.id),
+    source: "audit",
+    slack_id: m.slack_id ?? "",
+    name: m.name ?? "",
+    action: m.change ?? "updated",
+    before: m.before ?? [],
+    after: m.after ?? [],
+    actor: m.actor ?? "",
+    reason: m.reason ?? "",
+    created_at: new Date(r.at).toISOString(),
+  };
+}
+
+export async function getTeamChange(id: number): Promise<TeamLogRow | null> {
+  try {
+    const rows = await sql`
+      select id, at, meta from audit_log
+      where id = ${id} and app = 'internal-dashboard' and action = 'team.change' and result = 'ok'`;
+    return rows[0] ? teamRowFromAudit(rows[0] as never) : null;
+  } catch (e) {
+    console.error("getTeamChange", (e as Error).message);
+    return null;
   }
-  return (data ?? []) as TeamLogRow[];
+}
+
+export async function listTeamLog(limit = 20): Promise<TeamLogRow[]> {
+  const [fresh, legacy] = await Promise.all([
+    sql`
+      select id, at, meta from audit_log
+      where app = 'internal-dashboard' and action = 'team.change' and result = 'ok'
+      order by at desc limit ${limit}`.catch((e: Error) => {
+      console.error("listTeamLog", e.message);
+      return [];
+    }),
+    db
+      .from("team_log")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(limit),
+  ]);
+  const rows = [
+    ...(fresh as unknown as { id: number; at: string; meta: unknown }[]).map(teamRowFromAudit),
+    ...((legacy.data ?? []) as Omit<TeamLogRow, "source">[]).map((r) => ({ ...r, source: "legacy" as const })),
+  ];
+  return rows
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, limit);
 }
 
 export function banIsActive(b: BanRow): boolean {
@@ -1794,7 +1849,7 @@ export interface ReviewPayoutSettings {
 }
 
 // Single-row settings table (id=1, seeded by migration 0162), replacing what
-// used to be a hardcoded PAYOUT_PIXELS constant - lets a super admin change
+// used to be a hardcoded PAYOUT_PIXELS constant - lets an owner change
 // how many pixels a review earns (separately for an approval vs a "request
 // changes" verdict) without a code change/redeploy for a particular event or
 // review push.
@@ -2084,134 +2139,6 @@ export async function listChatFor(userId: string, hours = 10): Promise<ChatLogRo
   return (data ?? []) as ChatLogRow[];
 }
 
-export interface ReportViewerRow {
-  slack_id: string;
-  added_by: string;
-  created_at: string;
-}
-
-export async function listReportViewerIds(): Promise<string[]> {
-  const { data, error } = await db.from("report_viewers").select("slack_id");
-  if (error) {
-    console.error("listReportViewerIds", error.message);
-    return [];
-  }
-  return (data ?? []).map((r) => r.slack_id as string);
-}
-
-export async function listReportViewers(): Promise<ReportViewerRow[]> {
-  const { data, error } = await db
-    .from("report_viewers")
-    .select("*")
-    .order("created_at", { ascending: true });
-  if (error) {
-    console.error("listReportViewers", error.message);
-    return [];
-  }
-  return (data ?? []) as ReportViewerRow[];
-}
-
-export async function addReportViewer(slackId: string, by: string): Promise<void> {
-  const { error } = await db
-    .from("report_viewers")
-    .upsert({ slack_id: slackId, added_by: by }, { onConflict: "slack_id" });
-  if (error) console.error("addReportViewer", error.message);
-}
-
-export async function removeReportViewer(slackId: string): Promise<void> {
-  const { error } = await db.from("report_viewers").delete().eq("slack_id", slackId);
-  if (error) console.error("removeReportViewer", error.message);
-}
-
-// Super admins: the tier that hands out permissions and promotes other super
-// admins. Same allow-list shape as the roles below, and additive to the
-// ADMIN_SLACK_IDS env owners (see lib/guard.ts) , env owners are permanent and
-// never appear here.
-export interface SuperAdminRow {
-  slack_id: string;
-  name: string;
-  added_by: string;
-  created_at: string;
-}
-
-export async function listSuperAdminIds(): Promise<string[]> {
-  const { data, error } = await db.from("super_admins").select("slack_id");
-  if (error) {
-    console.error("listSuperAdminIds", error.message);
-    return [];
-  }
-  return (data ?? []).map((r) => r.slack_id as string);
-}
-
-export async function listSuperAdmins(): Promise<SuperAdminRow[]> {
-  const { data, error } = await db
-    .from("super_admins")
-    .select("*")
-    .order("created_at", { ascending: true });
-  if (error) {
-    console.error("listSuperAdmins", error.message);
-    return [];
-  }
-  return (data ?? []) as SuperAdminRow[];
-}
-
-export async function addSuperAdmin(slackId: string, name: string, by: string): Promise<void> {
-  const { error } = await db
-    .from("super_admins")
-    .upsert({ slack_id: slackId, name, added_by: by }, { onConflict: "slack_id" });
-  if (error) throw new Error(error.message);
-}
-
-export async function removeSuperAdmin(slackId: string): Promise<void> {
-  const { error } = await db.from("super_admins").delete().eq("slack_id", slackId);
-  if (error) throw new Error(error.message);
-}
-
-// Moderators: a lighter-weight role than sub-admins. Listing here folds into
-// the report_viewers check (see lib/guard.ts isReportViewer) and lets someone
-// warn players directly, but they can only propose a ban , an admin/owner
-// with the "ban" permission confirms it. Same allow-list shape as
-// report_viewers/helpers/fulfillers.
-export interface ModeratorRow {
-  slack_id: string;
-  name: string;
-  added_by: string;
-  created_at: string;
-}
-
-export async function listModeratorIds(): Promise<string[]> {
-  const { data, error } = await db.from("moderators").select("slack_id");
-  if (error) {
-    console.error("listModeratorIds", error.message);
-    return [];
-  }
-  return (data ?? []).map((r) => r.slack_id as string);
-}
-
-export async function listModerators(): Promise<ModeratorRow[]> {
-  const { data, error } = await db
-    .from("moderators")
-    .select("*")
-    .order("created_at", { ascending: true });
-  if (error) {
-    console.error("listModerators", error.message);
-    return [];
-  }
-  return (data ?? []) as ModeratorRow[];
-}
-
-export async function addModerator(slackId: string, name: string, by: string): Promise<void> {
-  const { error } = await db
-    .from("moderators")
-    .upsert({ slack_id: slackId, name, added_by: by }, { onConflict: "slack_id" });
-  if (error) console.error("addModerator", error.message);
-}
-
-export async function removeModerator(slackId: string): Promise<void> {
-  const { error } = await db.from("moderators").delete().eq("slack_id", slackId);
-  if (error) console.error("removeModerator", error.message);
-}
-
 // Helpers manage the support/ticket queue. Shared with the Pixorpheus bot,
 // which reads/writes the same `helpers` table (slack_user_id PK) via its
 // /pixl-addhelper etc. commands.
@@ -2220,13 +2147,18 @@ export interface HelperRow {
   created_at: string;
 }
 
-export async function listHelperIds(): Promise<string[]> {
-  const { data, error } = await db.from("helpers").select("slack_user_id");
+// Fail closed: a lookup error means "not a helper", never a free pass.
+export async function isHelperId(slackId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from("helpers")
+    .select("slack_user_id")
+    .eq("slack_user_id", slackId)
+    .maybeSingle();
   if (error) {
-    console.error("listHelperIds", error.message);
-    return [];
+    console.error("isHelperId", error.message);
+    return false;
   }
-  return (data ?? []).map((r) => r.slack_user_id as string);
+  return !!data;
 }
 
 export async function listHelpers(): Promise<HelperRow[]> {
@@ -2259,6 +2191,19 @@ export async function removeHelper(slackId: string): Promise<void> {
 export interface FulfillerRow {
   slack_user_id: string;
   created_at: string;
+}
+
+export async function isFulfillerId(slackId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from("fulfillers")
+    .select("slack_user_id")
+    .eq("slack_user_id", slackId)
+    .maybeSingle();
+  if (error) {
+    console.error("isFulfillerId", error.message);
+    return false;
+  }
+  return !!data;
 }
 
 export async function listFulfillerIds(): Promise<string[]> {
@@ -2818,7 +2763,7 @@ export async function listActivityFeed(opts: {
       ? db.from("mod_actions").select("*").order("created_at", { ascending: false }).limit(limit)
       : Promise.resolve({ data: [] }),
     opts.team
-      ? db.from("team_log").select("*").order("created_at", { ascending: false }).limit(limit)
+      ? listTeamLog(limit).then((data) => ({ data }))
       : Promise.resolve({ data: [] }),
     opts.review ? listReviewAudits(limit) : Promise.resolve([]),
     opts.pixels
@@ -3214,9 +3159,9 @@ export async function listBans(): Promise<BanRow[]> {
   return (data ?? []) as BanRow[];
 }
 
-// Ban proposals: a moderator flags a player for a ban; an admin/owner with
-// the "ban" permission confirms (which creates the real `bans` row) or
-// rejects. See [[moderator-role]] , moderators can never ban directly.
+// Ban proposals: the moderator role that created these was removed in the
+// hardened relaunch (0215_owner_only_admins.sql). Existing pending rows are
+// still listed so an owner can confirm (creating the real `bans` row) or reject.
 export interface BanProposalRow {
   id: number;
   user_id: string;
@@ -3254,18 +3199,6 @@ export async function getBanProposal(id: number): Promise<BanProposalRow | null>
     .single();
   if (error || !data) return null;
   return data as BanProposalRow;
-}
-
-export async function insertBanProposal(
-  userId: string,
-  reason: string,
-  hours: number,
-  by: string,
-): Promise<void> {
-  const { error } = await db
-    .from("ban_proposals")
-    .insert({ user_id: userId, reason, hours, proposed_by: by });
-  if (error) console.error("insertBanProposal", error.message);
 }
 
 export async function decideBanProposal(

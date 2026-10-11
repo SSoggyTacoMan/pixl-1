@@ -1,4 +1,4 @@
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import {
   countPendingReviews,
   countSpotCheckProjects,
@@ -21,19 +21,19 @@ export default async function ReviewLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const access = await requirePagePerm(["review"]);
+  const access = await requirePage("reviewer");
   // "Needs review" is first-pass ("shipped") work only, for every viewer
   // regardless of role.
   const [pending, spotCheckCount, proposedBanCount] = await Promise.all([
     countPendingReviews({ viewer: access.session.slackId }),
-    access.isSuper ? countSpotCheckProjects() : Promise.resolve(undefined),
-    access.isSuper ? countProposedBanProjects() : Promise.resolve(undefined),
+    access.isOwner ? countSpotCheckProjects() : Promise.resolve(undefined),
+    access.isOwner ? countProposedBanProjects() : Promise.resolve(undefined),
   ]);
   const [live, hideReviewers] = await Promise.all([getLiveMode(), getHideReviewers()]);
   return (
     <>
       <ReviewTabs
-        isSuper={access.isSuper}
+        isSuper={access.isOwner}
         canSecondPass={access.canSecondPass}
         pending={pending}
         spotCheckCount={spotCheckCount}

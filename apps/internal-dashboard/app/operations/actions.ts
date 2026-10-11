@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requirePerm } from "@/lib/guard";
+import { guardedAction, type AdminAccess } from "@/lib/guard";
 import { BLACKOUT_SLUG, operationRpc, type RateMode } from "@/lib/operations";
 
 function parseRateMode(raw: FormDataEntryValue | null): RateMode | null {
@@ -33,7 +33,7 @@ function parseUtc(raw: FormDataEntryValue | null): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function actor(access: Awaited<ReturnType<typeof requirePerm>>): string {
+function actor(access: AdminAccess): string {
   return `${access.session.name} (${access.session.slackId})`;
 }
 
@@ -46,8 +46,7 @@ function back(slug: string, msg: { ok?: string; error?: string }): never {
   redirect(`/operations${qs ? `?${qs}` : ""}`);
 }
 
-export async function createOperation(formData: FormData): Promise<void> {
-  const access = await requirePerm("operations");
+export const createOperation = guardedAction("createOperation", "owner", async (access, formData: FormData): Promise<void> => {
   const slug = String(formData.get("slug") ?? "").trim() || BLACKOUT_SLUG;
   const name = String(formData.get("name") ?? "").trim();
   const startsAt = parseUtc(formData.get("startsAt"));
@@ -68,10 +67,9 @@ export async function createOperation(formData: FormData): Promise<void> {
   if (!res.ok) back(slug, { error: ERRORS[String(res.error)] ?? "Couldn't create it." });
   revalidatePath("/operations");
   back(slug, { ok: "Operation created. It opens for entries at its start time." });
-}
+});
 
-export async function operationControl(formData: FormData): Promise<void> {
-  const access = await requirePerm("operations");
+export const operationControl = guardedAction("operationControl", "owner", async (access, formData: FormData): Promise<void> => {
   const slug = String(formData.get("slug") ?? BLACKOUT_SLUG);
   const action = String(formData.get("action") ?? "");
   if (!["pause", "resume", "extend", "end", "edit"].includes(action))
@@ -107,4 +105,4 @@ export async function operationControl(formData: FormData): Promise<void> {
       : action === "end" ? "Operation ended. Entries that already shipped are still reviewed and paid."
       : "Saved. Rate and grace changes only apply to entries created from now on.",
   });
-}
+});

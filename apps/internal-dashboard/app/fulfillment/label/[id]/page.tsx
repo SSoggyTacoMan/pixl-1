@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { requireFulfiller } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { getShopOrder, buyerDetailsByUserId } from "@/lib/db";
@@ -17,7 +17,7 @@ export default async function ShippingLabelPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  await requireFulfiller();
+  await requirePage("fulfiller");
   if (await getLiveMode()) return <LiveBlocked what="Shipping labels" />;
   const { id } = await params;
   const orderId = Number(id);

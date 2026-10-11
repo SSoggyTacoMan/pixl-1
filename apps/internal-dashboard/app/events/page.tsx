@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import {
   listEvents,
   listShopItems,
@@ -63,7 +63,7 @@ export default async function EventsPage({
 }: {
   searchParams: Promise<{ error?: string; created?: string }>;
 }) {
-  const access = await requirePagePerm(["events"]);
+  const access = await requirePage("owner");
   const { error, created } = await searchParams;
 
   const [events, allShopItems] = await Promise.all([listEvents(), listShopItems()]);

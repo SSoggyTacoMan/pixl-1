@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listVaultLevels, type VaultLevelRow } from "@/lib/db";
 import {
   addVaultLevel,
@@ -28,7 +28,7 @@ export default async function CommunityGoalsPage({
 }: {
   searchParams: Promise<{ error?: string; saved?: string }>;
 }) {
-  const access = await requirePagePerm(["goals"]);
+  const access = await requirePage("owner");
   const { error, saved } = await searchParams;
   const levels = await listVaultLevels();
 

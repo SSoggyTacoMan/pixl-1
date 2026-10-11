@@ -1,4 +1,4 @@
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listShopItems, SHOP_REGIONS, SHOP_REGION_LABELS, SHOP_CATEGORY_LABELS, type ShopItemRow } from "@/lib/db";
 import { updateShopItemRegionDetails } from "@/app/actions";
 import { PendingButton } from "@/app/_components/PendingButton";
@@ -20,7 +20,7 @@ export default async function ShopDetailPage({
 }: {
   searchParams: Promise<{ q?: string }>;
 }) {
-  await requirePagePerm(["shop"]);
+  await requirePage("owner");
   const { q } = await searchParams;
   const query = (q ?? "").trim().toLowerCase();
 

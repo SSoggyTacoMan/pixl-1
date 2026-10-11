@@ -1,12 +1,10 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getHelperAccess } from "@/lib/guard";
+import { NextResponse } from "next/server";
+import { guardedRoute } from "@/lib/guard";
 import { listTickets } from "@/lib/tickets";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest) {
-  const access = await getHelperAccess();
-  if (!access) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+export const GET = guardedRoute("api.tickets.list", "helper", async (_access, req) => {
   const { searchParams } = new URL(req.url);
   const statusParam = searchParams.get("status");
   const status =
@@ -14,4 +12,4 @@ export async function GET(req: NextRequest) {
   const search = searchParams.get("search") ?? "";
   const tickets = await listTickets(status, search);
   return NextResponse.json({ tickets });
-}
+});

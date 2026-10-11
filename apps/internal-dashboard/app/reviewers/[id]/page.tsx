@@ -1,9 +1,8 @@
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import {
-  requireAdmin,
-  isSecondPassReviewer,
-  isSuperAdmin,
+  requirePage,
+  ownerSlackIds,
   secondPassSlackIds,
   reviewQueueScopeFor,
   NO_REVIEW,
@@ -97,15 +96,15 @@ export default async function ReviewerPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const access = await requireAdmin();
-  if (!access.isSuper) redirect("/");
+  const access = await requirePage("owner");
   const { id } = await params;
   const slackId = decodeURIComponent(id);
 
-  const [admin, isSuper] = await Promise.all([getAdmin(slackId), isSuperAdmin(slackId)]);
+  const admin = await getAdmin(slackId);
+  const isSuper = ownerSlackIds().includes(slackId);
   const inTable = !!admin?.permissions.includes("review");
   const blocked = !!admin?.permissions.includes(NO_REVIEW);
-  const implied = (isSuper || secondPassSlackIds().includes(slackId)) && !blocked;
+  const implied = isSuper && !blocked;
   if (!inTable && !implied) notFound();
 
   const [stats, audits, handle, playerNames] = await Promise.all([
@@ -117,7 +116,7 @@ export default async function ReviewerPage({
   const s = stats.get(slackId) ?? EMPTY_STATS;
   const display = admin?.name || handle || playerNames.get(slackId) || slackId;
   // Mirrors isSecondPassReviewer's env fallback: with SECOND_PASS_SLACK_IDS
-  // unset, super admins qualify automatically, so the toggle button below must
+  // unset, owners qualify automatically, so the toggle button below must
   // agree with that or it contradicts the "second pass" badge above it.
   const secondPassIds = secondPassSlackIds();
   const envGrantsSecondPass = secondPassIds.length === 0 ? isSuper : secondPassIds.includes(slackId);
@@ -148,10 +147,10 @@ export default async function ReviewerPage({
               {display}
               {isSuper && (
                 <Badge variant="destructive" className="text-[0.65rem] uppercase tracking-wide">
-                  admin
+                  owner
                 </Badge>
               )}
-              {isSecondPassReviewer(slackId, admin?.permissions, isSuper) && (
+              {(admin?.permissions.includes(SECOND_PASS) || envGrantsSecondPass) && (
                 <Badge variant="success" className="text-[0.65rem] uppercase tracking-wide">
                   second pass
                 </Badge>
@@ -188,7 +187,7 @@ export default async function ReviewerPage({
           {envGrantsSecondPass ? (
             <span className="text-xs text-muted-foreground">
               {secondPassIds.length === 0
-                ? "Final reviewer , super admins qualify by default while SECOND_PASS_SLACK_IDS is unset."
+                ? "Final reviewer , owners qualify by default while SECOND_PASS_SLACK_IDS is unset."
                 : "Final reviewer via SECOND_PASS_SLACK_IDS , change it in the env."}
             </span>
           ) : (

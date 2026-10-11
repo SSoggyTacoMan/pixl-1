@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listStoryNodes, type StoryNodeRow } from "@/lib/db";
 import {
   addStoryNode,
@@ -96,7 +96,7 @@ export default async function StoryPage({
 }: {
   searchParams: Promise<{ error?: string; saved?: string }>;
 }) {
-  const access = await requirePagePerm(["story"]);
+  const access = await requirePage("owner");
   const { error, saved } = await searchParams;
   const nodes = await listStoryNodes();
 

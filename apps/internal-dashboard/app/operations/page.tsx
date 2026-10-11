@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { db } from "@/lib/db";
 import {
   BLACKOUT_SLUG,
@@ -116,7 +116,7 @@ export default async function OperationsPage({
 }: {
   searchParams: Promise<{ slug?: string; ok?: string; error?: string; status?: string; page?: string }>;
 }) {
-  await requirePagePerm(["operations"]);
+  await requirePage("owner");
   const sp = await searchParams;
   const slug = sp.slug || BLACKOUT_SLUG;
   const statusFilter = ENTRY_STATUSES.includes(sp.status as EntryStatus) ? (sp.status as EntryStatus) : undefined;

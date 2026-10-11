@@ -1,20 +1,12 @@
 import Link from "next/link";
-import { requireReportViewer, getAccess } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
-import { listReports, listReportViewers, listModerators } from "@/lib/db";
-import {
-  addReportViewerAction,
-  removeReportViewerAction,
-  addModeratorAction,
-  removeModeratorAction,
-} from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
+import { listReports } from "@/lib/db";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 
 export const dynamic = "force-dynamic";
 
@@ -37,16 +29,10 @@ export default async function ReportsPage({
 }: {
   searchParams: Promise<{ status?: string; verror?: string }>;
 }) {
-  const session = await requireReportViewer();
+  await requirePage("owner");
   if (await getLiveMode()) return <LiveBlocked what="Reports" />;
   const { status, verror } = await searchParams;
-  const [all, viewers, moderators, access] = await Promise.all([
-    listReports(500),
-    listReportViewers(),
-    listModerators(),
-    getAccess(),
-  ]);
-  const isOwner = !!access?.isSuper;
+  const all = await listReports(500);
 
   const REPEAT_THRESHOLD = 3;
   const targetCounts = new Map<string, number>();
@@ -73,8 +59,7 @@ export default async function ReportsPage({
     <div>
       <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-1">Reports</h1>
       <p className="text-sm text-muted-foreground mb-5">
-        Players flagged by other players. Only report viewers can see this , regular admins
-        can&apos;t. Each report runs an AI pass over the reported player&apos;s recent chat.
+        Players flagged by other players. Owners only. Each report runs an AI pass over the reported player&apos;s recent chat.
       </p>
 
       {verror && (
@@ -145,102 +130,6 @@ export default async function ReportsPage({
         ))}
       </div>
 
-      <div className="mt-8">
-        <details className="rounded-xl border border-border bg-card p-4">
-          <summary className="cursor-pointer text-sm font-semibold select-none">
-            Report viewers ({viewers.length}) , who can see reports
-          </summary>
-          <p className="text-xs text-muted-foreground mt-2 mb-3">
-            Only these Slack users can see reports (you can&apos;t remove yourself). Add mods by
-            their Slack member ID.
-          </p>
-          <div className="flex flex-col divide-y divide-border border border-border rounded-lg mb-3">
-            {viewers.map((v) => (
-              <div key={v.slack_id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                <span className="font-mono">{v.slack_id}</span>
-                <span className="text-xs text-muted-foreground">added by {v.added_by || "seed"}</span>
-                {v.slack_id !== session.slackId ? (
-                  <form action={removeReportViewerAction} className="ml-auto">
-                    <input type="hidden" name="slackId" value={v.slack_id} />
-                    <PendingButton
-                      type="submit"
-                      size="sm"
-                      variant="ghost"
-                      pendingText="Removing…"
-                      confirm={`Remove ${v.slack_id} from report viewers?`}
-                      className="text-destructive"
-                    >
-                      Remove
-                    </PendingButton>
-                  </form>
-                ) : (
-                  <span className="ml-auto text-xs text-muted-foreground">you</span>
-                )}
-              </div>
-            ))}
-          </div>
-          <form action={addReportViewerAction} className="flex gap-2">
-            <Input name="slackId" placeholder="Slack member ID (U…)" className="text-sm font-mono max-w-xs" />
-            <PendingButton type="submit" size="sm" pendingText="Adding…">
-              Add viewer
-            </PendingButton>
-          </form>
-        </details>
-      </div>
-
-      {isOwner && (
-        <div className="mt-3">
-          <details className="rounded-xl border border-border bg-card p-4">
-            <summary className="cursor-pointer text-sm font-semibold select-none">
-              Moderators ({moderators.length})
-            </summary>
-            <p className="text-xs text-muted-foreground mt-2 mb-3">
-              Moderators can see reports, warn players, and propose a ban , only an admin with the
-              &ldquo;ban&rdquo; permission can confirm a proposal (on the{" "}
-              <Link href="/bans" className="text-brand underline">
-                Bans
-              </Link>{" "}
-              page). They still need an admin row (any permissions, even none) on the{" "}
-              <Link href="/admins" className="text-brand underline">
-                Admins
-              </Link>{" "}
-              page to be able to sign in at all.
-            </p>
-            <div className="flex flex-col divide-y divide-border border border-border rounded-lg mb-3">
-              {moderators.map((m) => (
-                <div key={m.slack_id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                  <span className="font-mono">{m.slack_id}</span>
-                  {m.name && <span className="text-muted-foreground">{m.name}</span>}
-                  <span className="text-xs text-muted-foreground">added by {m.added_by || "seed"}</span>
-                  <form action={removeModeratorAction} className="ml-auto">
-                    <input type="hidden" name="slackId" value={m.slack_id} />
-                    <PendingButton
-                      type="submit"
-                      size="sm"
-                      variant="ghost"
-                      pendingText="Removing…"
-                      confirm={`Remove ${m.name || m.slack_id} as a moderator?`}
-                      className="text-destructive"
-                    >
-                      Remove
-                    </PendingButton>
-                  </form>
-                </div>
-              ))}
-              {moderators.length === 0 && (
-                <div className="px-3 py-2 text-sm text-muted-foreground">No moderators yet.</div>
-              )}
-            </div>
-            <form action={addModeratorAction} className="flex gap-2">
-              <Input name="slackId" placeholder="Slack member ID (U…)" className="text-sm font-mono max-w-40" />
-              <Input name="name" placeholder="Name (optional)" className="text-sm max-w-40" />
-              <PendingButton type="submit" size="sm" pendingText="Adding…">
-                Add moderator
-              </PendingButton>
-            </form>
-          </details>
-        </div>
-      )}
     </div>
   );
 }

@@ -1,6 +1,5 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { requireAdmin } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listActivityFeed, type FeedItem } from "@/lib/db";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -48,11 +47,10 @@ export default async function AuditPage({
 }: {
   searchParams: Promise<{ kind?: string; q?: string; days?: string; page?: string }>;
 }) {
-  // Everything here crosses permission boundaries - a moderator's bans next to
+  // Everything here crosses permission boundaries - bans next to
   // a reviewer's verdicts next to permission grants - so it stays owner-only
   // rather than being assembled per-viewer like the overview widget is.
-  const access = await requireAdmin();
-  if (!access.isSuper) redirect("/");
+  const access = await requirePage("owner");
   const { kind, q, days, page } = await searchParams;
 
   const activeKinds = KINDS.filter((k) => k.key === kind).map((k) => k.key);

@@ -430,7 +430,7 @@ export function ReviewForm({
   currentName?: string;
   currentDescription?: string | null;
   currentImageUrl?: string | null;
-  /** Whether the viewing reviewer is a super admin - gates the "Generate AI
+  /** Whether the viewing reviewer is an owner - gates the "Generate AI
    * draft" button below (visible to every reviewer, only clickable for admins). */
   isSuper?: boolean;
   /** Whether the viewer may edit the submission's details (title, image, links,
@@ -627,7 +627,7 @@ export function ReviewForm({
   // app/actions.ts) - a starting point the reviewer reads and edits, never
   // submitted on its own. The button itself is visible to every reviewer so
   // they know the feature exists, but only an admin's click actually calls
-  // the action (it re-checks requireSuper() server-side regardless).
+  // the action (guardedAction re-checks the owner role server-side regardless).
   const [aiPending, startAiTransition] = useTransition();
   const [aiDraft, setAiDraft] = useState<AiReviewDraft | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);

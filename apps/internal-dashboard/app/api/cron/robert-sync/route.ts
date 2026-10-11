@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { audit } from "@/lib/audit";
 import { fetchScoredProjects, robertEnabled, robertExternalId } from "@/lib/robert";
 import { applyReview, submitToRobert } from "@/lib/robertSync";
 
@@ -15,8 +16,11 @@ export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
   if (!secret)
     return NextResponse.json({ ok: false, error: "CRON_SECRET is not set" }, { status: 500 });
-  if (req.headers.get("authorization") !== `Bearer ${secret}`)
+  if (req.headers.get("authorization") !== `Bearer ${secret}`) {
+    await audit({ action: "cron.robert-sync", result: "denied", actorType: "anonymous" }, req);
     return NextResponse.json({ ok: false }, { status: 401 });
+  }
+  await audit({ action: "cron.robert-sync", result: "ok", actorType: "service", actorId: "cron" }, req);
   if (!robertEnabled()) return NextResponse.json({ ok: true, skipped: "robert is not configured" });
 
   const { data: waiting, error } = await db

@@ -67,10 +67,3 @@ export async function clearSessionCookie() {
   jar.delete(COOKIE);
 }
 
-export function isAllowed(slackId: string): boolean {
-  const ids = (process.env.ADMIN_SLACK_IDS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return ids.includes(slackId);
-}

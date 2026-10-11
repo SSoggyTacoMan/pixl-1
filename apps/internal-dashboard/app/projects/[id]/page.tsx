@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requirePagePerm, canView } from "@/lib/guard";
+import { requirePage, can } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { liveName } from "@/lib/liveMode";
 import { db, getProject, listCollaboratorsForProject, listProjectNotes } from "@/lib/db";
@@ -102,7 +102,7 @@ export default async function ProjectPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string }>;
 }) {
-  const access = await requirePagePerm(["review", "warn", "ban"]);
+  const access = await requirePage("reviewer");
   const live = await getLiveMode();
   const { id } = await params;
   const { error } = await searchParams;
@@ -114,7 +114,7 @@ export default async function ProjectPage({
   const notes = await listProjectNotes(projectId);
   // Reviewers' internal justifications and Robert's fraud review are staff
   // context, same audience as the review page, so they need review access.
-  const canSeeReviews = canView(access, ["review"]);
+  const canSeeReviews = can(access, "reviewer");
   const audits: ReviewAuditRow[] = canSeeReviews
     ? (((
         await db
@@ -146,11 +146,11 @@ export default async function ProjectPage({
   const ownerHandle = await slackHandle(project.users?.slack_id);
   const collaborators = await listCollaboratorsForProject(projectId);
   // Banning / archiving / rejecting / sending back is an admin action ,
-  // reviewers only grade. Gated on the "ban" permission (owners + sub-admins).
-  const canModerate = canView(access, ["ban"]);
+  // reviewers only grade. Owner-only.
+  const canModerate = can(access, "owner");
   // Marking a project Peak is a grading call, not moderation , any reviewer
   // can do it, same as the initial verdict.
-  const canPeak = canView(access, ["review"]);
+  const canPeak = can(access, "reviewer");
   // Send back to review is a staff action , admins only (not plain reviewers).
   const canReReview =
     canModerate &&
@@ -158,7 +158,7 @@ export default async function ProjectPage({
   // Deflating hours moves real pixels, can cancel a player's orders, and DMs
   // them , owners/super-admins only (see deflateProjectHours in app/actions.ts).
   const canDeflate =
-    access.isSuper &&
+    access.isOwner &&
     project.status === "approved" &&
     !project.banned_at &&
     !project.rejected_at;

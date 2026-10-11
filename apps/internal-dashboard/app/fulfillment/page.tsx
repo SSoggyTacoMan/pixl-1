@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requireFulfiller } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import {
@@ -210,7 +210,7 @@ export default async function FulfillmentPage({
 }: {
   searchParams: Promise<{ status?: string; mine?: string }>;
 }) {
-  const access = await requireFulfiller();
+  const access = await requirePage("fulfiller");
   if (await getLiveMode()) return <LiveBlocked what="Fulfillment" />;
   const me = access.session.slackId;
   const { status, mine } = await searchParams;
@@ -252,7 +252,7 @@ export default async function FulfillmentPage({
   const buyerDetails = await buyerDetailsByUserId(orders.map((o) => o.user_id));
   // Owner-only, since it's a financial rollup rather than a per-order
   // fulfillment task - plain fulfillers don't need it to do their job.
-  const economy = access.isSuper ? await shopEconomySummary() : null;
+  const economy = access.isOwner ? await shopEconomySummary() : null;
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "pending", label: "New" },
@@ -264,7 +264,7 @@ export default async function FulfillmentPage({
     { key: "flagged", label: `Over budget${flaggedCount > 0 ? ` (${flaggedCount})` : ""}` },
     { key: "all", label: "All" },
     { key: "leaderboard", label: "Leaderboard" },
-    ...(access.isSuper ? [{ key: "fulfillers" as TabKey, label: "Fulfillers" }] : []),
+    ...(access.isOwner ? [{ key: "fulfillers" as TabKey, label: "Fulfillers" }] : []),
   ];
 
   const linkFor = (key: TabKey) => {
@@ -353,7 +353,7 @@ export default async function FulfillmentPage({
               handle={o.player_slack ? handles.get(o.player_slack) : undefined}
               buyer={buyerDetails.get(o.user_id)}
               mine={o.claimed_by_slack === me}
-              canManage={access.perms.has("fulfillment")}
+              canManage={access.isOwner}
             />
           ))}
         </div>

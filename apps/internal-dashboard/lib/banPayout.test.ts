@@ -8,9 +8,9 @@ import { join } from "node:path";
 const src = readFileSync(join(import.meta.dir, "../app/actions.ts"), "utf8");
 
 function body(name: string): string {
-  const start = src.indexOf(`export async function ${name}(`);
+  const start = src.indexOf(`export const ${name} = guardedAction(`);
   expect(start).toBeGreaterThan(-1);
-  const next = src.indexOf("\nexport async function ", start + 1);
+  const next = src.indexOf("\nexport const ", start + 1);
   return src.slice(start, next === -1 ? undefined : next);
 }
 

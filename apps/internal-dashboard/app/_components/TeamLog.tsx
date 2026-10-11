@@ -60,7 +60,7 @@ export async function TeamLog() {
         <Table>
           <TableBody>
             {rows.map((row) => (
-              <TableRow key={row.id} className="hover:bg-transparent">
+              <TableRow key={`${row.source}-${row.id}`} className="hover:bg-transparent">
                 <TableCell className="p-4 align-top whitespace-normal">
                   <div className="text-sm">
                     <span className="font-semibold">
@@ -90,7 +90,7 @@ export async function TeamLog() {
                   </div>
                 </TableCell>
                 <TableCell className="p-4 align-top text-right w-px">
-                  {row.action !== "undo" && !row.action.startsWith("super ") && (
+                  {row.source === "audit" && row.action !== "undo" && (
                     <form action={undoTeamChange}>
                       <input type="hidden" name="id" value={row.id} />
                       <PendingButton

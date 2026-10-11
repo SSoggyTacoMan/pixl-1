@@ -28,7 +28,7 @@ export function ReviewTabs({
   ];
   if (canSecondPass) {
     // Anyone who can do the final pass - supers, and anyone else granted the
-    // SECOND_PASS marker (e.g. a Sponsor, see addSponsor in app/actions.ts).
+    // SECOND_PASS marker (granted from /reviewers).
     // Every score Robert's fraud reviewer has given, newest first, including
     // projects that already left Spot check.
     tabs.push({ href: "/review/fraud-reviews", label: "Fraud reviews" });

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requirePagePerm, isReportViewer } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { banIsActive, getPlayer, listReportsAgainst } from "@/lib/db";
 import { slackHandle } from "@/lib/slack";
@@ -65,16 +65,17 @@ export default async function PlayerPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const access = await requirePagePerm(["warn", "ban"]);
+  const access = await requirePage("owner");
   const live = await getLiveMode();
-  const can = (p: string) => access.isSuper || access.perms.has(p);
+  // Every player action (warn, ban, notify, edit) is owner-only.
+  const can = (_perm: string) => access.isOwner;
   const { id } = await params;
   const data = await getPlayer(id);
   if (!data) notFound();
   const { user, states, projects, violations, bans, actions } = data;
   const activeBan = bans.find(banIsActive) ?? null;
   const handle = await slackHandle(user.slack_id);
-  const canSeeReports = await isReportViewer();
+  const canSeeReports = access.isOwner;
   const reports = canSeeReports ? await listReportsAgainst(id) : [];
   const openReports = reports.filter((r) => r.status === "open").length;
 
@@ -152,7 +153,7 @@ export default async function PlayerPage({
         )}
       </div>
 
-      {access.isSuper && !live && (
+      {access.isOwner && !live && (
         <Card className="p-5 mb-8 gap-0">
           <div className="text-base font-semibold mb-3">Player info</div>
           <EditInfoForm
@@ -180,7 +181,7 @@ export default async function PlayerPage({
         </div>
       </Card>
 
-      {access.isSuper && (
+      {access.isOwner && (
         <Card className="p-5 mb-8 gap-0 border-rose-200 dark:border-rose-500/30">
           <div className="text-base font-semibold mb-3 text-rose-600 dark:text-rose-400">
             Danger zone

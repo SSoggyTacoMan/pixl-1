@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { isAllowed, setSessionCookie } from "@/lib/session";
-import {
-  getAdmin,
-  listModeratorIds,
-  listReportViewerIds,
-  listSuperAdminIds,
-} from "@/lib/db";
+import { setSessionCookie } from "@/lib/session";
+import { accessFor, landingFor } from "@/lib/guard";
+import { audit } from "@/lib/audit";
 import { getSlackUserProfile } from "@/lib/slack";
 
 const HCA_BASE_URL = "https://auth.hackclub.com";
@@ -39,8 +35,16 @@ export async function GET(req: NextRequest) {
   const expected = jar.get("pixl_oauth_state")?.value;
   jar.delete("pixl_oauth_state");
 
-  const fail = (reason: string) =>
-    NextResponse.redirect(`${process.env.BASE_URL}/login?error=${reason}`);
+  const fail = async (reason: string, slackId: string | null = null) => {
+    await audit({
+      action: "auth.login_failed",
+      result: "denied",
+      actorType: slackId ? "staff" : "anonymous",
+      slackId,
+      meta: { reason },
+    }, req);
+    return NextResponse.redirect(`${process.env.BASE_URL}/login?error=${reason}`);
+  };
 
   if (!code || !state || !expected || state !== expected) return fail("state");
 
@@ -84,18 +88,18 @@ export async function GET(req: NextRequest) {
     name = profile?.displayName || profile?.realName || profile?.name || slackId;
   }
 
-  // Super admins, moderators and report-viewers live in their own tables, not
-  // `admins` (see lib/guard.ts) , check those too or a standalone
-  // super/moderator/viewer (no admins row) can never get past login.
-  if (
-    !isAllowed(slackId) &&
-    !(await getAdmin(slackId)) &&
-    !(await listSuperAdminIds()).includes(slackId) &&
-    !(await listModeratorIds()).includes(slackId) &&
-    !(await listReportViewerIds()).includes(slackId)
-  )
-    return fail("denied");
+  // Login gate: owner (ADMIN_SLACK_IDS), reviewer (admins row with review),
+  // ticket helper or fulfiller. Same role resolution as every page guard, so a
+  // helper/fulfiller without an admins row can sign in too.
+  const access = await accessFor({ slackId, name, exp: 0 });
+  if (!access) return fail("denied", slackId);
 
   await setSessionCookie(slackId, name);
-  return NextResponse.redirect(`${process.env.BASE_URL}/`);
+  await audit({ action: "auth.login", result: "ok", slackId, meta: { roles: [
+    access.isOwner && "owner",
+    access.isReviewer && "reviewer",
+    access.isHelper && "helper",
+    access.isFulfiller && "fulfiller",
+  ].filter(Boolean) } }, req);
+  return NextResponse.redirect(`${process.env.BASE_URL}${landingFor(access)}`);
 }

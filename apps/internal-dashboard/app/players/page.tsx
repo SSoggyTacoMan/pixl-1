@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { liveName } from "@/lib/liveMode";
 import { listPlayers } from "@/lib/db";
@@ -44,7 +44,7 @@ export default async function PlayersPage({
 }: {
   searchParams: Promise<{ q?: string; page?: string; done?: string; error?: string }>;
 }) {
-  const access = await requirePagePerm(["warn", "ban"]);
+  const access = await requirePage("owner");
   const live = await getLiveMode();
   const { q, page, done, error } = await searchParams;
   const all = await listPlayers(q);
@@ -59,9 +59,9 @@ export default async function PlayersPage({
   const qp = (n: number) =>
     `/players?page=${n}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
 
-  const canWarn = access.perms.has("warn");
-  const canNotify = access.perms.has("notify");
-  const canBan = access.perms.has("ban");
+  const canWarn = access.isOwner;
+  const canNotify = access.isOwner;
+  const canBan = access.isOwner;
   const defaultAction = canWarn ? "warn" : canNotify ? "notify" : "ban";
 
   return (
@@ -89,7 +89,7 @@ export default async function PlayersPage({
           />
           <Button type="submit">Search</Button>
         </form>
-        {access.isSuper && (
+        {access.isOwner && (
           <form action={syncSlackAvatars}>
             <PendingButton variant="outline" pendingText="Syncing…">
               Sync Slack photos

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requirePagePerm, requireGuidelinesAck } from "@/lib/guard";
+import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import {
   listShippedProjects,
   listSecondReviewProjects,
@@ -37,7 +37,7 @@ export default async function ReviewListPage({
 }: {
   searchParams: Promise<{ page?: string; sort?: string; kind?: string; blackout?: string }>;
 }) {
-  const access = await requirePagePerm(["review"]);
+  const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
   const viewer = access.session.slackId;
   const { page, sort, kind: rawKind, blackout } = await searchParams;
@@ -59,7 +59,7 @@ export default async function ReviewListPage({
     access.canSecondPass && !live
       ? listSecondReviewProjects(viewer, kind, { includeClaimed: true })
       : Promise.resolve([]),
-    access.isSuper
+    access.isOwner
       ? listSpotCheckProjects(viewer, kind, { includeClaimed: true })
       : Promise.resolve([]),
     listReviewAudits(5, viewer),

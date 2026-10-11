@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requirePagePerm, canView } from "@/lib/guard";
+import { requirePage, can } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { listProjects, collaboratorsByProject } from "@/lib/db";
 import { StatusBadge, BeaconBadge } from "@/app/_components/ProjectBadges";
@@ -24,11 +24,11 @@ export default async function ProjectsPage({
 }: {
   searchParams: Promise<{ q?: string; view?: string }>;
 }) {
-  const access = await requirePagePerm(["review", "warn", "ban"]);
+  const access = await requirePage("reviewer");
   const live = await getLiveMode();
   // Admins (ban perm) see archived projects mixed into the main list; plain
   // reviewers only see active ones.
-  const isAdmin = canView(access, ["ban"]);
+  const isAdmin = can(access, "owner");
   const { q, view } = await searchParams;
   const archived = view === "archived";
   const projects = await listProjects(q, {
@@ -49,7 +49,7 @@ export default async function ProjectsPage({
           {archived ? "Archived projects" : "Projects"}
         </h1>
         <div className="flex gap-2">
-          {access.isSuper && (
+          {access.isOwner && (
             <Button asChild variant="outline">
               <a href="/api/projects/export">Export approved (CSV)</a>
             </Button>

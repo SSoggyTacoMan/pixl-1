@@ -1,4 +1,7 @@
-// Talks to the live PixlServer admin API (shared-secret guarded).
+import { sniffFormat } from "./imageSniff";
+
+// Talks to the live PixlServer admin API (/api/admin/*), authenticated with
+// this app's own service key (x-pixl-service-key = SERVICE_KEY_INTERNAL_DASHBOARD).
 
 export interface OnlinePlayer {
   userId: string;
@@ -9,7 +12,7 @@ export interface OnlinePlayer {
 
 function config(): { url: string; key: string } | null {
   const url = process.env.PIXL_SERVER_URL;
-  const key = process.env.ADMIN_API_KEY;
+  const key = process.env.SERVICE_KEY_INTERNAL_DASHBOARD;
   if (!url || !key) return null;
   return { url: url.replace(/\/$/, ""), key };
 }
@@ -23,7 +26,7 @@ export async function fetchOnlinePlayers(): Promise<OnlinePlayer[] | null> {
   if (!cfg) return null;
   try {
     const res = await fetch(`${cfg.url}/api/admin/online`, {
-      headers: { "x-admin-key": cfg.key },
+      headers: { "x-pixl-service-key": cfg.key },
       cache: "no-store",
       signal: AbortSignal.timeout(5000),
     });
@@ -48,7 +51,7 @@ export async function refreshBlackoutEvidence(entryId: number): Promise<boolean>
   try {
     const res = await fetch(`${cfg.url}/api/admin/operations/refresh-evidence`, {
       method: "POST",
-      headers: { "x-admin-key": cfg.key, "Content-Type": "application/json" },
+      headers: { "x-pixl-service-key": cfg.key, "Content-Type": "application/json" },
       body: JSON.stringify({ entryId }),
       signal: AbortSignal.timeout(10_000),
     });
@@ -67,13 +70,21 @@ export async function refreshBlackoutEvidence(entryId: number): Promise<boolean>
 // uploading is a reviewer rather than the project's owner, so there's no
 // player session token to send.
 export async function uploadSubmissionImage(file: File): Promise<string> {
+  return uploadImageBuffer(Buffer.from(await file.arrayBuffer()));
+}
+
+// Raw bytes -> CDN URL via the server. The bytes must already have passed
+// sniffFormat (lib/imageSniff.ts); the content type sent is the sniffed one,
+// never a client-declared MIME. The server re-validates and strips metadata.
+export async function uploadImageBuffer(buf: Buffer): Promise<string> {
+  const format = sniffFormat(buf);
+  if (!format) throw new Error("Only PNG, JPEG or WebP images can be uploaded.");
   const cfg = config();
-  if (!cfg) throw new Error("Image uploads aren't configured (PIXL_SERVER_URL/ADMIN_API_KEY missing).");
-  const buf = Buffer.from(await file.arrayBuffer());
+  if (!cfg) throw new Error("Image upload disabled: PIXL_SERVER_URL / SERVICE_KEY_INTERNAL_DASHBOARD not set.");
   const res = await fetch(`${cfg.url}/api/admin/uploads`, {
     method: "POST",
-    headers: { "x-admin-key": cfg.key, "Content-Type": file.type || "image/png" },
-    body: buf,
+    headers: { "x-pixl-service-key": cfg.key, "Content-Type": `image/${format}` },
+    body: new Uint8Array(buf),
     signal: AbortSignal.timeout(20_000),
   });
   const json = (await res.json().catch(() => null)) as
@@ -89,7 +100,7 @@ export async function kickOnlinePlayer(userId: string, reason: string): Promise<
   try {
     const res = await fetch(`${cfg.url}/api/admin/kick`, {
       method: "POST",
-      headers: { "x-admin-key": cfg.key, "Content-Type": "application/json" },
+      headers: { "x-pixl-service-key": cfg.key, "Content-Type": "application/json" },
       body: JSON.stringify({ userId, reason }),
       signal: AbortSignal.timeout(5000),
     });

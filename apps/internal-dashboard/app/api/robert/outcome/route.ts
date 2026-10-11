@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { db } from "@/lib/db";
+import { audit } from "@/lib/audit";
 import { applyReview } from "@/lib/robertSync";
 
 export const dynamic = "force-dynamic";
@@ -44,8 +45,11 @@ export async function POST(req: Request) {
       req.headers.get("x-robert-signature"),
       rawBody,
     )
-  )
+  ) {
+    await audit({ action: "webhook.robert_outcome", result: "denied", actorType: "anonymous" }, req);
     return NextResponse.json({ ok: false }, { status: 401 });
+  }
+  await audit({ action: "webhook.robert_outcome", result: "ok", actorType: "service", actorId: "robert" }, req);
 
   let body: {
     event?: string;

@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requirePagePerm, requireGuidelinesAck } from "@/lib/guard";
+import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { listSpotCheckProjects } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
 import { getHideReviewers } from "@/lib/liveModeServer";
@@ -16,9 +16,9 @@ export const dynamic = "force-dynamic";
 // read-only QA audit over every second_review project; now that spot check
 // IS the final verdict step, it's an action queue, oldest-first.
 export default async function SpotCheckPage() {
-  const access = await requirePagePerm(["review"]);
+  const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
-  if (!access.isSuper) redirect("/review");
+  if (!access.isOwner) redirect("/review");
 
   const [rows, blackoutIds] = await Promise.all([
     // includeClaimed: a project another reviewer has open stays listed (tagged), like /review.

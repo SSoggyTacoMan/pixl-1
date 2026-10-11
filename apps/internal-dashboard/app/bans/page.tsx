@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requirePagePerm, canView } from "@/lib/guard";
+import { requirePage, can } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { liveName } from "@/lib/liveMode";
@@ -25,10 +25,10 @@ export default async function BansPage({
 }: {
   searchParams: Promise<{ tab?: string }>;
 }) {
-  const access = await requirePagePerm(["warn", "ban"]);
+  const access = await requirePage("owner");
   const live = await getLiveMode();
   if (live) return <LiveBlocked what="Bans" reason="This page is internal moderation data" />;
-  const canConfirm = canView(access, ["ban"]);
+  const canConfirm = can(access, "owner");
   const { tab } = await searchParams;
   const active = tab === "logs" ? "logs" : tab === "proposed" ? "proposed" : "bans";
   const [bans, log, proposals] = await Promise.all([
@@ -51,7 +51,7 @@ export default async function BansPage({
         {active === "bans"
           ? "Every ban ever issued, newest first. Lifting removes all active bans for that player."
           : active === "proposed"
-            ? "Bans proposed by moderators, waiting on an admin to confirm or reject."
+            ? "Ban proposals from before moderators were removed, waiting on an owner to confirm or reject."
             : "Every ban and lift action with who did it, newest first."}
       </p>
 

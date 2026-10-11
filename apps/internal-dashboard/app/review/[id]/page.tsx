@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requirePagePerm, requireGuidelinesAck } from "@/lib/guard";
+import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { decryptPII } from "@/lib/crypto";
 import {
   getProject,
@@ -114,12 +114,12 @@ export default async function ReviewDetail({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string }>;
 }) {
-  const access = await requirePagePerm(["review"]);
+  const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
   const viewer = access.session.slackId;
   const canSecondPass = access.canSecondPass;
   // Only admins (ban perm) may permanently ban a project from the review page.
-  const canModerate = access.perms.has("ban");
+  const canModerate = access.isOwner;
   const { id } = await params;
   const { error } = await searchParams;
   const projectId = Number(id);
@@ -166,17 +166,17 @@ export default async function ReviewDetail({
   // robertSync.ts), so spotCheckStage is the only thing isFinalStage can
   // mean here besides a proposed ban.
   const spotCheckStage = isFinalStage && p.second_pass_verdict === "not_fraud";
-  const isOwn = !!p.users?.slack_id && p.users.slack_id === viewer && !access.isSuper;
+  const isOwn = !!p.users?.slack_id && p.users.slack_id === viewer && !access.isOwner;
   const isHeld = !!p.hold_at;
   // hold_by is stored as "Name (SlackID)" (see holdReview in app/actions.ts) -
   // parse the id back out to tell whether this viewer is the one who set it,
-  // since only they (or a super admin) may release it.
+  // since only they (or an owner) may release it.
   const heldByMe = isHeld && p.hold_by?.match(/\(([^)]+)\)\s*$/)?.[1] === viewer;
   const canReview =
     !isHeld &&
     ((p.status === "shipped" && !isOwn) ||
       (isProposedBan && canSecondPass) ||
-      (spotCheckStage && access.isSuper));
+      (spotCheckStage && access.isOwner));
   // Reviewer-side unship (see unshipProject): available to final reviewers at
   // second pass or fraud review regardless of who could submit a verdict, and
   // never on your own project or while a hold is set.
@@ -924,10 +924,10 @@ export default async function ReviewDetail({
                   {p.hold_reason || "No reason given."}
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Held by {rn(p.hold_by, "a super admin")}
+                  Held by {rn(p.hold_by, "an owner")}
                   {p.hold_at ? ` on ${new Date(p.hold_at).toLocaleString()}` : ""}.
                 </p>
-                {(access.isSuper || heldByMe) && (
+                {(access.isOwner || heldByMe) && (
                   <form action={releaseReviewHold} className="pt-2">
                     <input type="hidden" name="projectId" value={p.id} />
                     <input type="hidden" name="returnTo" value={`/review/${p.id}`} />
@@ -1155,7 +1155,7 @@ export default async function ReviewDetail({
                       <PendingButton
                         variant="secondary"
                         pendingText="Holding…"
-                        confirm="Hold this review? Nobody can submit a verdict on it until you or another super admin releases it."
+                        confirm="Hold this review? Nobody can submit a verdict on it until you or another owner releases it."
                       >
                         Hold this review
                       </PendingButton>
@@ -1200,7 +1200,7 @@ export default async function ReviewDetail({
                         claimedHours={payoutHours}
                         defaultHours={formDefaultHours}
                         journalDeflatedHours={journalDeflatedHours}
-                        isSuper={access.isSuper}
+                        isSuper={access.isOwner}
                         canEditSubmission={access.canEditSubmission}
                         secondPass={spotCheckStage || isProposedBan}
                         bounties={bounties}

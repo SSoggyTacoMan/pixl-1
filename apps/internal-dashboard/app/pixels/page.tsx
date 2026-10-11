@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { listPixelTransactions, totalWalletPixels } from "@/lib/db";
@@ -66,7 +66,7 @@ export default async function PixelsPage({
     adjusted?: string;
   }>;
 }) {
-  const access = await requirePagePerm(["pixels"]);
+  const access = await requirePage("owner");
   if (await getLiveMode())
     return <LiveBlocked what="Pixels" reason="This page is the internal pixel ledger" />;
   const { page, filter, user, error, adjusted } = await searchParams;
@@ -155,7 +155,7 @@ export default async function PixelsPage({
         </Link>
       </div>
 
-      {access.isSuper && <PixelAdjustForm />}
+      {access.isOwner && <PixelAdjustForm />}
 
       <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
         <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-card">

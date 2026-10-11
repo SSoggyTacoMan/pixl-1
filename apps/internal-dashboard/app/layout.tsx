@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { Geist, Geist_Mono, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
-import { getAccess, canView, isReportViewer, isHelper, isFulfiller } from "@/lib/guard";
+import { getAccess } from "@/lib/guard";
 import { countPendingReviews, countOpenReports, countPendingOrders } from "@/lib/db";
 import { ticketStats } from "@/lib/tickets";
 import { Shell } from "@/app/_components/Shell";
@@ -56,42 +56,41 @@ export default async function RootLayout({
   // back itself (components/ui/sidebar.tsx) - without passing it in as
   // defaultOpen, the sidebar silently reopened on every fresh page load.
   const sidebarOpen = (await cookies()).get("sidebar_state")?.value !== "false";
-  const reportViewer = await isReportViewer();
-  const helper = await isHelper();
-  const fulfiller = await isFulfiller();
   const live = await getLiveMode();
   const hideReviewers = await getHideReviewers();
+  // Owners see everything; reviewers the review area; helpers tickets;
+  // fulfillers the order queue. Each page re-checks with requirePage().
+  const owner = !!access?.isOwner;
+  const helper = !!access?.isHelper;
+  const fulfiller = !!access?.isFulfiller;
   const nav = access
     ? {
-        overview: access.isSuper,
-        players: canView(access, ["warn", "ban"]),
-        projects: canView(access, ["review", "warn", "ban"]),
-        review: canView(access, ["review"]),
-        pixels: !live && canView(access, ["pixels"]),
-        moderation: !live && canView(access, ["warn", "ban"]),
-        ideas: canView(access, ["ideas"]),
-        reports: !live && reportViewer,
+        overview: owner,
+        players: owner,
+        projects: owner || access.isReviewer,
+        review: owner || access.isReviewer,
+        pixels: !live && owner,
+        moderation: !live && owner,
+        ideas: owner,
+        reports: !live && owner,
         tickets: helper,
-        notify: access.isSuper || access.perms.has("notify"),
-        admins: access.isSuper,
-        reviewers: access.isSuper,
-        slackLookup: !live && canView(access, ["lookup"]),
-        referrals: !live && canView(access, ["referrals"]),
-        online: canView(access, ["warn", "ban"]),
-        shop: canView(access, ["shop"]),
-        events: canView(access, ["events"]),
-        operations: canView(access, ["operations"]),
-        sidequests: canView(access, ["sidequests"]),
-        story: canView(access, ["story"]),
-        goals: canView(access, ["goals"]),
-        news: canView(access, ["news"]),
-        showNTell: canView(access, ["show_n_tell"]),
+        notify: owner,
+        admins: owner,
+        reviewers: owner,
+        slackLookup: !live && owner,
+        referrals: !live && owner,
+        online: owner,
+        shop: owner,
+        events: owner,
+        operations: owner,
+        sidequests: owner,
+        story: owner,
+        goals: owner,
+        news: owner,
+        showNTell: owner,
         fulfillment: !live && fulfiller,
-        forms: canView(access, ["forms"]),
-        // Spans every permission boundary at once (bans next to review verdicts
-        // next to permission grants), so it is owner-only - matching the gate
-        // on app/audit/page.tsx itself.
-        audit: access.isSuper,
+        forms: owner,
+        audit: owner,
       }
     : null;
   const reviewCount =

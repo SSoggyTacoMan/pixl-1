@@ -1,4 +1,4 @@
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listNews } from "@/lib/db";
 import { addNews, updateNews, toggleNews, deleteNews } from "@/app/actions";
 import { PendingButton } from "@/app/_components/PendingButton";
@@ -35,7 +35,7 @@ export default async function NewsPage({
 }: {
   searchParams: Promise<{ error?: string; saved?: string }>;
 }) {
-  await requirePagePerm(["news"]);
+  await requirePage("owner");
   const { error, saved } = await searchParams;
   const posts = await listNews();
 

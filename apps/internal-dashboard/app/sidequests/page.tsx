@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listSidequests } from "@/lib/db";
 import { addSidequest, updateSidequest, toggleSidequest, deleteSidequest } from "@/app/actions";
 import { NpcsTab } from "@/app/sidequests/NpcsTab";
@@ -29,7 +29,7 @@ export default async function SidequestsPage({
 }: {
   searchParams: Promise<{ error?: string; created?: string; saved?: string; tab?: string }>;
 }) {
-  const access = await requirePagePerm(["sidequests"]);
+  const access = await requirePage("owner");
   const { error, created, saved, tab } = await searchParams;
   const quests = await listSidequests();
   const activeTab = tab === "npcs" ? "npcs" : "trials";

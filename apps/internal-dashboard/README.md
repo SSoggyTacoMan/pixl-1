@@ -14,9 +14,9 @@ bans that the game server enforces.
    - **Bot Token Scopes**: `chat:write`, `im:write`
    - Install to the workspace and copy the bot token.
 4. `cp .env.example .env` and fill everything in. `ADMIN_SLACK_IDS` is the
-   comma-separated list of Slack member IDs that are permanent super admins ,
-   enough to bootstrap. Everyone else (super admins, sub-admins, reviewers,
-   moderators, helpers, fulfillers) is granted from inside the dashboard.
+   comma-separated list of owners (the only way to become one). Owners add
+   reviewers, ticket helpers and fulfillers from the Team page (/admins).
+   Every action, login and page view is written to `audit_log`.
 5. `bun run dev` → http://localhost:4900
 
 ## How the pieces fit

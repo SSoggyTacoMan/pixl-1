@@ -129,7 +129,7 @@ export function Shell({
       label: null,
       items: [
         // Owners get the full Overview; reviewers get their own stats as their
-        // home instead. Everyone else (mod-only sub-admins) keeps Overview.
+        // home instead. Everyone else (none: non-owners are redirected) keeps Overview.
         !nav.overview && nav.review
           ? { href: "/review/stats", label: "My stats", icon: "overview", show: true }
           : { href: "/", label: "Overview", icon: "overview", show: true },

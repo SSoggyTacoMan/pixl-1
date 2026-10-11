@@ -1,4 +1,4 @@
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { listFormSubmissions, listFormConfigs, type FormSubmissionRow } from "@/lib/db";
 import { slackAvatarsFor, slackHandles } from "@/lib/slack";
 import {
@@ -157,7 +157,7 @@ function SubmissionCard({
 // never got a Pixl account - decideFormSubmission DMs them directly by the
 // Slack id they verified via Hack Club Auth at submit time.
 export default async function FormsPage() {
-  await requirePagePerm(["forms"]);
+  await requirePage("owner");
   const [submissions, configs] = await Promise.all([listFormSubmissions(), listFormConfigs()]);
   const pending = submissions.filter((s) => s.status === "pending" && !s.interesting_at);
   const interesting = submissions.filter((s) => s.status === "pending" && s.interesting_at);

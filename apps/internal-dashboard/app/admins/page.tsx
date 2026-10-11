@@ -1,252 +1,242 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
-import { requireAdmin, ownerSlackIds, SUBADMIN_PERMISSIONS, SPONSOR } from "@/lib/guard";
-import { listAdmins, listSuperAdmins, getReviewPayoutSettings } from "@/lib/db";
 import {
-  addAdmin,
-  addSponsor,
-  addSuperAdminAction,
-  removeAdmin,
-  removeSuperAdminAction,
-  updateAdminPerms,
+  requirePage,
+  ownerSlackIds,
+  secondPassSlackIds,
+  reviewQueueScopeFor,
+  REVIEW,
+  NO_REVIEW,
+  SECOND_PASS,
+  EDIT_SUBMISSION,
+} from "@/lib/guard";
+import { listAdmins, listHelpers, listFulfillers, getReviewPayoutSettings } from "@/lib/db";
+import {
+  addReviewer,
+  addHelperAction,
+  removeHelperAction,
+  addFulfillerAction,
+  removeFulfillerAction,
   updateReviewPayoutSettings,
 } from "@/app/actions";
 import { slackHandles } from "@/lib/slack";
 import { TeamLog } from "@/app/_components/TeamLog";
 import { PendingButton } from "@/app/_components/PendingButton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Pagination,
-  PaginationContent,
-  PaginationItem,
-  PaginationLink,
-} from "@/components/ui/pagination";
 
 export const dynamic = "force-dynamic";
 
-const PERM_INFO: Record<string, { label: string; desc: string }> = {
-  warn: { label: "Warn", desc: "Send warnings to players" },
-  ban: { label: "Ban", desc: "Ban and unban players" },
-  notify: { label: "Notify", desc: "Send broadcast notifications" },
-  review: { label: "Review", desc: "Grade shipped projects" },
-  pixels: { label: "Pixels", desc: "Adjust player pixel balances" },
-  shop: { label: "Shop", desc: "Manage the shop catalogue and stock" },
-  fulfillment: { label: "Fulfillment", desc: "Process and ship shop orders" },
-  events: { label: "Events", desc: "Create and run events" },
-  sidequests: { label: "Trials", desc: "Manage trials and the NPCs who hand them out" },
-  story: { label: "Story", desc: "Edit story nodes and chapters" },
-  news: { label: "News", desc: "Post and edit news items" },
-  goals: { label: "Community goals", desc: "Set and adjust community goals" },
-  referrals: { label: "Referrals", desc: "View and manage referrals" },
-  ideas: { label: "Ideas", desc: "Moderate the ideas board" },
-  tickets: { label: "Tickets", desc: "Answer and resolve help tickets" },
-  lookup: { label: "Slack lookup", desc: "Look players up by Slack account" },
-  show_n_tell: { label: "Show & Tell", desc: "Open/close voting rounds and add entries" },
-  operations: { label: "Operations", desc: "Run Operation Blackout: pause, extend, end, view payouts" },
-};
+// The team page. Four roles exist (see lib/roles.ts):
+// - Owners come from ADMIN_SLACK_IDS only, so they're shown read-only here.
+//   Nothing on this page (or anywhere in the dashboard) can make an owner.
+// - Reviewers, ticket helpers and fulfillers are managed below.
 
-function PermToggles({
-  name,
-  checked,
+function SlackIdForm({
+  action,
+  label,
+  withName = false,
 }: {
-  name: string;
-  checked: (p: string) => boolean;
+  action: (formData: FormData) => Promise<void>;
+  label: string;
+  withName?: boolean;
 }) {
   return (
-    <div className="grid sm:grid-cols-2 gap-2">
-      {SUBADMIN_PERMISSIONS.map((p) => (
-        <Label
-          key={p}
-          className="flex items-start gap-2.5 rounded-lg border border-border p-2.5 cursor-pointer transition-colors font-normal has-data-[state=checked]:border-brand/40 has-data-[state=checked]:bg-brand/5 hover:bg-muted/50"
-        >
-          <Checkbox
-            name={name}
-            value={p}
-            defaultChecked={checked(p)}
-            className="mt-0.5"
-          />
-          <span className="min-w-0">
-            <span className="block text-sm font-medium leading-none">
-              {PERM_INFO[p]?.label ?? p}
-            </span>
-            <span className="block text-xs text-muted-foreground mt-1">
-              {PERM_INFO[p]?.desc ?? "No description yet."}
-            </span>
-          </span>
-        </Label>
-      ))}
-    </div>
+    <form action={action} className="flex flex-wrap gap-2 items-end">
+      {withName && (
+        <Input name="name" placeholder="Name (optional)" className="max-w-48 text-sm" />
+      )}
+      <Input
+        name="slackId"
+        required
+        placeholder="Slack member ID (U0...)"
+        className="max-w-56 text-sm font-mono"
+      />
+      <PendingButton pendingText="Adding...">{label}</PendingButton>
+    </form>
   );
 }
 
-const PER = 8;
-
-export default async function AdminsPage({
-  searchParams,
+function PersonChip({
+  slackId,
+  label,
+  remove,
 }: {
-  searchParams: Promise<{ page?: string; serror?: string }>;
+  slackId: string;
+  label: string;
+  remove: (formData: FormData) => Promise<void>;
 }) {
-  const access = await requireAdmin();
-  if (!access.isSuper) redirect("/");
-  const { page, serror } = await searchParams;
-  const [all, supers, payoutSettings] = await Promise.all([
+  return (
+    <li className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1 text-sm">
+      <span className="font-medium">{label}</span>
+      <span className="font-mono text-xs text-muted-foreground">{slackId}</span>
+      <form action={remove}>
+        <input type="hidden" name="slackId" value={slackId} />
+        <PendingButton
+          variant="ghost"
+          size="sm"
+          pendingText="Removing..."
+          confirm={`Remove ${label}?`}
+          className="text-destructive h-6 px-1.5 text-xs"
+        >
+          remove
+        </PendingButton>
+      </form>
+    </li>
+  );
+}
+
+export default async function AdminsPage() {
+  await requirePage("owner");
+  const owners = ownerSlackIds();
+  const secondPassIds = secondPassSlackIds();
+  const [admins, helpers, fulfillers, payoutSettings] = await Promise.all([
     listAdmins(),
-    listSuperAdmins(),
+    listHelpers(),
+    listFulfillers(),
     getReviewPayoutSettings(),
   ]);
-  const allAdmins = all.filter((a) =>
-    a.permissions.some((p) => (SUBADMIN_PERMISSIONS as readonly string[]).includes(p)),
+  const reviewers = admins.filter(
+    (a) => a.permissions.includes(REVIEW) && !a.permissions.includes(NO_REVIEW),
   );
-  const pages = Math.max(1, Math.ceil(allAdmins.length / PER));
-  const cur = Math.min(Math.max(parseInt(page ?? "1", 10) || 1, 1), pages);
-  const start = (cur - 1) * PER;
-  const admins = allAdmins.slice(start, start + PER);
-  // Env owners have no table row , list them alongside the table supers so the
-  // page shows everyone who actually holds the tier. An owner who also has a
-  // row is shown as an owner: that's the grant that can't be taken away here.
-  const owners = ownerSlackIds();
-  const tableSupers = supers.filter((s) => !owners.includes(s.slack_id));
   const handles = await slackHandles([
-    ...admins.map((a) => a.slack_id),
-    ...tableSupers.map((s) => s.slack_id),
     ...owners,
+    ...reviewers.map((r) => r.slack_id),
+    ...helpers.map((h) => h.slack_user_id),
+    ...fulfillers.map((f) => f.slack_user_id),
   ]);
-  const label = (slackId: string, name?: string) =>
-    name || handles.get(slackId) || slackId;
+  const label = (slackId: string, name?: string) => name || handles.get(slackId) || slackId;
 
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Admins</h1>
+        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Team</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Super admins have every permission and are the only ones who can grant permissions or
-          promote another super admin. Admins sign in with Slack and only get the permissions
-          you grant them here. Reviewers are managed on the{" "}
-          <Link href="/reviewers" className="text-brand underline">
-            Reviewers
-          </Link>{" "}
-          tab.
+          Owners can do everything. Reviewers only work the review queue, ticket helpers only
+          work tickets, fulfillers only work the order queue. Every change here is written to
+          the audit log.
         </p>
       </div>
 
-      {serror && (
-        <Alert variant="destructive">
-          <AlertDescription className="font-medium text-destructive">{serror}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="space-y-4">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight">Super admins</h2>
-          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-            Full access, including this page. Promote carefully , a super admin can promote
-            anyone else, including themselves out of a corner. Nobody can remove their own access.
-          </p>
-        </div>
-
-        <Card className="p-5 md:p-6 gap-0">
-          <div className="text-base font-semibold mb-4">Promote a super admin</div>
-          <form action={addSuperAdminAction} className="space-y-4">
-            <div className="grid sm:grid-cols-2 gap-4">
-              <Label className="block font-normal">
-                <span className="block text-sm font-medium mb-1.5">Name</span>
-                <Input name="name" placeholder="e.g. Alex Rivera" className="w-full text-sm" />
-              </Label>
-              <Label className="block font-normal">
-                <span className="block text-sm font-medium mb-1.5">Slack member ID</span>
-                <Input
-                  name="slackId"
-                  required
-                  placeholder="U0XXXXXXX"
-                  className="w-full text-sm font-mono"
-                />
-                <span className="block text-xs text-muted-foreground mt-1">
-                  Slack → profile → ⋯ → Copy member ID
-                </span>
-              </Label>
-            </div>
-            <div className="flex justify-end">
-              <PendingButton
-                className="bg-brand text-white border-transparent"
-                pendingText="Promoting…"
-                confirm="Give this person full super admin access?"
-              >
-                Make super admin
-              </PendingButton>
-            </div>
-          </form>
-        </Card>
-
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight">Owners</h2>
         <Card className="p-5 gap-0 space-y-3">
-          {owners.length === 0 && tableSupers.length === 0 && (
+          {owners.length === 0 && (
             <div className="text-sm text-muted-foreground">
-              Nobody holds this tier , set ADMIN_SLACK_IDS or promote someone above.
+              ADMIN_SLACK_IDS is empty, so nobody is an owner.
             </div>
           )}
           {owners.map((id) => (
             <div key={id} className="flex items-center justify-between gap-4 flex-wrap">
               <div className="min-w-0">
-                <div className="font-semibold truncate flex items-center gap-2">
-                  {label(id)}
-                  <Badge variant="secondary" className="text-[0.65rem] uppercase tracking-wide">
-                    owner
-                  </Badge>
-                </div>
+                <div className="font-semibold truncate">{label(id)}</div>
                 <div className="text-xs text-muted-foreground font-mono truncate">{id}</div>
               </div>
-              <span className="text-xs text-muted-foreground">
-                From ADMIN_SLACK_IDS , change it in the env
-              </span>
+              <Badge variant="secondary" className="text-[0.65rem] uppercase tracking-wide">
+                owner
+              </Badge>
             </div>
           ))}
-          {tableSupers.map((s) => (
-            <div key={s.slack_id} className="flex items-center justify-between gap-4 flex-wrap">
-              <div className="min-w-0">
-                <div className="font-semibold truncate flex items-center gap-2">
-                  {label(s.slack_id, s.name)}
-                  <Badge variant="destructive" className="text-[0.65rem] uppercase tracking-wide">
-                    super
-                  </Badge>
-                  {s.slack_id === access.session.slackId && (
-                    <span className="text-xs text-muted-foreground font-normal">you</span>
-                  )}
-                </div>
-                <div className="text-xs text-muted-foreground font-mono truncate">
-                  {handles.get(s.slack_id) ?? s.slack_id}
-                  {s.added_by ? ` · added by ${s.added_by}` : ""}
-                </div>
-              </div>
-              {s.slack_id !== access.session.slackId && (
-                <form action={removeSuperAdminAction} className="flex items-center gap-2 flex-wrap">
-                  <input type="hidden" name="slackId" value={s.slack_id} />
-                  <Input
-                    name="reason"
-                    required
-                    maxLength={500}
-                    placeholder="Reason (sent to them)"
-                    className="text-sm w-44"
-                  />
-                  <PendingButton
-                    variant="outline"
-                    pendingText="Removing…"
-                    confirm={`Remove super admin access from ${label(s.slack_id, s.name)}?`}
-                    className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
-                  >
-                    Remove
-                  </PendingButton>
-                </form>
-              )}
-            </div>
-          ))}
+          <p className="text-xs text-muted-foreground pt-2 border-t border-border">
+            Owners come from the ADMIN_SLACK_IDS env var only. Change it in the deployment env
+            and redeploy; it can&apos;t be changed from the dashboard or the database.
+          </p>
         </Card>
-      </div>
+      </section>
 
-      <div className="space-y-4">
+      <section className="space-y-3">
+        <div className="flex items-end justify-between gap-4 flex-wrap">
+          <h2 className="text-lg font-semibold tracking-tight">
+            Reviewers <span className="text-muted-foreground font-normal">({reviewers.length})</span>
+          </h2>
+          <Link href="/reviewers" className="text-sm text-brand underline">
+            Stats and per-reviewer settings
+          </Link>
+        </div>
+        <Card className="p-5 gap-0 space-y-4">
+          <SlackIdForm action={addReviewer} label="Add reviewer" withName />
+          <p className="text-xs text-muted-foreground">
+            Final-reviewer (second pass), queue scope (software/hardware), edit-submission
+            access and removal are on each reviewer&apos;s page.
+          </p>
+          {reviewers.length > 0 && (
+            <ul className="divide-y divide-border border border-border rounded-lg">
+              {reviewers.map((r) => {
+                const scope = reviewQueueScopeFor(r.permissions);
+                const finalReviewer =
+                  r.permissions.includes(SECOND_PASS) || secondPassIds.includes(r.slack_id);
+                return (
+                  <li key={r.slack_id} className="flex items-center gap-2 px-3 py-2 text-sm flex-wrap">
+                    <Link href={`/reviewers/${encodeURIComponent(r.slack_id)}`} className="font-medium hover:text-brand">
+                      {label(r.slack_id, r.name)}
+                    </Link>
+                    <span className="font-mono text-xs text-muted-foreground">{r.slack_id}</span>
+                    {finalReviewer && <Badge variant="success">second pass</Badge>}
+                    {scope !== "both" && <Badge variant="outline">{scope} only</Badge>}
+                    {r.permissions.includes(EDIT_SUBMISSION) && (
+                      <Badge variant="outline">edit submission</Badge>
+                    )}
+                    <Link
+                      href={`/reviewers/${encodeURIComponent(r.slack_id)}`}
+                      className="ml-auto text-xs text-brand underline"
+                    >
+                      Manage
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight">
+          Ticket helpers <span className="text-muted-foreground font-normal">({helpers.length})</span>
+        </h2>
+        <Card className="p-5 gap-0 space-y-4">
+          <SlackIdForm action={addHelperAction} label="Add helper" />
+          <p className="text-xs text-muted-foreground">
+            Same list the Pixorpheus bot manages with <code>/pixl-addhelper</code>.
+          </p>
+          {helpers.length > 0 && (
+            <ul className="flex flex-wrap gap-2">
+              {helpers.map((h) => (
+                <PersonChip
+                  key={h.slack_user_id}
+                  slackId={h.slack_user_id}
+                  label={label(h.slack_user_id)}
+                  remove={removeHelperAction}
+                />
+              ))}
+            </ul>
+          )}
+        </Card>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold tracking-tight">
+          Fulfillers <span className="text-muted-foreground font-normal">({fulfillers.length})</span>
+        </h2>
+        <Card className="p-5 gap-0 space-y-4">
+          <SlackIdForm action={addFulfillerAction} label="Add fulfiller" />
+          {fulfillers.length > 0 && (
+            <ul className="flex flex-wrap gap-2">
+              {fulfillers.map((f) => (
+                <PersonChip
+                  key={f.slack_user_id}
+                  slackId={f.slack_user_id}
+                  label={label(f.slack_user_id)}
+                  remove={removeFulfillerAction}
+                />
+              ))}
+            </ul>
+          )}
+        </Card>
+      </section>
+
+      <section className="space-y-3">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Reviewer payouts</h2>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
@@ -255,7 +245,6 @@ export default async function AdminsPage({
             still stack with an active Review Blitz multiplier and get cut for rushed reviews.
           </p>
         </div>
-
         <Card className="p-5 md:p-6 gap-0">
           <form action={updateReviewPayoutSettings} className="space-y-4">
             <div className="grid sm:grid-cols-2 gap-4">
@@ -271,9 +260,7 @@ export default async function AdminsPage({
                 />
               </Label>
               <Label className="block font-normal">
-                <span className="block text-sm font-medium mb-1.5">
-                  Pixels per request-changes
-                </span>
+                <span className="block text-sm font-medium mb-1.5">Pixels per request-changes</span>
                 <Input
                   name="needsChangesPixels"
                   type="number"
@@ -285,210 +272,16 @@ export default async function AdminsPage({
               </Label>
             </div>
             {payoutSettings.updatedBy && (
-              <p className="text-xs text-muted-foreground">
-                Last changed by {payoutSettings.updatedBy}
-              </p>
+              <p className="text-xs text-muted-foreground">Last changed by {payoutSettings.updatedBy}</p>
             )}
             <div className="flex justify-end">
-              <PendingButton
-                className="bg-brand text-white border-transparent"
-                pendingText="Saving…"
-              >
+              <PendingButton className="bg-brand text-white border-transparent" pendingText="Saving...">
                 Save payout rates
               </PendingButton>
             </div>
           </form>
         </Card>
-      </div>
-
-      <div>
-        <h2 className="text-lg font-semibold tracking-tight">Admins</h2>
-      </div>
-
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-4">Add an admin</div>
-        <form action={addAdmin} className="space-y-4">
-          <div className="grid sm:grid-cols-2 gap-4">
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Name</span>
-              <Input
-                name="name"
-                placeholder="e.g. Alex Rivera"
-                className="w-full text-sm"
-              />
-            </Label>
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Slack member ID</span>
-              <Input
-                name="slackId"
-                required
-                placeholder="U0XXXXXXX"
-                className="w-full text-sm font-mono"
-              />
-              <span className="block text-xs text-muted-foreground mt-1">
-                Slack → profile → ⋯ → Copy member ID
-              </span>
-            </Label>
-          </div>
-
-          <div>
-            <div className="text-sm font-medium mb-2">Permissions</div>
-            <PermToggles name="perms" checked={() => false} />
-          </div>
-
-          <div className="flex justify-end">
-            <PendingButton
-              className="bg-brand text-white border-transparent"
-              pendingText="Adding…"
-            >
-              Add admin
-            </PendingButton>
-          </div>
-        </form>
-      </Card>
-
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-1">Add a sponsor</div>
-        <p className="text-sm text-muted-foreground mb-4 max-w-2xl">
-          Grants warn, ticket handling (answer/resolve/fulfill), and review access in one go ,
-          including the final pass, so their approvals credit pixels. If they&apos;re already an
-          admin, this just adds the bundle on top of whatever they already have. You can still
-          tick on any other permission for them below afterward.
-        </p>
-        <form action={addSponsor} className="grid sm:grid-cols-[1fr_1fr_auto] gap-4 items-end">
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Name</span>
-            <Input name="name" placeholder="e.g. Alex Rivera" className="w-full text-sm" />
-          </Label>
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Slack member ID</span>
-            <Input
-              name="slackId"
-              required
-              placeholder="U0XXXXXXX"
-              className="w-full text-sm font-mono"
-            />
-          </Label>
-          <PendingButton className="bg-brand text-white border-transparent" pendingText="Adding…">
-            Make sponsor
-          </PendingButton>
-        </form>
-      </Card>
-
-      <div>
-        <div className="text-sm font-medium text-muted-foreground mb-3">
-          {allAdmins.length} admin{allAdmins.length === 1 ? "" : "s"}
-        </div>
-        {allAdmins.length === 0 ? (
-          <Card className="p-8 text-center text-muted-foreground text-sm">
-            No admins yet. Add someone above to share the workload.
-          </Card>
-        ) : (
-          <div className="space-y-4">
-            {admins.map((a) => {
-              const handle = (a.slack_id && handles.get(a.slack_id)) ?? a.slack_id;
-              const initials =
-                (a.name || handle || "?")
-                  .split(/\s+/)
-                  .map((w) => w[0])
-                  .slice(0, 2)
-                  .join("")
-                  .toUpperCase() || "?";
-              return (
-                <Card key={a.slack_id} className="p-5 gap-0">
-                  <div className="flex items-start justify-between gap-4 flex-wrap">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="grid place-items-center w-10 h-10 rounded-full bg-brand/10 text-brand text-sm font-semibold shrink-0">
-                        {initials}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="font-semibold truncate flex items-center gap-2">
-                          {a.name || handle}
-                          {a.permissions.includes(SPONSOR) && (
-                            <Badge variant="secondary" className="text-[0.65rem] uppercase tracking-wide">
-                              sponsor
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="text-xs text-muted-foreground truncate font-mono">
-                          {handle}
-                          {a.added_by ? ` · added by ${a.added_by}` : ""}
-                        </div>
-                      </div>
-                    </div>
-                    <form action={removeAdmin} className="flex items-center gap-2 flex-wrap">
-                      <input type="hidden" name="slackId" value={a.slack_id} />
-                      <Input
-                        name="reason"
-                        required
-                        maxLength={500}
-                        placeholder="Reason (sent to them)"
-                        className="text-sm w-44"
-                      />
-                      <PendingButton
-                        variant="outline"
-                        pendingText="Removing…"
-                        confirm={`Remove ${a.name || handle} as an admin?`}
-                        className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
-                      >
-                        Remove
-                      </PendingButton>
-                    </form>
-                  </div>
-
-                  <form
-                    key={a.permissions.join(",")}
-                    action={updateAdminPerms}
-                    className="mt-4"
-                  >
-                    <input type="hidden" name="slackId" value={a.slack_id} />
-                    <PermToggles name="perms" checked={(p) => a.permissions.includes(p)} />
-                    <div className="flex justify-end mt-3">
-                      <PendingButton variant="outline" pendingText="Saving…">
-                        Save permissions
-                      </PendingButton>
-                    </div>
-                  </form>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-        {pages > 1 && (
-          <div className="flex items-center justify-between gap-3 mt-4 text-sm">
-            <span className="text-muted-foreground">
-              Showing {start + 1}–{Math.min(start + PER, allAdmins.length)} of {allAdmins.length}
-            </span>
-            <Pagination className="mx-0 w-auto justify-end">
-              <PaginationContent>
-                <PaginationItem>
-                  <PaginationLink
-                    href={`/admins?page=${cur - 1}`}
-                    aria-label="Previous page"
-                    className={cur <= 1 ? "pointer-events-none opacity-40" : ""}
-                  >
-                    ←
-                  </PaginationLink>
-                </PaginationItem>
-                <PaginationItem>
-                  <span className="px-2 text-muted-foreground tabular-nums">
-                    {cur} / {pages}
-                  </span>
-                </PaginationItem>
-                <PaginationItem>
-                  <PaginationLink
-                    href={`/admins?page=${cur + 1}`}
-                    aria-label="Next page"
-                    className={cur >= pages ? "pointer-events-none opacity-40" : ""}
-                  >
-                    →
-                  </PaginationLink>
-                </PaginationItem>
-              </PaginationContent>
-            </Pagination>
-          </div>
-        )}
-      </div>
+      </section>
 
       <TeamLog />
     </div>

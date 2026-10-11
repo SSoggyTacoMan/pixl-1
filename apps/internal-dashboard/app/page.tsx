@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requireAdmin, canView } from "@/lib/guard";
+import { requirePage, can, landingFor } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { liveName } from "@/lib/liveMode";
 import {
@@ -36,16 +36,17 @@ export default async function Overview({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  const access = await requireAdmin();
+  const access = await requirePage("staff");
   const live = await getLiveMode();
-  // Reviewers / sub-admins don't get the owner Overview; their home is their own
-  // reviewer stats. Only owners (isSuper) see the full dashboard overview.
-  if (!access.isSuper && access.perms.has("review")) redirect("/review/stats");
+  // Non-owners don't get the owner Overview; their home is their own
+  // reviewer stats (helpers/fulfillers: their own queue). Only owners see the
+  // full dashboard overview.
+  if (!access.isOwner) redirect(access.isReviewer ? "/review/stats" : landingFor(access));
   // Live mode hides everything internal from a screen share: moderation
   // (violations, bans) and the pixel economy, including their entries in the
   // activity feed below.
-  const showModeration = canView(access, ["warn", "ban"]) && !live;
-  const showPixels = access.isSuper && !live;
+  const showModeration = can(access, "owner") && !live;
+  const showPixels = access.isOwner && !live;
   const { range } = await searchParams;
   const days = RANGES.includes(Number(range)) ? Number(range) : 30;
   const [stats, growth, pixelFlow, recent, feed] = await Promise.all([
@@ -55,8 +56,8 @@ export default async function Overview({
     showModeration ? listViolations(8) : Promise.resolve([]),
     listActivityFeed({
       mod: showModeration,
-      review: canView(access, ["review"]),
-      team: access.isSuper,
+      review: can(access, "reviewer"),
+      team: access.isOwner,
       pixels: showPixels,
       payouts: showPixels,
       limit: 8,

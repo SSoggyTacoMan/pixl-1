@@ -1,15 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getHelperAccess } from "@/lib/guard";
+import { NextResponse } from "next/server";
+import { guardedRoute } from "@/lib/guard";
 import { isMissingThread, ticketThread } from "@/lib/tickets";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: Promise<{ ts: string }> },
-) {
-  const access = await getHelperAccess();
-  if (!access) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+type Ctx = { params: Promise<{ ts: string }> };
+
+export const GET = guardedRoute<Ctx>("api.tickets.thread", "helper", async (_access, _req, { params }) => {
   const { ts } = await params;
   try {
     const messages = await ticketThread(ts);
@@ -20,4 +17,4 @@ export async function GET(
     }
     return NextResponse.json({ error: (e as Error).message }, { status: 502 });
   }
-}
+});

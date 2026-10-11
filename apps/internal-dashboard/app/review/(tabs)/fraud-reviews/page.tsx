@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requirePagePerm, requireGuidelinesAck } from "@/lib/guard";
+import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { listRobertReviews, type RobertReviewRow } from "@/lib/db";
 import { FRAUD_SCORE_THRESHOLD } from "@/lib/robertOutcome";
 import { StatusBadge } from "@/app/_components/ProjectBadges";
@@ -46,7 +46,7 @@ function maker(p: RobertReviewRow): string {
 // project actually gets decided; this is the full picture, including the
 // projects that already left Spot check.
 export default async function FraudReviewsPage() {
-  const access = await requirePagePerm(["review"]);
+  const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
   if (!access.canSecondPass) redirect("/review");
 

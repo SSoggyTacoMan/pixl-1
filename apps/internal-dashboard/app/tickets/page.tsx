@@ -1,4 +1,4 @@
-import { requireHelper } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { ticketStats, ticketActivity, resolverLeaderboard } from "@/lib/tickets";
 import { listHelpers } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
@@ -117,7 +117,7 @@ async function ResolverLeaderboard() {
 }
 
 export default async function TicketsPage() {
-  const access = await requireHelper();
+  const access = await requirePage("helper");
   const [stats, activity] = await Promise.all([ticketStats(), ticketActivity()]);
 
   return (
@@ -133,7 +133,7 @@ export default async function TicketsPage() {
         <StatCard label="Resolved" value={stats.resolved} />
       </div>
 
-      {access.isSuper && <HelperManager />}
+      {access.isOwner && <HelperManager />}
 
       <Card className="p-5 mb-6">
         <TicketsActivityChart points={activity} />

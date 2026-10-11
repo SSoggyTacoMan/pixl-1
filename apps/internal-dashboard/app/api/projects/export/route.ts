@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAccess } from "@/lib/guard";
+import { guardedRoute } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { db } from "@/lib/db";
 import { parseAuditNote } from "@/lib/auditNote";
@@ -11,9 +11,7 @@ export const dynamic = "force-dynamic";
 // fields, so wiring the real Airtable push (once the sponsor hands over
 // access) is a small diff rather than a redesign. Interim/manual export until
 // then , see the "ysws-submission-fields" migration.
-export async function GET(): Promise<NextResponse> {
-  const access = await getAccess();
-  if (!access?.isSuper) return new NextResponse("Forbidden", { status: 403 });
+export const GET = guardedRoute("api.projects.export", "owner", async (): Promise<NextResponse> => {
   if (await getLiveMode()) return new NextResponse("Disabled in live mode", { status: 403 });
 
   const { data: projects, error } = await db
@@ -123,4 +121,4 @@ export async function GET(): Promise<NextResponse> {
       "Content-Disposition": `attachment; filename="pixl-ysws-export-${new Date().toISOString().slice(0, 10)}.csv"`,
     },
   });
-}
+});

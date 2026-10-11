@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { liveName } from "@/lib/liveMode";
@@ -26,7 +26,7 @@ export default async function ViolationsPage({
 }: {
   searchParams: Promise<{ kind?: string; q?: string; page?: string }>;
 }) {
-  await requirePagePerm(["warn", "ban"]);
+  await requirePage("owner");
   const live = await getLiveMode();
   if (live) return <LiveBlocked what="Violations" reason="This page is internal moderation data" />;
   const { kind, q, page } = await searchParams;

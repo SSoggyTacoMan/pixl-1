@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { NotifyForm } from "@/app/_components/NotifyForm";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
@@ -10,8 +10,8 @@ export default async function NotifyPage({
 }: {
   searchParams: Promise<{ sent?: string; error?: string }>;
 }) {
-  const access = await requirePagePerm(["notify"]);
-  if (!access.isSuper && !access.perms.has("notify")) redirect("/");
+  const access = await requirePage("owner");
+  if (!access.isOwner && !access.isOwner) redirect("/");
   const { sent, error } = await searchParams;
 
   return (

@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requirePagePerm, requireGuidelinesAck } from "@/lib/guard";
+import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { listProposedBanProjects } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
 import { ReviewTable } from "@/app/_components/ReviewTable";
@@ -15,9 +15,9 @@ export const dynamic = "force-dynamic";
 // happens on the project's own review page, with the same required
 // audit-note fields as any other second-pass verdict.
 export default async function ProposedBansPage() {
-  const access = await requirePagePerm(["review"]);
+  const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
-  if (!access.isSuper) redirect("/review");
+  if (!access.isOwner) redirect("/review");
 
   const rows = await listProposedBanProjects();
   const handles = await slackHandles(rows.map((p) => p.users?.slack_id));

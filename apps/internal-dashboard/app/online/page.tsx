@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { requirePagePerm } from "@/lib/guard";
+import { requirePage } from "@/lib/guard";
 import { fetchOnlinePlayers, gameServerConfigured } from "@/lib/gameServer";
 import { kickPlayer } from "@/app/actions";
 import { PendingButton } from "@/app/_components/PendingButton";
@@ -24,8 +24,8 @@ function sceneLabel(scene: string): string {
 }
 
 export default async function OnlinePage() {
-  const access = await requirePagePerm(["warn", "ban"]);
-  const canKick = access.perms.has("ban");
+  const access = await requirePage("owner");
+  const canKick = access.isOwner;
   const players = await fetchOnlinePlayers();
 
   return (
@@ -42,7 +42,7 @@ export default async function OnlinePage() {
         <Card className="p-8 text-center text-muted-foreground text-sm">
           {gameServerConfigured()
             ? "Couldn't reach the game server. It might be restarting , try again in a minute."
-            : "Not configured , set PIXL_SERVER_URL and ADMIN_API_KEY in the dashboard env."}
+            : "Not configured , set PIXL_SERVER_URL and SERVICE_KEY_INTERNAL_DASHBOARD in the dashboard env."}
         </Card>
       ) : players.length === 0 ? (
         <Card className="p-8 text-center text-muted-foreground text-sm">
