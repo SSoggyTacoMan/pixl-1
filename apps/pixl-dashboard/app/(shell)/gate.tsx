@@ -1,34 +1,19 @@
-"use client";
+import { loginUrl } from "@/lib/urls";
 
-import { useEffect, useState } from "react";
-
-/**
- * Signed-out gate. Only action offered is Log In - the old static shell's
- * LOG IN button (pixl.js mountTopbar), which the React port dropped and this
- * puts back.
- */
-export function Gate({
-  loginBase,
-  fallbackBack,
-}: {
-  /** `/api/login?back=` , the target gets appended. */
-  loginBase: string;
-  /** Best-effort current URL from the server, replaced once we're in the
-   * browser: the server only sees an internal hop and a proxy header, while
-   * location.href is the real thing including whatever query the game
-   * appended (?embed=1 and friends). */
-  fallbackBack: string;
-}) {
-  const [back, setBack] = useState(fallbackBack);
-  useEffect(() => setBack(window.location.href), []);
-
+/** Signed-out gate for every shell page. The only action is Log In. */
+export function Gate({ next, error }: { next: string; error?: string | null }) {
   return (
     <div className="gate">
       <div className="gate-card">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img className="gate-splash" src="/img/boot-splash.png" alt="Pixl" />
-        <p>This page is part of the Pixl world. Log in with Hack Club to use it right here.</p>
+        {error ? (
+          <p role="alert">That login didn&apos;t go through ({error.replace(/_/g, " ")}). Try again.</p>
+        ) : (
+          <p>Log in with Hack Club to see your projects, shop and orders.</p>
+        )}
         <div className="gate-actions">
-          <a className="btn-enter" href={loginBase + encodeURIComponent(back)}>
+          <a className="btn-enter" href={loginUrl(next)}>
             Log In
           </a>
         </div>

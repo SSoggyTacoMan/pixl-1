@@ -1,0 +1,56 @@
+/* Landing page styles (moved from apps/landing/app/globals.css). Tailwind
+   itself and the font variables come from app/globals.css + app/layout.tsx;
+   this file only adds what the landing needs, scoped under .pixl-landing.
+   Fonts are self-hosted (next/font + public/fonts), never Google CSS, so
+   they pass the CSP's font-src 'self'. */
+
+/* The landing was designed for a 16px root; the shell runs at 15px. */
+html:has(.pixl-landing) {
+  font-size: 16px;
+  scroll-behavior: smooth;
+}
+
+/* app/globals.css has unlayered `a {color}` and `.grid {...}` rules for the
+   shell. Unlayered rules beat Tailwind's layered utilities, so hand these
+   properties back to the layer cascade inside the landing. */
+.pixl-landing a,
+.pixl-landing a:hover {
+  color: revert-layer;
+}
+.pixl-landing .grid {
+  grid-template-columns: revert-layer;
+  gap: revert-layer;
+}
+
+@keyframes scroll-ltr {
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0%); }
+}
+
+.marquee-track {
+  animation: scroll-ltr 40s linear infinite;
+}
+
+.marquee-track:hover {
+  animation-play-state: paused;
+}
+
+.pixl-landing {
+  --pixl-shadow:
+    2px 0 0 #16161e, -2px 0 0 #16161e,
+    0 2px 0 #16161e,  0 -2px 0 #16161e,
+    2px 2px 0 #16161e, -2px 2px 0 #16161e,
+    2px -2px 0 #16161e, -2px -2px 0 #16161e,
+    5px 5px 0 #16161e;
+}
+
+@media (min-width: 640px) {
+  .pixl-landing {
+    --pixl-shadow:
+      4px 0 0 #16161e, -4px 0 0 #16161e,
+      0 4px 0 #16161e,  0 -4px 0 #16161e,
+      4px 4px 0 #16161e, -4px 4px 0 #16161e,
+      4px -4px 0 #16161e, -4px -4px 0 #16161e,
+      10px 10px 0 #16161e;
+  }
+}

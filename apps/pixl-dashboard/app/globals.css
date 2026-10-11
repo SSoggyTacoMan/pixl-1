@@ -3,10 +3,8 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html { font-size: 15px; -webkit-text-size-adjust: 100%; }
-
-/* Bare /img/... - already served by the old game origin regardless of which
-   app rendered the page (apps/landing/next.config.ts's blanket
-   /img/:path* rewrite), so no local copy of these assets is needed here. */
+/* /img/... is served from this app's own public/img (copied from the old
+   apps/game/web/img when that folder was deleted). */
 body, html {
   cursor: url(/img/cursor/cursor-arrow.png) 2 0, auto;
 }
@@ -394,26 +392,23 @@ audio { display: none; }
 }
 
 /* ── Phantom Sans toggle ──
-   Hack Club's typeface (the same files css.hackclub.com/fonts.css serves),
+   Hack Club's typeface, self-hosted under public/fonts (CSP font-src 'self'),
    switched on by the "Phantom Sans" rail button and stored as pixl_font, shared with the
    landing page and the React web shell since they're all on one origin.
    The font files only download once the toggle is on. Code stays monospace. */
 @font-face{
   font-family:"Phantom Sans";
-  src:url("https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Regular.woff2") format("woff2"),
-    url("https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Regular.woff") format("woff");
+  src:url("/fonts/phantom-sans/Regular.woff2") format("woff2");
   font-weight:normal;font-style:normal;font-display:swap;
 }
 @font-face{
   font-family:"Phantom Sans";
-  src:url("https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Italic.woff2") format("woff2"),
-    url("https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Italic.woff") format("woff");
+  src:url("/fonts/phantom-sans/Italic.woff2") format("woff2");
   font-weight:normal;font-style:italic;font-display:swap;
 }
 @font-face{
   font-family:"Phantom Sans";
-  src:url("https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Bold.woff2") format("woff2"),
-    url("https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Bold.woff") format("woff");
+  src:url("/fonts/phantom-sans/Bold.woff2") format("woff2");
   font-weight:bold;font-style:normal;font-display:swap;
 }
 html[data-font="phantom"] body,
@@ -423,3 +418,52 @@ html[data-font="phantom"] body *:not(code,pre,kbd,samp,code *,pre *){
 .rail-btn[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
 /* Rail buttons are 32px icon squares; this one carries a text label. */
 .rail-btn.font-toggle{width:auto;padding:0 10px;font-size:12px;letter-spacing:.5px;white-space:nowrap}
+
+/* ── Tailwind 4 theme bridge: LEDGER tokens as utilities (bg-panel, text-ink,
+   border-stroke, font-pixel, ...). Values stay the CSS variables above, so
+   the light/dark switch keeps working. ── */
+@theme inline {
+  --color-ink: var(--ink);
+  --color-dim: var(--dim);
+  --color-faint: var(--faint);
+  --color-muted: var(--muted);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-panel-deep: var(--panel-deep);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --color-accent: var(--accent);
+  --color-teal: var(--teal);
+  --color-good: var(--good);
+  --color-bad: var(--bad);
+  --color-stroke: var(--stroke);
+  --color-btn-ink: var(--btn-ink);
+  --font-pixel: var(--pixel);
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+  --shadow-drop: var(--drop);
+  --shadow-drop-lg: var(--drop-lg);
+}
+
+/* ── shared form / page bits used by the ported pages ── */
+.label { display: block; font-family: var(--pixel); font-size: 12px; letter-spacing: 1.5px; color: var(--dim); margin-bottom: 6px; text-transform: uppercase; }
+.field { width: 100%; }
+textarea.field { min-height: 96px; resize: vertical; font-family: var(--sans); }
+.notice { border: var(--bw) solid var(--stroke); background: var(--panel-2); padding: 10px 12px; font-size: 14px; }
+.notice.bad { background: color-mix(in srgb, var(--bad) 18%, var(--panel)); }
+.notice.good { background: color-mix(in srgb, var(--good) 18%, var(--panel)); }
+.md { line-height: 1.65; word-break: break-word; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-family: var(--pixel); margin: 14px 0 6px; }
+.md p { margin: 8px 0; }
+.md ul, .md ol { margin: 8px 0 8px 22px; }
+.md ul { list-style: square; }
+.md ol { list-style: decimal; }
+.md blockquote { border-left: var(--bw-heavy) solid var(--stroke); padding-left: 10px; color: var(--dim); margin: 8px 0; }
+.md pre { background: var(--panel-deep); border: var(--bw) solid var(--stroke); padding: 10px; overflow-x: auto; font-family: var(--mono); font-size: 13px; margin: 8px 0; }
+.md code { font-family: var(--mono); font-size: .92em; background: var(--panel-2); padding: 0 3px; }
+.md pre code { background: none; padding: 0; }
+.md img { max-width: 100%; border: var(--bw) solid var(--stroke); margin: 8px 0; }
+.md hr { border: 0; height: var(--bw); background: var(--stroke); margin: 14px 0; }
+.md a { text-decoration: underline; }
+.dialog-overlay { position: fixed; inset: 0; background: rgb(0 0 0 / .45); z-index: 100; }
+.dialog-content { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 101; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; }

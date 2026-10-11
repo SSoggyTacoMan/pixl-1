@@ -1,12 +1,26 @@
-// apps/web-shell/lib/session-cookie.ts
-// Split out from lib/session.ts so proxy.ts (which only needs this string
-// constant) doesn't transitively import next/headers's cookies() - an API
-// that's irrelevant to where proxy.ts runs and has no reason to be pulled
-// in just to read a constant.
+// Cookie names and lifetimes, split out from lib/session.ts so proxy.ts and
+// the route handlers can import them without pulling in next/headers.
+
 export const SESSION_COOKIE = "pixl_session";
 
-// Set by app/api/login/route.ts right before it sends the browser off to
-// apps/server's OAuth flow, and checked by proxy.ts when the flow lands back
-// with ?token= - see both for why (F-8: a bare ?token= on any page must not
-// be enough to establish a session).
-export const LOGIN_NONCE_COOKIE = "pixl_login_nonce";
+// Set by /api/auth/login right before the browser leaves for apps/server,
+// checked (and cleared) by /api/auth/callback. Holds `<state>.<next>` so the
+// post-login destination never travels through apps/server or the URL.
+export const LOGIN_STATE_COOKIE = "pixl_login_state";
+
+// 14 days, matches apps/server's issueSessionToken expiry so the cookie
+// never outlives the JWT it holds.
+export const SESSION_MAX_AGE = 60 * 60 * 24 * 14;
+export const LOGIN_STATE_MAX_AGE = 10 * 60;
+
+// Secure is unconditional in production. In `next dev` over plain
+// http://localhost a Secure cookie would never be sent back, so dev is the
+// one place it's off.
+export function cookieBase() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+  };
+}

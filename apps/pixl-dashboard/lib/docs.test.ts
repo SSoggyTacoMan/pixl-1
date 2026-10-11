@@ -46,7 +46,7 @@ describe("getDoc", () => {
 
   test("substitutes {{token}} placeholders in the body", async () => {
     // pick a doc that actually references economy tokens
-    const entry = await getDoc("rules");
+    const entry = await getDoc("get");
     expect(entry).not.toBeNull();
     expect(entry!.doc.body).not.toMatch(/\{\{/);
   });

@@ -3,31 +3,41 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ICONS, MOBILE_PRIMARY, MORE_ICON, NAV_GROUPS, PALETTE_ICON, RE_ICON } from "./nav-data";
+import { PixelIcon, ReIcon } from "@/components/pixel-icon";
+import { ICONS, MOBILE_PRIMARY, MORE_ICON, NAV_GROUPS, PALETTE_ICON } from "./nav-data";
 
 const THEMES = [
   { id: "light", label: "Pixl Paper", panel: "#f5eed2", gold: "#ec3750" },
   { id: "dark", label: "Pixl Ink", panel: "#171615", gold: "#ff6b4a" },
 ];
 
-function Icon({ svg }: { svg: string }) {
-  return (
-    <span
-      className="ic"
-      dangerouslySetInnerHTML={{
-        __html: `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">${svg}</svg>`,
-      }}
-    />
-  );
+function useDismiss(open: boolean, selector: string, close: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (!(e.target as HTMLElement).closest(selector)) close();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") close();
+    }
+    document.addEventListener("click", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, selector, close]);
 }
 
 export function ShellNav({
   game,
+  displayName,
   pixels,
   re,
   communityRe,
 }: {
   game: string;
+  displayName: string;
   pixels: number;
   re: number;
   communityRe: number;
@@ -37,9 +47,6 @@ export function ShellNav({
   const [sheetOpen, setSheetOpen] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [theme, setThemeState] = useState("light");
-  // Phantom Sans toggle. app/layout.tsx's head script applies the saved
-  // choice (pixl_font, shared with apps/game/web and the landing page) as
-  // <html data-font="phantom"> before paint; this just mirrors it.
   const [phantom, setPhantomState] = useState(false);
 
   useEffect(() => {
@@ -48,15 +55,15 @@ export function ShellNav({
     } catch {
       // keep the light default
     }
+    setPhantomState(document.documentElement.dataset.font === "phantom");
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  useEffect(() => {
-    setPhantomState(document.documentElement.dataset.font === "phantom");
-  }, []);
+  useDismiss(sheetOpen, ".sidebar", () => setSheetOpen(false));
+  useDismiss(themeMenuOpen, ".theme-picker", () => setThemeMenuOpen(false));
 
   function togglePhantom() {
     const next = !phantom;
@@ -71,38 +78,6 @@ export function ShellNav({
     }
   }
 
-  useEffect(() => {
-    if (!sheetOpen) return;
-    function onClick(e: MouseEvent) {
-      if (!(e.target as HTMLElement).closest(".sidebar")) setSheetOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setSheetOpen(false);
-    }
-    document.addEventListener("click", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("click", onClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [sheetOpen]);
-
-  useEffect(() => {
-    if (!themeMenuOpen) return;
-    function onClick(e: MouseEvent) {
-      if (!(e.target as HTMLElement).closest(".theme-picker")) setThemeMenuOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setThemeMenuOpen(false);
-    }
-    document.addEventListener("click", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("click", onClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [themeMenuOpen]);
-
   function setTheme(id: string) {
     setThemeState(id);
     try {
@@ -115,14 +90,14 @@ export function ShellNav({
 
   const overflow = NAV_GROUPS.flatMap((g) => g.items.filter((i) => !MOBILE_PRIMARY.includes(i.slug)));
 
-  function navLink(slug: string, label: string, secondary: boolean) {
+  function navLink(slug: string, label: string, href: string, secondary: boolean) {
     return (
       <Link
         key={slug}
-        href={`/${slug}/`}
+        href={href}
         className={`${slug === activeSlug ? "active" : ""}${secondary ? " secondary" : ""}`}
       >
-        <Icon svg={ICONS[slug] ?? ""} />
+        <PixelIcon rects={ICONS[slug] ?? []} />
         <span>{label}</span>
       </Link>
     );
@@ -131,14 +106,14 @@ export function ShellNav({
   return (
     <>
       <aside className="sidebar">
-        <a className="sb-logo" href={game} title="Back to the game">
+        <Link className="sb-logo" href="/dashboard" title="Pixl Dashboard">
           PIXL
-        </a>
+        </Link>
         <nav className="nav">
           {NAV_GROUPS.map((group) => (
             <div className="nav-group" key={group.label}>
               <div className="nav-label">{group.label}</div>
-              {group.items.map((i) => navLink(i.slug, i.label, !MOBILE_PRIMARY.includes(i.slug)))}
+              {group.items.map((i) => navLink(i.slug, i.label, i.href, !MOBILE_PRIMARY.includes(i.slug)))}
             </div>
           ))}
           <button
@@ -147,42 +122,42 @@ export function ShellNav({
             aria-expanded={sheetOpen}
             onClick={() => setSheetOpen((v) => !v)}
           >
-            <Icon svg={MORE_ICON} />
+            <PixelIcon rects={MORE_ICON} />
             <span>MORE</span>
           </button>
           <div className="nav-sheet" hidden={!sheetOpen}>
-            <div className="nav-sheet-grid">{overflow.map((i) => navLink(i.slug, i.label, false))}</div>
+            <div className="nav-sheet-grid">{overflow.map((i) => navLink(i.slug, i.label, i.href, false))}</div>
           </div>
         </nav>
         <div className="sb-foot">
-          <a className="btn dark back-to-game" href={game}>
-            <span className="arrow">◄</span> BACK TO GAME
+          <a className="btn dark back-to-game" href={game} target="_blank" rel="noopener noreferrer">
+            <span className="arrow">◄</span> PLAY THE GAME
           </a>
+          <form action="/api/auth/logout" method="post">
+            <button className="btn ghost w-full" type="submit" title={`Signed in as ${displayName}`}>
+              LOG OUT
+            </button>
+          </form>
         </div>
       </aside>
       <div className="toprail">
         <div className="rest-chip" title="Core Integrity: total Restoration Energy earned by the whole community">
-          <span
-            className="slot"
-            dangerouslySetInnerHTML={{
-              __html: `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">${RE_ICON}</svg>`,
-            }}
-          />
+          <span className="slot">
+            <ReIcon />
+          </span>
           <span className="re">{communityRe.toLocaleString()}</span>
           <span className="rl">CORE</span>
         </div>
         <div className="re-chip" title="Your Restoration Energy">
-          <span
-            className="slot"
-            dangerouslySetInnerHTML={{
-              __html: `<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">${RE_ICON}</svg>`,
-            }}
-          />
+          <span className="slot">
+            <ReIcon />
+          </span>
           <span className="val">{re.toLocaleString()}</span>
           <span className="rl">RE</span>
         </div>
         <div className="wallet-chip" title="Your pixels">
           <span className="slot">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/img/pixel.png" alt="px" />
           </span>
           <span className="px">{pixels.toLocaleString()}</span>
@@ -205,7 +180,7 @@ export function ShellNav({
             aria-expanded={themeMenuOpen}
             onClick={() => setThemeMenuOpen((v) => !v)}
           >
-            <Icon svg={PALETTE_ICON} />
+            <PixelIcon rects={PALETTE_ICON} className="" />
           </button>
           <div className="theme-menu" hidden={!themeMenuOpen}>
             {THEMES.map((t) => (

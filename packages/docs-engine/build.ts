@@ -1,16 +1,17 @@
 // Only OG preview cards now - docs/*.md rendering itself moved into
 // apps/pixl-dashboard/lib/docs.ts. Still runs from the repo root via
 // `bun run docs:build`, but now writes into apps/pixl-dashboard/public/docs/<slug>/
-// instead of static HTML pages under apps/game/web/docs/. apps/pixl-dashboard has
+// (it used to emit static HTML pages under the deleted apps/game/web). apps/pixl-dashboard has
 // no basePath (see next.config.ts) - doc pages live at the literal
 // /docs/<slug>/ route, so their OG images need to physically sit at
 // public/docs/<slug>/og.png to match.
 import { mkdir, readdir } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { render } from "./src/markdown.ts";
 import { renderCard } from "./src/og.ts";
 import { buildTokens } from "./src/tokens.ts";
 
-const ROOT = new URL("../../", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CONTENT = `${ROOT}docs`;
 const OUT = `${ROOT}apps/pixl-dashboard/public/docs`;
 const config = JSON.parse(

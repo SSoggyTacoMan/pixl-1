@@ -1,60 +1,52 @@
-# Build context is the repo root, not apps/web-shell: this app reads docs/
-# straight off the filesystem (lib/docs.ts) and imports packages/docs-engine
-# as a workspace package, so both need to be inside the build context - same
-# reason apps/game/Dockerfile uses the repo root instead of its own app dir,
-# and the opposite of apps/dashboard/Dockerfile's isolated apps/dashboard-only
-# context (dashboard has no workspace-package dependency, this app does).
+# Pixl Dashboard (pixl.hackclub.com). Build context is the REPO ROOT, not
+# apps/pixl-dashboard: this app reads docs/ straight off the filesystem
+# (lib/docs.ts) and imports packages/docs-engine as a workspace package, so
+# both need to be inside the build context.
+#
+#   docker build -f apps/pixl-dashboard/Dockerfile .
 FROM oven/bun:1.3.13 AS build
 WORKDIR /repo
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY package.json bun.lock ./
 COPY packages packages
-COPY apps/web-shell apps/web-shell
+COPY apps/pixl-dashboard apps/pixl-dashboard
 RUN bun install
 
 COPY docs docs
-# Writes apps/web-shell/public/docs/<slug>/og.png before `next build` runs,
-# so the OG images end up as static files in the build output.
-RUN bun run packages/docs-engine/build.ts
+# OG preview cards (public/docs/<slug>/og.png and public/<page>/og.png) are
+# written before `next build` so they ship as static files.
+RUN bun run packages/docs-engine/build.ts && bun run packages/docs-engine/build-previews.ts
 
 # next build runs under Node, not Bun - Bun 1.3.13 crashes with SIGILL partway
-# through the build (same issue apps/dashboard hit). Everything above (bun
-# install, docs-engine) still runs fine under Bun; only the build step itself
-# moves to Node.
+# through the build. Everything above still runs fine under Bun.
 FROM node:26-slim AS node-build
 WORKDIR /repo
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=build /repo /repo
-RUN cd apps/web-shell && node node_modules/next/dist/bin/next build
+RUN cd apps/pixl-dashboard && node node_modules/next/dist/bin/next build
 
 FROM node:26-slim AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 
-# output: "standalone" (next.config.ts) makes `next build` run @vercel/nft to
-# trace the real runtime dependency graph and write it as concrete files
-# under .next/standalone, instead of the app-level node_modules' symlinks
-# into bun's workspace store - that's what let the old approach's ~900MB
-# /repo/node_modules copy be dropped entirely.
-#
-# In this monorepo the tracer nests its output to mirror the workspace
-# layout rather than flattening it: .next/standalone/apps/web-shell/server.js
-# is the real entry point, sitting next to a *root*-level
-# .next/standalone/node_modules (hoisted deps) as well as its own
-# apps/web-shell/node_modules (symlinks back into that root node_modules,
-# relative to the standalone folder - both must be copied together,
-# preserving this structure, for the symlinks to resolve).
-COPY --from=node-build --chown=node:node /repo/apps/web-shell/.next/standalone ./
+# output: "standalone" (next.config.ts) traces the real runtime dependency
+# graph into .next/standalone as concrete files. In this monorepo the tracer
+# mirrors the workspace layout: .next/standalone/apps/pixl-dashboard/server.js
+# is the entry point next to a root-level .next/standalone/node_modules - both
+# must be copied together, preserving the structure.
+COPY --from=node-build --chown=node:node /repo/apps/pixl-dashboard/.next/standalone ./
 
-# Standalone mode does not copy .next/static or public/ (Next's docs say
-# these are meant to be handled by a CDN) - both have to be added back
-# manually, at the paths server.js expects relative to its own directory.
-COPY --from=node-build --chown=node:node /repo/apps/web-shell/.next/static ./apps/web-shell/.next/static
-COPY --from=node-build --chown=node:node /repo/apps/web-shell/public ./apps/web-shell/public
+# Standalone mode does not copy .next/static or public/; add them back at the
+# paths server.js expects relative to its own directory.
+COPY --from=node-build --chown=node:node /repo/apps/pixl-dashboard/.next/static ./apps/pixl-dashboard/.next/static
+COPY --from=node-build --chown=node:node /repo/apps/pixl-dashboard/public ./apps/pixl-dashboard/public
+# lib/docs.ts reads the markdown at request time.
+COPY --from=node-build --chown=node:node /repo/docs ./docs
 
 USER node
 EXPOSE 3000
-CMD ["node", "apps/web-shell/server.js"]
+CMD ["node", "apps/pixl-dashboard/server.js"]

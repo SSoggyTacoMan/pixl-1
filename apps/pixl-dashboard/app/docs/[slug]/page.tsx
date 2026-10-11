@@ -20,8 +20,8 @@ export async function generateMetadata({
   const entry = await cachedGetDoc(slug);
   if (!entry) return {};
   const { doc } = entry;
-  const url = `${config.urls.site}/docs/${slug}/`;
-  const image = `${url}og.png`;
+  const url = `${config.urls.site}/docs/${slug}`;
+  const image = `${url}/og.png`;
   return {
     title: `Pixl · ${doc.meta.title}`,
     description: doc.meta.description,

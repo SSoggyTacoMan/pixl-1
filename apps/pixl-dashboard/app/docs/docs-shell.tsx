@@ -35,7 +35,7 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
   // from the first client render; the effect below hydrates it right after
   // mount instead.
   const [open, setOpen] = useState<Set<string>>(() => new Set());
-  const [backHref, setBackHref] = useState("/dashboard/");
+  const [backHref, setBackHref] = useState("/dashboard");
   const [theme, setThemeState] = useState("light");
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -72,7 +72,7 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
         setBackHref(ref);
       }
     } catch {
-      // keep the /dashboard/ default
+      // keep the /dashboard default
     }
   }, []);
 
@@ -132,12 +132,11 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
     <div className="docs">
       <aside className="docs-nav">
         <div className="docs-nav-head">
-          {/* Plain <a>, not Link: /play is a different proxied app entirely,
-              outside this app's route tree. */}
-          <a className="docs-brand" href="/play">
+          <Link className="docs-brand" href="/">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/docs/icon.svg" alt="" />
             PIXL <span>DOCS</span>
-          </a>
+          </Link>
           <div className="theme-picker">
             <button
               className="theme-toggle"

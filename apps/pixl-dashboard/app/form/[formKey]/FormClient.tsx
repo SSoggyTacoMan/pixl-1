@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { requestFormCode, submitForm } from "./actions";
 
 const SLACK_ID_RE = /^[UW][A-Z0-9]{6,}$/;
 const CODE_RE = /^\d{6}$/;
@@ -36,12 +37,7 @@ export function FormClient({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/forms/${encodeURIComponent(formKey)}/request-code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ slackId: slackId.trim() }),
-      });
+      const res = await requestFormCode({ formKey, slackId: slackId.trim() });
       // The response is intentionally the same whether or not that Slack ID
       // is real - it never tells us which happened.
       if (!res.ok) throw new Error("request failed");
@@ -63,14 +59,14 @@ export function FormClient({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/forms/${encodeURIComponent(formKey)}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ slackId: slackId.trim(), code: code.trim(), answers: values, website }),
+      const json = await submitForm({
+        formKey,
+        slackId: slackId.trim(),
+        code: code.trim(),
+        answers: values,
+        website,
       });
-      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-      if (!res.ok || !json.ok) {
+      if (!json.ok) {
         setError(
           json.error === "already_pending"
             ? "You've already got a submission pending review - hang tight, we'll DM you."

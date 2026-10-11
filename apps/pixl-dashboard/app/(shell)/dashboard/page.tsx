@@ -17,8 +17,8 @@ import "./dashboard.css";
 
 const TITLE = "Pixl · Dashboard";
 const DESCRIPTION = "Your Pixl status at a glance: level, Pixels, Restoration Energy and what's next.";
-const URL = `${config.urls.site}/dashboard/`;
-const IMAGE = `${URL}og.png`;
+const URL = `${config.urls.site}/dashboard`;
+const IMAGE = `${config.urls.site}/dashboard/og.png`;
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -47,6 +47,8 @@ interface Wallet {
   level: number;
   reForNextLevel: number;
   maxLevel: number;
+  /** Not sent by apps/server yet; when it is, the level bar measures within the current level. */
+  reForCurrentLevel?: number;
 }
 interface Notification {
   body?: string;
@@ -97,7 +99,7 @@ export default async function DashboardPage() {
   const nextAt = wallet?.reForNextLevel ?? 0;
   const re = wallet?.re ?? 0;
   const maxLevel = wallet?.maxLevel ?? 100;
-  const cells = levelBarCells(config.economy.levelBands, re, level, nextAt);
+  const cells = levelBarCells(re, nextAt, wallet?.reForCurrentLevel ?? 0);
 
   const recent = (notifsResp?.notifications ?? []).slice(0, 5);
 
@@ -187,7 +189,7 @@ export default async function DashboardPage() {
         <section className="box card panel">
           <div className="panel-h">
             <b>YOUR PROJECTS</b>
-            <Link href="/projects/">All projects</Link>
+            <Link href="/projects">All projects</Link>
           </div>
           <div className="plist">
             {list.length === 0 ? (
@@ -196,7 +198,7 @@ export default async function DashboardPage() {
               list.slice(0, 5).map((p, i) => {
                 const cls = ["approved", "shipped", "needs_changes"].includes(p.status) ? p.status : "";
                 return (
-                  <Link key={i} className="prow" href="/projects/">
+                  <Link key={i} className="prow" href="/projects">
                     <span className="nm">{p.name || "Untitled"}</span>
                     <span className={`tag ${cls}`}>{STATUS_LABEL[p.status] ?? String(p.status ?? "").toUpperCase()}</span>
                   </Link>
@@ -230,7 +232,7 @@ export default async function DashboardPage() {
           <span className="lk">FIRST PROJECT</span>
           <span className="ls">The whole loop, start to finish</span>
         </Link>
-        <Link href="/docs/rules">
+        <Link href="/docs/shipping">
           <span className="lk">SHIP RULES</span>
           <span className="ls">What the submit button checks</span>
         </Link>
@@ -238,9 +240,9 @@ export default async function DashboardPage() {
           <span className="lk">RE &amp; LEVELS</span>
           <span className="ls">How your rate actually works</span>
         </Link>
-        <Link href="/explore/">
-          <span className="lk">EXPLORE</span>
-          <span className="ls">See what others shipped</span>
+        <Link href="/trials">
+          <span className="lk">TRIALS</span>
+          <span className="ls">What the villagers want built</span>
         </Link>
       </div>
     </>

@@ -1,18 +1,23 @@
 /**
  * Pushes palette.json out to every consumer that can't import a workspace
  * package at runtime, the same way packages/config/sync.ts does for program
- * facts , see that file's header for why (Railway/Vercel per-app roots, the
- * Godot export runs from a PCK).
+ * facts , see that file's header for why (per-app build roots, the Godot
+ * export runs from a PCK).
  *
  *   bun run theme:sync
  *
- * Every target below is committed but generated. Hand-edits are overwritten
- * on the next run. See README.md for the web/godot value-set split.
+ * Targets (committed, generated, hand-edits are overwritten on the next run):
+ *   - apps/game/theme.json (read by scripts/pixl_theme.gd)
+ *   - the <pixl-theme:...> marker blocks in apps/pixl-dashboard/app/globals.css
+ * See README.md for the web/godot value-set split.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("../../", import.meta.url).pathname;
+// fileURLToPath (not URL.pathname): pathname keeps a leading "/" before the
+// drive letter and %-encodes spaces, neither of which fs accepts on Windows.
+const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SOURCE = `${ROOT}packages/theme/palette.json`;
 
 const NOTE = "GENERATED from packages/theme/palette.json by `bun run theme:sync` - do not edit";
@@ -50,14 +55,9 @@ await write(
   `${JSON.stringify({ _generated: NOTE, ...palette.godot }, null, 2)}\n`,
 );
 
-// --- The web shell's shared stylesheet ---------------------------------------
-const CSS_TARGET = `${ROOT}apps/game/web/pixl.css`;
+// --- Pixl Dashboard: token lines inside globals.css's marker blocks ---------
+const CSS_TARGET = `${ROOT}apps/pixl-dashboard/app/globals.css`;
 let css = await readFile(CSS_TARGET, "utf8");
-
-// apps/pixl-dashboard/app/globals.css carries its own hand-authored Tailwind
-// setup around the same <pixl-theme:...> markers, injected the same way.
-const WEB_SHELL_CSS_TARGET = `${ROOT}apps/pixl-dashboard/app/globals.css`;
-let webShellCss = await readFile(WEB_SHELL_CSS_TARGET, "utf8");
 
 for (const theme of Object.keys(palette.web)) {
   const { effects, ...tokens } = palette.web[theme];
@@ -67,13 +67,6 @@ for (const theme of Object.keys(palette.web)) {
     `/* <pixl-theme:${theme}:end> */`,
     cssDecls(tokens),
     CSS_TARGET,
-  );
-  webShellCss = replaceBetween(
-    webShellCss,
-    `/* <pixl-theme:${theme}> */`,
-    `/* <pixl-theme:${theme}:end> */`,
-    cssDecls(tokens),
-    WEB_SHELL_CSS_TARGET,
   );
   const effectDecls = Object.entries(effects as Record<string, string>)
     .map(([name, value]) => `--${name === "dropLg" ? "drop-lg" : name}:${value};`)
@@ -85,16 +78,8 @@ for (const theme of Object.keys(palette.web)) {
     effectDecls,
     CSS_TARGET,
   );
-  webShellCss = replaceBetween(
-    webShellCss,
-    `/* <pixl-theme:${theme}:effects> */`,
-    `/* <pixl-theme:${theme}:effects:end> */`,
-    effectDecls,
-    WEB_SHELL_CSS_TARGET,
-  );
 }
 
 await write(CSS_TARGET, css);
-await write(WEB_SHELL_CSS_TARGET, webShellCss);
 
 console.log(`[theme:sync] wrote:\n  ${written.join("\n  ")}`);

@@ -25,7 +25,7 @@ describe("nextStep", () => {
   });
 
   test("no projects at all: points at the first-project doc", () => {
-    expect(nextStep([]).href).toBe("/docs/first-project/");
+    expect(nextStep([]).href).toBe("/docs/first-project");
   });
 
   test("everything approved: invites starting a new one", () => {
@@ -35,22 +35,20 @@ describe("nextStep", () => {
 });
 
 describe("levelBarCells", () => {
-  const bands = [
-    { throughLevel: 10, rePerLevel: 10 },
-    { throughLevel: 50, rePerLevel: 35 },
-  ];
-
-  test("half filled halfway through the current band", () => {
-    const cells = levelBarCells(bands, 45, 5, 50);
-    expect(cells.filter(Boolean).length).toBe(10);
+  test("half filled halfway between the server's two thresholds", () => {
+    expect(levelBarCells(45, 50, 40).filter(Boolean).length).toBe(10);
   });
 
   test("fully filled right at the level-up threshold", () => {
-    expect(levelBarCells(bands, 50, 5, 50).every(Boolean)).toBe(true);
+    expect(levelBarCells(50, 50, 40).every(Boolean)).toBe(true);
   });
 
   test("empty right after leveling up", () => {
-    expect(levelBarCells(bands, 40, 5, 50).some(Boolean)).toBe(false);
+    expect(levelBarCells(40, 50, 40).some(Boolean)).toBe(false);
+  });
+
+  test("without a current-level threshold, measures from zero", () => {
+    expect(levelBarCells(25, 50).filter(Boolean).length).toBe(10);
   });
 });
 

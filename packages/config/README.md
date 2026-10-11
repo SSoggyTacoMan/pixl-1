@@ -19,11 +19,10 @@ bun run config:sync
 Run that after editing `pixl.json`. It rewrites:
 
 - `apps/game/pixl.json` - read by `apps/game/scripts/pixl_config.gd`
-- the generated block inside `apps/game/web/pixl.js` - exposed as `Pixl.config`
 - `apps/server/src/config.generated.ts`
 - `apps/pixorpheus/src/config.generated.ts`
-- `apps/landing/app/_generated/config.ts`
-- `apps/dashboard/app/_generated/config.ts`
+- `apps/internal-dashboard/app/_generated/config.ts`
+- `apps/pixl-dashboard/app/_generated/config.ts`
 
 **TypeScript apps** import their own generated copy by relative path, e.g.:
 
@@ -31,7 +30,7 @@ Run that after editing `pixl.json`. It rewrites:
 // server / pixorpheus (compiled/run as ESM, so the .js extension is required)
 import { config, launchDate, hackatimeCutoffUnix } from "../config.generated.js";
 
-// landing / dashboard (Next.js, no extension)
+// pixl-dashboard / internal-dashboard (Next.js, no extension)
 import { config, launchDate } from "../_generated/config";
 // or, using the app's path alias: from "@/app/_generated/config"
 ```

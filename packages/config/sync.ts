@@ -46,22 +46,6 @@ await write(
   `${JSON.stringify({ _generated: NOTE, ...config }, null, 2)}\n`,
 );
 
-// --- The game's web pages ---------------------------------------------------
-// pixl.js is loaded by all 14 pages, so one injected block reaches every one of
-// them without touching a single HTML file.
-const OPEN = "  // <pixl-config>";
-const CLOSE = "  // </pixl-config>";
-const WEB_TARGET = `${ROOT}apps/game/web/pixl.js`;
-const web = await readFile(WEB_TARGET, "utf8");
-const start = web.indexOf(OPEN);
-const end = web.indexOf(CLOSE);
-if (start === -1 || end === -1) {
-  console.error(`[config:sync] missing ${OPEN} / ${CLOSE} markers in ${WEB_TARGET}`);
-  process.exit(1);
-}
-const block = [OPEN, `  // ${NOTE}`, `  const config = ${pretty.replace(/\n/g, "\n  ")};`, CLOSE];
-await write(WEB_TARGET, web.slice(0, start) + block.join("\n") + web.slice(end + CLOSE.length));
-
 // --- TypeScript apps --------------------------------------------------------
 // Self-contained on purpose: no import of this package, so each app's build only
 // ever sees its own directory. The helpers are duplicated across the generated
@@ -212,7 +196,6 @@ export const launchDateLabel = formatDate(launchDate, {
 for (const target of [
   "apps/server/src/config.generated.ts",
   "apps/pixorpheus/src/config.generated.ts",
-  "apps/landing/app/_generated/config.ts",
   "apps/internal-dashboard/app/_generated/config.ts",
   "apps/pixl-dashboard/app/_generated/config.ts",
 ]) {

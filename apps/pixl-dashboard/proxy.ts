@@ -1,59 +1,117 @@
 import { NextRequest, NextResponse } from "next/server";
-import { LOGIN_NONCE_COOKIE, SESSION_COOKIE } from "@/lib/session-cookie";
 
-// 14 days - matches apps/server/src/auth/session.ts's issueSessionToken
-// expiry, so the cookie never outlives the JWT it holds.
-const MAX_AGE = 60 * 60 * 24 * 14;
+// Runs before every page render. Two jobs:
+//   1. a per-request nonce-based Content-Security-Policy (Next attaches the
+//      nonce to its own scripts automatically, see
+//      node_modules/next/dist/docs/01-app/02-guides/content-security-policy.md)
+//   2. forward the requested path so the signed-out gate can build a
+//      login link that returns to the same page without client JS.
+//
+// Session tokens never arrive in the URL anymore (the old ?token= capture is
+// gone): /api/auth/callback is the only place a session cookie is set.
+
+export function buildCsp(nonce: string, isDev: boolean): string {
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""}`,
+    // React renders style="" attributes during SSR; those can't carry a nonce.
+    "style-src 'self' 'unsafe-inline'",
+    // Shop/project images are admin- or player-supplied https URLs.
+    "img-src 'self' data: blob: https:",
+    "media-src 'self'",
+    "font-src 'self'",
+    // The browser never talks to apps/server directly; everything goes
+    // through this app's own server.
+    `connect-src 'self'${isDev ? " ws: wss:" : ""}`,
+    "frame-src 'none'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    ...(isDev ? [] : ["upgrade-insecure-requests"]),
+  ].join("; ");
+}
+
+// ── Landing locale detection (moved from apps/landing/proxy.ts) ──
+// Only for a first visit to "/": guess the visitor's language and send them
+// to /fr, /es, /pt or /hi. A `pixl_locale` cookie (set here on that first
+// visit, and by the landing's LanguageSwitcher on an explicit choice) stops
+// it from ever overriding the visitor again. Kept in sync by hand with
+// app/_landing/dictionaries.ts, which is server-only and can't be imported.
+export const LANDING_LOCALES = ["en", "fr", "es", "pt", "hi"] as const;
+const LOCALE_COOKIE = "pixl_locale";
+
+const COUNTRY_LOCALE: Record<string, string> = {
+  FR: "fr",
+  ES: "es", MX: "es", AR: "es", CO: "es", CL: "es", PE: "es", VE: "es",
+  EC: "es", GT: "es", CU: "es", BO: "es", DO: "es", HN: "es", PY: "es",
+  SV: "es", NI: "es", CR: "es", PA: "es", UY: "es", PR: "es",
+  PT: "pt", BR: "pt", AO: "pt", MZ: "pt",
+  IN: "hi",
+};
+
+export function detectLocale(country: string | null, acceptLanguage: string | null): string {
+  const byCountry = country ? COUNTRY_LOCALE[country.toUpperCase()] : undefined;
+  if (byCountry) return byCountry;
+  if (!acceptLanguage) return "en";
+  const preferred = acceptLanguage
+    .split(",")
+    .map((s) => {
+      const [tag, q = "1"] = s.trim().split(";q=");
+      return { tag: tag.split("-")[0].toLowerCase(), q: parseFloat(q) || 0 };
+    })
+    .sort((a, b) => b.q - a.q);
+  for (const p of preferred) {
+    if ((LANDING_LOCALES as readonly string[]).includes(p.tag)) return p.tag;
+  }
+  return "en";
+}
+
+function localeRedirect(req: NextRequest): NextResponse | null {
+  if (req.nextUrl.pathname !== "/" || req.method !== "GET") return null;
+  if (req.cookies.has(LOCALE_COOKIE)) return null;
+  const locale = detectLocale(
+    // Cloudflare sits in front of pixl.hackclub.com.
+    req.headers.get("cf-ipcountry"),
+    req.headers.get("accept-language"),
+  );
+  if (locale === "en") return null;
+  const url = req.nextUrl.clone();
+  url.pathname = `/${locale}`;
+  const res = NextResponse.redirect(url, 307);
+  res.cookies.set(LOCALE_COOKIE, locale, { path: "/", maxAge: 60 * 60 * 24 * 365, sameSite: "lax" });
+  return res;
+}
 
 export function proxy(req: NextRequest) {
-  const token = req.nextUrl.searchParams.get("token");
-  if (!token) {
-    // The signed-out gate builds a Hack Club Auth return url, and a Server
-    // Component can't see the path on its own. Forwarding it keeps the
-    // no-JS render pointing back at the page the visitor actually asked for.
-    const headers = new Headers(req.headers);
-    headers.set("x-pixl-path", req.nextUrl.pathname + req.nextUrl.search);
-    return NextResponse.next({ request: { headers } });
+  const redirect = localeRedirect(req);
+  if (redirect) return redirect;
+
+  const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
+  const csp = buildCsp(nonce, process.env.NODE_ENV === "development");
+
+  const headers = new Headers(req.headers);
+  headers.set("x-nonce", nonce);
+  headers.set("content-security-policy", csp);
+  headers.set("x-pixl-path", req.nextUrl.pathname + req.nextUrl.search);
+
+  const res = NextResponse.next({ request: { headers } });
+  res.headers.set("content-security-policy", csp);
+  // First English visit to "/": remember it so detection never runs again.
+  if (req.nextUrl.pathname === "/" && !req.cookies.has(LOCALE_COOKIE)) {
+    res.cookies.set(LOCALE_COOKIE, "en", { path: "/", maxAge: 60 * 60 * 24 * 365, sameSite: "lax" });
   }
-
-  const url = req.nextUrl.clone();
-  url.searchParams.delete("token");
-  url.searchParams.delete("name");
-  url.searchParams.delete("ln");
-  const res = NextResponse.redirect(url);
-
-  // F-8: a bare ?token= on an arbitrary page is not proof this browser just
-  // finished a real login - anyone who has any valid token at all (e.g.
-  // their own, from logging in normally) could otherwise mail a victim a
-  // link like /dashboard?token=<their token> and silently sign the
-  // victim's browser into the attacker's own account. app/api/login/route.ts
-  // is the only place a login starts; it drops this cookie on this same
-  // origin before ever sending the browser to apps/server, and the same
-  // value comes back as ?ln= only via the real OAuth round trip (see
-  // routes/auth.ts's pendingLogins). Deleted either way so a captured/
-  // replayed URL (browser history, a referrer log) can't be replayed once
-  // the real login has gone through.
-  const expectedNonce = req.cookies.get(LOGIN_NONCE_COOKIE)?.value;
-  const suppliedNonce = req.nextUrl.searchParams.get("ln");
-  const nonceOk = !!expectedNonce && !!suppliedNonce && expectedNonce === suppliedNonce;
-  res.cookies.delete(LOGIN_NONCE_COOKIE);
-  if (!nonceOk) return res;
-
-  res.cookies.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    // req.nextUrl.protocol would read "http:" even in prod - apps/landing
-    // reaches this app over a plain-HTTP internal cluster hop, so the
-    // request's own scheme lies about whether the original client was on
-    // HTTPS. NODE_ENV is the one signal this app actually has that's true
-    // only in the real deployment (Dockerfile sets it explicitly).
-    secure: process.env.NODE_ENV === "production",
-    maxAge: MAX_AGE,
-    path: "/",
-  });
   return res;
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/).*)"],
+  matcher: [
+    {
+      source: "/((?!api/|_next/static|_next/image|favicon.ico|.*\\.[a-zA-Z0-9]+$).*)",
+      missing: [
+        { type: "header", key: "next-router-prefetch" },
+        { type: "header", key: "purpose", value: "prefetch" },
+      ],
+    },
+  ],
 };

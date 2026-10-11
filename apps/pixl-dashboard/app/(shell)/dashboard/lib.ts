@@ -41,7 +41,7 @@ export function nextStep(projects: Project[]): NextStep {
     return {
       h: `Fix up ${needsWork.name}`,
       s: "A reviewer sent this one back. Sort what they flagged and ship it again.",
-      href: "/projects/",
+      href: "/projects",
       b: "OPEN",
     };
   const draft = has("draft");
@@ -49,27 +49,27 @@ export function nextStep(projects: Project[]): NextStep {
     return {
       h: `Ship ${draft.name}`,
       s: "It's still a draft. When it's finished and tracked, send it for review.",
-      href: "/projects/",
+      href: "/projects",
       b: "OPEN",
     };
   if (has("shipped"))
     return {
       h: "You're in the review queue",
       s: "Nothing to do but wait. Start the next one while you're here.",
-      href: "/projects/",
+      href: "/projects",
       b: "NEW PROJECT",
     };
   if (projects.length === 0)
     return {
       h: "Start your first project",
       s: "Pick something small and real. The docs walk through the whole thing.",
-      href: "/docs/first-project/",
+      href: "/docs/first-project",
       b: "READ",
     };
   return {
     h: "Start your next project",
     s: "Everything's approved. Pick up a trial or build something of your own.",
-    href: "/projects/",
+    href: "/projects",
     b: "NEW PROJECT",
   };
 }
@@ -100,17 +100,12 @@ export function formatHours(seconds: number): string {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
-interface LevelBand {
-  throughLevel: number;
-  rePerLevel: number;
-}
-
-// Segmented level-progress bar: fills relative to the CURRENT band, not to
-// level 100, so it moves visibly on every ship instead of creeping a pixel
-// at a time. One boolean per cell (20 cells, true = filled).
-export function levelBarCells(bands: readonly LevelBand[], re: number, level: number, nextAt: number): boolean[] {
-  const band = bands.find((b) => level < b.throughLevel) ?? bands[bands.length - 1]!;
-  const prevAt = Math.max(0, nextAt - band.rePerLevel);
+// Segmented level-progress bar, one boolean per cell (20 cells, true =
+// filled). Only uses thresholds apps/server already computed: `nextAt` is
+// the wallet's reForNextLevel and `prevAt` its reForCurrentLevel when the
+// server provides one (otherwise 0, so the bar measures total progress
+// toward the next level). No level-band math is duplicated here.
+export function levelBarCells(re: number, nextAt: number, prevAt = 0): boolean[] {
   const span = Math.max(1, nextAt - prevAt);
   const pct = Math.max(0, Math.min(1, (re - prevAt) / span));
   const cells = 20;
