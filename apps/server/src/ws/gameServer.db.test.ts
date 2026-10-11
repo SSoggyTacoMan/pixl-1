@@ -103,7 +103,10 @@ if (!adminUrl) {
   }
 
   function dial(token: string, headers: Record<string, string> = { "x-forwarded-for": freshIp() }) {
-    const client = new Client(new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`, { headers }));
+    // No query token: the game origin opens the socket, then the first frame authenticates.
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { origin: "https://play.pixl.hackclub.com", ...headers } });
+    ws.on("open", () => ws.send(JSON.stringify({ type: "auth", token })));
+    const client = new Client(ws);
     open.push(client);
     return client;
   }
@@ -323,7 +326,7 @@ if (!adminUrl) {
       expect((await live.closed).code).toBe(4001);
 
       const again = dial(leaked);
-      expect((await again.closed).code).toBe(4001);
+      expect((await again.closed).code).toBe(4401);
       expect(again.messages.some((m) => m.type === "init")).toBe(false);
 
       const fresh = dial(issueAt(victim, Date.now() + 3_000));
@@ -353,7 +356,7 @@ if (!adminUrl) {
       await relogin.waitFor(["init"]);
       await game.sweepRevokedSessions();
       expect(relogin.ws.readyState).toBe(WebSocket.OPEN);
-      expect((await dial(old).closed).code).toBe(4001);
+      expect((await dial(old).closed).code).toBe(4401);
     });
 
     test("when revocation state cannot be read the socket is refused with a retryable close", async () => {

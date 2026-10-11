@@ -7,6 +7,7 @@ import { issueSessionToken } from "../auth/session.js";
 import { db } from "../db/pgCompat.js";
 import { consumeRateLimit } from "../rateLimit.js";
 import { validateBomCsv, sanitizeBomCsv } from "./bomCsv.js";
+import { bearer, testAuthGate } from "../http/testkit.js";
 import uploadsRouter from "./uploads.js";
 
 const realPngBytes = () =>
@@ -106,6 +107,7 @@ test("a cell needing quoting still round-trips its value", () => {
 
 async function startTestApp() {
   const app = express();
+  app.use(testAuthGate());
   app.use(uploadsRouter);
   const server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -188,9 +190,9 @@ describe("POST /api/uploads", () => {
     const app = await startTestApp();
     try {
       const token = issueSessionToken({ userId: "upload-test-safe", displayName: "x" });
-      const res = await fetch(`${app.baseUrl}/api/uploads?token=${token}`, {
+      const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
-        headers: { "Content-Type": "image/png" },
+        headers: { ...bearer(token), "Content-Type": "image/png" },
         body: await realPngBytes(),
       });
       const body = (await res.json()) as { ok: boolean; url?: string };
@@ -213,9 +215,9 @@ describe("POST /api/uploads", () => {
     const app = await startTestApp();
     try {
       const token = issueSessionToken({ userId: "upload-test-fake-bytes", displayName: "x" });
-      const res = await fetch(`${app.baseUrl}/api/uploads?token=${token}`, {
+      const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
-        headers: { "Content-Type": "image/png" },
+        headers: { ...bearer(token), "Content-Type": "image/png" },
         body: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
       });
       const body = (await res.json()) as { ok: boolean; error?: string };
@@ -237,9 +239,9 @@ describe("POST /api/uploads", () => {
     const app = await startTestApp();
     try {
       const token = issueSessionToken({ userId: "upload-test-quota", displayName: "x" });
-      const res = await fetch(`${app.baseUrl}/api/uploads?token=${token}`, {
+      const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
-        headers: { "Content-Type": "image/png" },
+        headers: { ...bearer(token), "Content-Type": "image/png" },
         body: await realPngBytes(),
       });
       const body = (await res.json()) as { ok: boolean; error?: string };
@@ -261,9 +263,9 @@ describe("POST /api/uploads", () => {
     const app = await startTestApp();
     try {
       const token = issueSessionToken({ userId: "upload-test-cdn-rejected", displayName: "x" });
-      const res = await fetch(`${app.baseUrl}/api/uploads?token=${token}`, {
+      const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
-        headers: { "Content-Type": "image/png" },
+        headers: { ...bearer(token), "Content-Type": "image/png" },
         body: await realPngBytes(),
       });
       const body = (await res.json()) as { ok: boolean; error?: string };
@@ -285,9 +287,9 @@ describe("POST /api/uploads", () => {
     const app = await startTestApp();
     try {
       const token = issueSessionToken({ userId: "upload-test-cdn-server-error", displayName: "x" });
-      const res = await fetch(`${app.baseUrl}/api/uploads?token=${token}`, {
+      const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
-        headers: { "Content-Type": "image/png" },
+        headers: { ...bearer(token), "Content-Type": "image/png" },
         body: await realPngBytes(),
       });
       const body = (await res.json()) as { ok: boolean; error?: string };
@@ -309,9 +311,9 @@ describe("POST /api/uploads", () => {
     const app = await startTestApp();
     try {
       const token = issueSessionToken({ userId: "upload-test-cdn-network-error", displayName: "x" });
-      const res = await fetch(`${app.baseUrl}/api/uploads?token=${token}`, {
+      const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
-        headers: { "Content-Type": "image/png" },
+        headers: { ...bearer(token), "Content-Type": "image/png" },
         body: await realPngBytes(),
       });
       const body = (await res.json()) as { ok: boolean; error?: string };
@@ -333,9 +335,9 @@ describe("POST /api/uploads", () => {
     const app = await startTestApp();
     try {
       const token = issueSessionToken({ userId: "upload-test-cdn-malformed", displayName: "x" });
-      const res = await fetch(`${app.baseUrl}/api/uploads?token=${token}`, {
+      const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
-        headers: { "Content-Type": "image/png" },
+        headers: { ...bearer(token), "Content-Type": "image/png" },
         body: await realPngBytes(),
       });
       const body = (await res.json()) as { ok: boolean; error?: string };
@@ -358,9 +360,9 @@ describe("POST /api/uploads", () => {
     const app = await startTestApp();
     try {
       const token = issueSessionToken({ userId: "upload-test-quota-error", displayName: "x" });
-      const res = await fetch(`${app.baseUrl}/api/uploads?token=${token}`, {
+      const res = await fetch(`${app.baseUrl}/api/uploads`, {
         method: "POST",
-        headers: { "Content-Type": "image/png" },
+        headers: { ...bearer(token), "Content-Type": "image/png" },
         body: await realPngBytes(),
       });
       const body = (await res.json()) as { ok: boolean; error?: string };

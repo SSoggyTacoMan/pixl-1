@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { communityEnergy, pendingCommunityEnergy, topChapterContributors } from "../xp.js";
 import { addNotification } from "./notifications.js";
@@ -99,8 +98,7 @@ async function displayInfoFor(userIds: string[]): Promise<Map<string, { displayN
 // threshold, the rewards are equipment the Core has finally recovered, plus
 // a bonus RE prize for whoever contributed the most to that chapter.
 router.get("/api/vault", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [energy, pendingEnergy, { data: rows }] = await Promise.all([

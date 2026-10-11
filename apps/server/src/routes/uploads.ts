@@ -1,11 +1,11 @@
 import express, { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { sanitizeImage } from "../imageValidation.js";
 import { consumeRateLimit, type RateLimitOptions } from "../rateLimit.js";
 import { validateBomCsv, sanitizeBomCsv } from "./bomCsv.js";
 import { CDN_UPLOAD_QUOTA, reserveCdnUploadQuota, releaseCdnUploadQuota } from "./cdnQuota.js";
-import { authorized } from "./admin.js";
+import { validate, v, params } from "../http/validate.js";
+import { auditRequest } from "../audit.js";
 
 const router = Router();
 
@@ -62,12 +62,15 @@ async function uploadToCdn(form: FormData, key: string): Promise<CdnOutcome> {
 }
 
 // Proxy image uploads to the Hack Club CDN so the key stays server-side.
+// Bodies here are raw bytes (express.raw with its own limit), validated by
+// sanitizeImage / validateBomCsv rather than a zod schema; the query and
+// params still go through validate().
 router.post(
   "/api/uploads",
+  validate({ query: v.noQuery }),
   express.raw({ type: IMAGE_TYPES, limit: MAX_IMAGE_BYTES }),
   async (req, res) => {
-    const token = typeof req.query.token === "string" ? req.query.token : "";
-    const session = token ? verifySessionToken(token) : null;
+    const session = req.session;
     if (!session) return res.status(401).json({ ok: false });
 
     const key = process.env.HACKCLUB_CDN_KEY;
@@ -103,6 +106,7 @@ router.post(
     // already needed for validation.
     const sanitized = await sanitizeImage(buf, type);
     if (!sanitized.ok) {
+      auditRequest(req, { action: "upload.image", target: "journal", result: "denied", meta: { reason: "invalid_image" } });
       return res.status(400).json({ ok: false, error: "invalid_image" });
     }
     const safeBuf = sanitized.buffer;
@@ -127,26 +131,24 @@ router.post(
     const outcome = await uploadToCdn(form, key);
     if (!outcome.ok) {
       if (!outcome.ambiguous) await releaseCdnUploadQuota(session.userId, safeBuf.length, quota.windowId);
+      auditRequest(req, { action: "upload.image", target: "journal", result: "error", meta: { reason: "cdn_failed" } });
       return res.status(502).json({ ok: false, error: "cdn_failed" });
     }
+    auditRequest(req, { action: "upload.image", target: "journal", result: "ok", meta: { bytes: safeBuf.length, type } });
     res.json({ ok: true, url: outcome.url });
   },
 );
 
-// Same CDN proxy as /api/uploads above, but for the dashboard's "Edit
-// submission" panel (apps/dashboard/app/_components/ReviewForm.tsx), where
-// the person uploading is a reviewer, not the project's owner - there's no
-// player session token to verify, so this reuses the same dashboard-to-server
-// admin gate as /api/admin/online, /kick, etc. (admin.ts's authorized(), the
-// ADMIN_API_KEY shared secret already configured on both apps). No
-// per-player CDN quota here: it isn't any one player's upload budget being
-// spent.
+// Same CDN proxy as /api/uploads above, but for the Internal Dashboard's
+// "Edit submission" panel, where the person uploading is a reviewer, not the
+// project's owner. Behind adminServiceGate like every /api/admin/* route
+// (x-pixl-service-key, see index.ts). No per-player CDN quota here: it isn't
+// any one player's upload budget being spent.
 router.post(
   "/api/admin/uploads",
+  validate({ query: v.noQuery }),
   express.raw({ type: IMAGE_TYPES, limit: MAX_IMAGE_BYTES }),
   async (req, res) => {
-    if (!authorized(req)) return res.status(401).json({ ok: false });
-
     const key = process.env.HACKCLUB_CDN_KEY;
     if (!key) {
       console.error("[uploads] HACKCLUB_CDN_KEY is not set, refusing upload");
@@ -166,6 +168,7 @@ router.post(
     // sanitized buffer, never the original.
     const sanitized = await sanitizeImage(buf, type);
     if (!sanitized.ok) {
+      auditRequest(req, { action: "upload.image", target: "submission", result: "denied", meta: { reason: "invalid_image" } });
       return res.status(400).json({ ok: false, error: "invalid_image" });
     }
     const safeBuf = sanitized.buffer;
@@ -179,7 +182,11 @@ router.post(
     );
 
     const outcome = await uploadToCdn(form, key);
-    if (!outcome.ok) return res.status(502).json({ ok: false, error: "cdn_failed" });
+    if (!outcome.ok) {
+      auditRequest(req, { action: "upload.image", target: "submission", result: "error", meta: { reason: "cdn_failed" } });
+      return res.status(502).json({ ok: false, error: "cdn_failed" });
+    }
+    auditRequest(req, { action: "upload.image", target: "submission", result: "ok", meta: { bytes: safeBuf.length, type } });
     res.json({ ok: true, url: outcome.url });
   },
 );
@@ -199,10 +206,10 @@ const BOM_PROJECT_LIMIT: RateLimitOptions = {
 
 router.post(
   "/api/projects/:projectId/bom",
+  validate({ query: v.noQuery, params: params({ projectId: v.id }) }),
   express.raw({ type: CSV_TYPES, limit: MAX_CSV_BYTES }),
   async (req, res) => {
-    const token = typeof req.query.token === "string" ? req.query.token : "";
-    const session = token ? verifySessionToken(token) : null;
+    const session = req.session;
     if (!session) return res.status(401).json({ ok: false });
 
     const projectId = Number(req.params.projectId);
@@ -244,7 +251,10 @@ router.post(
       return res.status(400).json({ ok: false, error: "empty_body" });
     }
     const validation = validateBomCsv(buf);
-    if (!validation.ok) return res.status(400).json({ ok: false, error: validation.error });
+    if (!validation.ok) {
+      auditRequest(req, { action: "upload.bom", target: `project:${projectId}`, result: "denied", meta: { reason: validation.error } });
+      return res.status(400).json({ ok: false, error: validation.error });
+    }
     const safeBuf = sanitizeBomCsv(buf);
 
     const quota = await reserveCdnUploadQuota(CDN_UPLOAD_QUOTA, session.userId, safeBuf.length);
@@ -274,6 +284,7 @@ router.post(
       console.error("[uploads] bom project update failed", updateError);
       return res.status(500).json({ ok: false });
     }
+    auditRequest(req, { action: "upload.bom", target: `project:${projectId}`, result: "ok", meta: { bytes: safeBuf.length } });
     res.json({ ok: true, url: outcome.url });
   },
 );

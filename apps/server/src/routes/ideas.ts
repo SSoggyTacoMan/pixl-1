@@ -1,9 +1,10 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { withLock } from "../db/advisoryLock.js";
 import { containsBlocked } from "../moderation.js";
 import { addNotification } from "./notifications.js";
+import { z } from "zod";
+import { validate, v, optStr, optBool, optNum, params } from "../http/validate.js";
 
 const router = Router();
 
@@ -37,8 +38,7 @@ async function voteInfo(ideaIds: number[], viewerId: string) {
 
 // Browse ideas, newest or top first, with an optional title search.
 router.get("/api/ideas", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
@@ -82,9 +82,8 @@ router.get("/api/ideas", async (req, res) => {
 });
 
 // Post an idea. Instant - no review queue, this is just a prompt board.
-router.post("/api/ideas", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/ideas", validate({ query: v.noQuery, body: z.object({ title: optStr(1000), body: optStr(20000), isCollab: optBool, rolesNeeded: z.array(z.string().max(64)).max(50).nullable().optional(), hoursEstimate: optNum, imageUrl: optStr(2000) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const title = String(req.body?.title ?? "").trim().slice(0, 120);
@@ -124,9 +123,8 @@ router.post("/api/ideas", async (req, res) => {
 });
 
 // Delete one of the user's own ideas.
-router.delete("/api/ideas/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/ideas/:id", validate({ query: v.noQuery, params: params({ id: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -146,9 +144,8 @@ router.delete("/api/ideas/:id", async (req, res) => {
 
 // Permanent upvote on an idea. One per voter, never taken back, can't vote
 // your own idea, same rules as project upvotes.
-router.post("/api/ideas/:id/upvote", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/ideas/:id/upvote", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -185,9 +182,8 @@ router.post("/api/ideas/:id/upvote", async (req, res) => {
 });
 
 // Permanent downvote on an idea, same rules as upvote, opposite direction.
-router.post("/api/ideas/:id/downvote", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/ideas/:id/downvote", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -223,9 +219,8 @@ router.post("/api/ideas/:id/downvote", async (req, res) => {
   }
 });
 
-router.post("/api/ideas/:id/apply", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/ideas/:id/apply", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);

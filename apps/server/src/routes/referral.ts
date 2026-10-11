@@ -1,8 +1,9 @@
 import { randomInt } from "crypto";
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { addNotification } from "./notifications.js";
+import { z } from "zod";
+import { validate, v, optStr } from "../http/validate.js";
 
 const router = Router();
 
@@ -63,8 +64,7 @@ async function ensureReferralCode(userId: string): Promise<string> {
 }
 
 router.get("/api/referral/me", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const code = await ensureReferralCode(session.userId);
@@ -106,9 +106,8 @@ router.get("/api/referral/me", async (req, res) => {
   });
 });
 
-router.post("/api/referral/apply", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/referral/apply", validate({ query: v.noQuery, body: z.object({ code: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const code = typeof req.body?.code === "string" ? req.body.code.trim().toUpperCase() : "";

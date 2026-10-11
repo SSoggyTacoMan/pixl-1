@@ -1,6 +1,8 @@
 import { supabase } from "./db/client.js";
 import { orValue } from "./db/pgCompat.js";
 import { verifySessionToken } from "./auth/session.js";
+import { bearerToken } from "./http/bearer.js";
+import { auditRequestThrottled } from "./audit.js";
 
 // Normalized roots (see normalize below): lowercase, leetspeak folded, symbols
 // stripped. Substring match, so common evasions like f.u-c_k or sh1t still hit.
@@ -492,13 +494,11 @@ export interface EnforceActiveBansDeps {
   verify?: (token: string) => ReturnType<typeof verifySessionToken>;
 }
 
-// Express middleware, mounted globally in index.ts. Reads the same
-// `?token=` every route already reads; a request with no token, or one that
-// fails signature/expiry verification, is left untouched - that's the
-// existing per-route "not authenticated" handling's job, not this
-// middleware's. This only ever acts on a token that verifies successfully
-// but names a currently-banned user, which every route handler skips being
-// reached for entirely.
+// Part of requireSession (http/requireSession.ts), after the Bearer token is
+// verified. A request with no verified session is left untouched - rejecting
+// it is verifyBearer's job, not this middleware's. This only ever acts on a
+// token that verifies successfully but names a currently-banned user, which
+// every route handler skips being reached for entirely.
 export function enforceActiveBans(deps: EnforceActiveBansDeps = {}) {
   const banState = deps.banState ?? currentBanState;
   const verify = deps.verify ?? verifySessionToken;
@@ -507,9 +507,9 @@ export function enforceActiveBans(deps: EnforceActiveBansDeps = {}) {
     res: import("express").Response,
     next: import("express").NextFunction,
   ): Promise<void> => {
-    const token = typeof req.query.token === "string" ? req.query.token : "";
-    if (!token) return next();
-    const session = verify(token);
+    // requireSession has normally verified the Bearer token already.
+    const token = req.session ? null : bearerToken(req);
+    const session = req.session ?? (token ? verify(token) : null);
     if (!session) return next();
     let state: BanState;
     try {
@@ -518,6 +518,14 @@ export function enforceActiveBans(deps: EnforceActiveBansDeps = {}) {
       state = "unknown";
     }
     if (state === "banned") {
+      auditRequestThrottled(req, {
+        action: "auth.session_rejected",
+        actorType: "player",
+        actorId: session.userId,
+        target: req.method,
+        result: "denied",
+        meta: { reason: "banned" },
+      });
       res.status(403).json({ ok: false, error: "banned" });
       return;
     }

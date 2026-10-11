@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { activeEvents } from "../events.js";
 import { approvedHoursFor, lifetimeRe, levelForRe } from "../xp.js";
@@ -76,8 +75,7 @@ router.get("/api/explore/players", async (req, res) => {
 // Top pixel balances for the in-game leaderboard. Read-only; balances are
 // server-authoritative so this can't be gamed from the client.
 router.get("/api/explore/leaderboard", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data, error } = await supabase
@@ -167,8 +165,7 @@ router.get("/api/explore/leaderboard", async (req, res) => {
 const REFERRAL_MILESTONE_EVERY = 10;
 const REFERRAL_MILESTONE_PX = 119;
 router.get("/api/explore/leaderboard/referrals", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data, error } = await supabase
@@ -213,8 +210,7 @@ router.get("/api/explore/leaderboard/referrals", async (req, res) => {
 // Top creators by total upvotes received across all their projects (see
 // [[project-upvotes-collectibles]] in project memory).
 router.get("/api/explore/leaderboard/upvotes", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: projects, error: pErr }, { data: upvotes, error: uErr }] = await Promise.all([
@@ -249,8 +245,7 @@ router.get("/api/explore/leaderboard/upvotes", async (req, res) => {
 });
 
 router.get("/api/explore/showcase", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data: projects, error } = await supabase
@@ -287,8 +282,7 @@ router.get("/api/explore/showcase", async (req, res) => {
 });
 
 router.get("/api/explore/players/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = String(req.params.id);
@@ -385,8 +379,7 @@ router.get("/api/explore/players/:id/public", async (req, res) => {
 // search/tier/shipped filters.
 // #public, token optional (just for has_upvoted)
 router.get("/api/explore/projects", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
 
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const tier = typeof req.query.tier === "string" ? Number(req.query.tier) : NaN;
@@ -460,8 +453,7 @@ router.get("/api/explore/projects", async (req, res) => {
 
 // #public, token optional (just for has_upvoted)
 router.get("/api/explore/projects/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });

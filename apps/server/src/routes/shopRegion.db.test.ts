@@ -51,9 +51,9 @@ if (!adminUrl) {
   }
 
   async function buy(userId: string, itemId: number) {
-    const res = await fetch(`${base}/api/shop/buy/${itemId}?token=${issueToken(userId)}`, {
+    const res = await fetch(`${base}/api/shop/buy/${itemId}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", Authorization: `Bearer ${issueToken(userId)}` },
       body: JSON.stringify({ option: "" }),
     });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
@@ -110,6 +110,7 @@ if (!adminUrl) {
 
     const app = express();
     app.use(express.json());
+    app.use((await import("../http/gate.js")).authGate());
     app.use(shopRouter);
     server = createServer(app);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

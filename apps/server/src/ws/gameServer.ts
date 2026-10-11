@@ -1,6 +1,8 @@
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Server, IncomingMessage } from "http";
-import { verifySessionToken } from "../auth/session.js";
+import { verifySessionToken, type VerifiedSession } from "../auth/session.js";
+import { config } from "../config.generated.js";
+import { auditRequest, auditRequestThrottled } from "../audit.js";
 import { isSessionRevoked, lookupSessionRevokedAt, parseRevokedAt } from "../auth/revocation.js";
 import { consumeRateLimit, peekRateLimit, type RateLimitOptions } from "../rateLimit.js";
 import { requestIpKey } from "../clientIp.js";
@@ -517,17 +519,73 @@ setInterval(() => {
   }
 }, UPGRADE_WINDOW_MS).unref();
 
+// WebSocket authentication: the upgrade carries no credentials (no query
+// token). Only the game's own origin may open a socket, and the first frame
+// it sends must be {"type":"auth","token":"<jwt>"} within
+// WS_AUTH_TIMEOUT_MS. Until that succeeds the server sends nothing at all -
+// the client treats the first message it receives as "auth OK". A missing,
+// malformed, invalid, expired or revoked token closes with 4401.
+export const WS_AUTH_TIMEOUT_MS = 5_000;
+export const WS_AUTH_FAILED = 4401;
+const MAX_AUTH_FRAME_BYTES = 4096;
+
+export function isAllowedWsOrigin(origin: string | undefined): boolean {
+  return origin === config.urls.play;
+}
+
+export function parseWsAuth(
+  raw: RawData | string,
+  isBinary: boolean,
+  verify: (token: string) => VerifiedSession | null = verifySessionToken,
+): VerifiedSession | null {
+  if (isBinary) return null;
+  const text = raw.toString();
+  if (text.length > MAX_AUTH_FRAME_BYTES) return null;
+  let msg: unknown;
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof msg !== "object" || msg === null) return null;
+  const { type, token } = msg as { type?: unknown; token?: unknown };
+  if (type !== "auth" || typeof token !== "string" || token.length === 0) return null;
+  return verify(token);
+}
+
+function auditWsFailure(req: IncomingMessage, reason: string, userId?: string): void {
+  auditRequestThrottled(req, {
+    action: "ws.auth_failed",
+    target: "ws",
+    result: "denied",
+    ...(userId ? { actorType: "player" as const, actorId: userId } : {}),
+    meta: { reason },
+  });
+}
+
 export function attachWebSocketServer(httpServer: Server) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 });
 
   httpServer.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "", "http://localhost");
+    const url = new URL(req.url ?? "/", config.urls.server);
     if (url.pathname !== "/ws") {
       socket.destroy();
       return;
     }
     const ip = requestIpKey(req);
     if (upgradeRateLimited(ip)) {
+      socket.destroy();
+      return;
+    }
+    const origin = req.headers.origin;
+    if (!isAllowedWsOrigin(origin)) {
+      auditRequestThrottled(req, {
+        action: "origin.rejected",
+        target: "ws",
+        result: "denied",
+        meta: { origin: String(origin ?? "(none)").slice(0, 200) },
+      });
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -561,27 +619,22 @@ export function attachWebSocketServer(httpServer: Server) {
       (ws as WebSocket & { isAlive?: boolean }).isAlive = true;
     });
 
-    const url = new URL(req.url ?? "", "http://localhost");
-    const token = url.searchParams.get("token");
-    const session = token ? verifySessionToken(token) : null;
     const ip = requestIpKey(req);
-
-    if (!session) {
-      console.log("Connection rejected: invalid/missing token");
-      ws.close(4001, "Unauthorized");
-      return;
-    }
-
-    console.log(
-      "Connection authorized for userId:",
-      session.userId,
-      "name:",
-      session.displayName,
-    );
-
     let player: ConnectedPlayer | null = null;
 
-    (async () => {
+    // The first frame must authenticate (see parseWsAuth). Nothing is sent
+    // to the client before that succeeds.
+    let authHandled = false;
+    const authTimer = setTimeout(() => {
+      if (authHandled) return;
+      authHandled = true;
+      auditWsFailure(req, "timeout");
+      ws.close(WS_AUTH_FAILED, "Unauthorized");
+    }, WS_AUTH_TIMEOUT_MS);
+    authTimer.unref?.();
+    ws.on("close", () => clearTimeout(authTimer));
+
+    const startSession = async (session: VerifiedSession) => {
       const revocation = await lookupSessionRevokedAt(session.userId);
       if (!revocation.ok) {
         ws.close(1013, "Try again later");
@@ -589,7 +642,8 @@ export function attachWebSocketServer(httpServer: Server) {
       }
       if (isSessionRevoked(session, revocation.revokedAtMs)) {
         console.log("Connection rejected: revoked session", session.userId);
-        ws.close(4001, "Unauthorized");
+        auditWsFailure(req, "revoked", session.userId);
+        ws.close(WS_AUTH_FAILED, "Unauthorized");
         return;
       }
 
@@ -599,9 +653,17 @@ export function attachWebSocketServer(httpServer: Server) {
           ? `You've been temporarily banned from Pixl until ${new Date(ban.expires_at).toUTCString()}.`
           : "You've been permanently banned from Pixl.";
         console.log("Connection rejected: banned", session.userId, message);
+        auditWsFailure(req, "banned", session.userId);
         ws.close(4003, message.slice(0, 120));
         return;
       }
+      if (ws.readyState !== WebSocket.OPEN) return;
+
+      console.log("Connection authorized for userId:", session.userId, "name:", session.displayName);
+      auditRequest(
+        { headers: req.headers, socket: req.socket, session: { userId: session.userId, slackId: session.slackId } },
+        { action: "ws.connect", target: "ws", result: "ok" },
+      );
 
       // Default to the player's most recently active scene/position.
       const { data: stateRows, error } = await supabase
@@ -718,9 +780,24 @@ export function attachWebSocketServer(httpServer: Server) {
         },
         player.userId,
       );
-    })();
+    };
 
     ws.on("message", (raw, isBinary) => {
+      if (!authHandled) {
+        authHandled = true;
+        clearTimeout(authTimer);
+        const session = parseWsAuth(raw, isBinary);
+        if (!session) {
+          auditWsFailure(req, "invalid_token");
+          ws.close(WS_AUTH_FAILED, "Unauthorized");
+          return;
+        }
+        startSession(session).catch((err: unknown) => {
+          console.error("[ws] session start failed", (err as Error)?.message ?? err);
+          if (ws.readyState === WebSocket.OPEN) ws.close(1011, "Server error");
+        });
+        return;
+      }
       if (!player) return;
       if (players.get(player.userId) !== player) return;
 

@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { addNotification } from "../routes/notifications.js";
 import { yswsShipForSlackId, yswsShipsForSlackId } from "./archive.js";
 import { availableShips, collectTaken, nameFromShip } from "./imports.js";
 import { parseProjectBody } from "../routes/projects.js";
+import { z } from "zod";
+import { validate, v } from "../http/validate.js";
 
 const router = Router();
 
@@ -14,8 +15,7 @@ function cleanSlackId(raw: unknown): string {
 }
 
 router.get("/api/projects/ysws-available", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data: userRow } = await supabase
@@ -62,9 +62,8 @@ router.get("/api/projects/ysws-available", async (req, res) => {
   });
 });
 
-router.post("/api/projects/import-ysws", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/import-ysws", validate({ query: v.noQuery, body: z.object({ entryId: z.union([z.string().max(200), z.number()]) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const entryId = String(req.body?.entryId ?? "").trim();

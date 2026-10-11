@@ -4,6 +4,10 @@ import { supabase } from "../db/client.js";
 import { rateLimit } from "../rateLimit.js";
 import { config as pixlConfig } from "../config.generated.js";
 import { createVerificationStore } from "./formVerification.js";
+import { z } from "zod";
+import { validate, v, optStr } from "../http/validate.js";
+import { clientIpFor } from "../http/clientKey.js";
+import { rateLimitIpKey } from "../clientIp.js";
 
 // Public, no-account forms (e.g. pixl.hackclub.com/form/review). A submitter
 // never gets a Pixl player account.
@@ -21,6 +25,21 @@ import { createVerificationStore } from "./formVerification.js";
 // code back - knowing someone's Slack id is no longer enough on its own.
 
 const router = Router();
+
+const formKeyParams = z.object({ formKey: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/i, "invalid form key") });
+const formSubmitBody = z.object({
+  answers: z
+    .record(z.string().max(100), z.union([z.string().max(20_000), z.number(), z.boolean(), z.null()]))
+    .optional(),
+  website: optStr(1000),
+  slackId: optStr(32),
+  code: optStr(32),
+});
+
+// The Pixl Dashboard's backend submits these on a visitor's behalf; see
+// clientIpFor (http/clientKey.ts) for when its forwarded visitor IP is
+// trusted.
+const formsLimiterKey = (req: import("express").Request) => rateLimitIpKey(clientIpFor(req));
 
 const MAX_ANSWER_LEN = 4000;
 const MAX_ANSWERS = 30;
@@ -108,9 +127,9 @@ const verificationStore = createVerificationStore();
 // Keyed by IP, separate from the per-slackId resend cooldown below - stops
 // one IP from cycling through many different victims' ids just as much as
 // it stops flooding a single one.
-const codeRequestLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, name: "form_request_code" });
+const codeRequestLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, name: "form_request_code", key: formsLimiterKey });
 
-router.post("/api/forms/:formKey/request-code", codeRequestLimiter, async (req, res) => {
+router.post("/api/forms/:formKey/request-code", codeRequestLimiter, validate({ query: v.noQuery, params: formKeyParams, body: z.object({ slackId: optStr(32) }) }), async (req, res) => {
   const formKey = String(req.params.formKey);
   if (!isTrustedOrigin(req)) return res.status(403).json({ ok: false, error: "bad_origin" });
 
@@ -146,9 +165,9 @@ router.post("/api/forms/:formKey/request-code", codeRequestLimiter, async (req, 
 
 // Tighter than the app-wide write limiter (60/min) - this is a public,
 // unauthenticated endpoint, worth its own low ceiling.
-const submitLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, name: "form_submit" });
+const submitLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, name: "form_submit", key: formsLimiterKey });
 
-router.post("/api/forms/:formKey/submit", submitLimiter, async (req, res) => {
+router.post("/api/forms/:formKey/submit", submitLimiter, validate({ query: v.noQuery, params: formKeyParams, body: formSubmitBody }), async (req, res) => {
   const formKey = String(req.params.formKey);
   if (!isTrustedOrigin(req)) return res.status(403).json({ ok: false, error: "bad_origin" });
 
@@ -218,8 +237,8 @@ router.post("/api/forms/:formKey/submit", submitLimiter, async (req, res) => {
     .maybeSingle();
   if (existingSubmission) return res.status(409).json({ ok: false, error: "already_pending" });
 
-  const ip = req.ip ?? "";
-  const ipHash = ip ? crypto.createHash("sha256").update(ip).digest("hex") : "";
+  const ip = clientIpFor(req);
+  const ipHash = ip && ip !== "unknown" ? crypto.createHash("sha256").update(ip).digest("hex") : "";
 
   const { data: inserted, error } = await supabase
     .from("form_submissions")

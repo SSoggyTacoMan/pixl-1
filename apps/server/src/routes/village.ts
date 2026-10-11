@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { addNotification } from "./notifications.js";
 import { presenceFor, sendToUser } from "../ws/gameServer.js";
 import { areFriends } from "../social.js";
 import { lobbies } from "../ws/lobbies.js";
+import { z } from "zod";
+import { validate, v, optStr, optNum } from "../http/validate.js";
 
 const router = Router();
 
@@ -33,9 +34,8 @@ async function nameFor(userId: string): Promise<string> {
 // to be accepted friends with the target. Persists a pending invite so the
 // friend can accept later while the village still exists, pings their inbox,
 // and, if they're online, pushes a live prompt over the game socket.
-router.post("/api/village/invite", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/village/invite", validate({ query: v.noQuery, body: z.object({ userId: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const targetId = typeof req.body?.userId === "string" ? req.body.userId : "";
@@ -109,8 +109,7 @@ router.post("/api/village/invite", async (req, res) => {
 // A player's live incoming invites, newest first. Skips any whose village has
 // since disappeared so the list only ever shows villages you can actually join.
 router.get("/api/village/invites", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data, error } = await supabase
@@ -142,9 +141,8 @@ router.get("/api/village/invites", async (req, res) => {
 });
 
 // Turn down an invite. Scoped to the recipient so you can only decline your own.
-router.post("/api/village/invite/decline", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/village/invite/decline", validate({ query: v.noQuery, body: z.object({ inviteId: optNum }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const inviteId = Number(req.body?.inviteId ?? 0);

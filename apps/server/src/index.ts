@@ -31,8 +31,10 @@ import journalsPublicRouter from "./routes/journalsPublic.js";
 import macondoRouter from "./macondo/routes.js";
 import yswsRouter from "./ysws/routes.js";
 import { rateLimit } from "./rateLimit.js";
-import { enforceActiveBans } from "./moderation.js";
-import { enforceSessionRevocation } from "./auth/revocation.js";
+import { originGuard } from "./http/origins.js";
+import { adminServiceGate } from "./http/serviceKeys.js";
+import { auditApiRequests, authGate } from "./http/gate.js";
+import { rateLimitKeyFor } from "./http/clientKey.js";
 import { attachWebSocketServer } from "./ws/gameServer.js";
 import { startLittleGuyForwarder } from "./littleGuy.js";
 
@@ -45,46 +47,28 @@ app.disable("x-powered-by");
 // so a spoofed prefix a client sends is ignored rather than trusted.
 app.set("trust proxy", 1);
 
-// CORS: the web export (served from another origin, with COEP require-corp)
-// reaches us via the browser's fetch, which enforces CORS. Tokens travel in the
-// query string, not cookies, so a permissive origin is safe here.
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type");
-  res.header("Cross-Origin-Resource-Policy", "cross-origin");
-  // Session tokens travel in the query string (see the comment above). A
-  // same-origin navigation would otherwise forward the full URL, token
-  // included, as the Referer header on any subresource request it makes.
-  res.header("Referrer-Policy", "no-referrer");
-  // This is a pure JSON API, never HTML, a locked-down CSP/frame policy
-  // costs nothing and closes off any accidental HTML error response as an
-  // XSS/clickjacking vector.
-  res.header("X-Content-Type-Options", "nosniff");
-  res.header("X-Frame-Options", "DENY");
-  res.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
-  res.header("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
-  if (req.method === "OPTIONS") {
-    res.sendStatus(204);
-    return;
-  }
-  next();
-});
+// Security headers + origin allowlist (http/origins.ts). Only
+// config.urls.site/play/dash get CORS; any other Origin is a 403.
+app.use(originGuard());
 
-app.use(rateLimit({ windowMs: 60_000, max: 300, name: "all" }));
-const writeLimiter = rateLimit({ windowMs: 60_000, max: 60, name: "write" });
+// Keyed per player for authenticated calls, per client IP otherwise (see
+// http/clientKey.ts).
+app.use(rateLimit({ windowMs: 60_000, max: 300, name: "all", key: rateLimitKeyFor }));
+const writeLimiter = rateLimit({ windowMs: 60_000, max: 60, name: "write", key: rateLimitKeyFor });
 app.use((req, res, next) =>
   req.method === "GET" ? next() : writeLimiter(req, res, next),
 );
 
-app.use(express.json());
-app.use(enforceSessionRevocation());
-// Global: a signed, unexpired token only proves who someone was when it was
-// issued, not that they're still allowed to act now - see moderation.ts's
-// enforceActiveBans for why this can't just live in one or two routes.
-// Requests with no ?token= (public endpoints, admin/webhook-secret routes)
-// pass straight through untouched.
-app.use(enforceActiveBans());
+// Upload routes keep their own express.raw() limits; this only governs JSON.
+app.use(express.json({ limit: "256kb" }));
+app.use(auditApiRequests());
+// /api/admin/* answers only to a service key (x-pixl-service-key), never to
+// a player session. Mounted via app.use so it shares Express's own path
+// matching with the admin routes behind it.
+app.use("/api/admin", adminServiceGate());
+// Deny by default: everything not in http/publicRoutes.ts needs a Bearer
+// session, which also runs the revocation and active-ban checks.
+app.use(authGate());
 app.use(authRouter);
 app.use(hackatimeRouter);
 app.use(projectsRouter);
@@ -117,6 +101,7 @@ app.use(yswsRouter);
 
 app.get("/", (_req, res) => res.json({ name: "pixl-server", status: "ok" }));
 app.get("/health", (_req, res) => res.json({ ok: true }));
+app.use((_req, res) => res.status(404).json({ ok: false, error: "not_found" }));
 
 // This is a pure JSON API, nothing upstream turns a thrown error into JSON,
 // so without this an oversized/malformed body (e.g. body-parser's raw-size

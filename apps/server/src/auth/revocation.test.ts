@@ -48,7 +48,7 @@ async function startApp(revokedAt: RevocationReader) {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   const call = async (token?: string) => {
-    const res = await fetch(`http://127.0.0.1:${port}/thing${token ? `?token=${token}` : ""}`);
+    const res = await fetch(`http://127.0.0.1:${port}/thing`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
     return { status: res.status, retryAfter: res.headers.get("retry-after"), body: await res.json() };
   };
   return { call, hits, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };

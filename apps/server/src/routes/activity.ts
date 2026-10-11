@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 
 const router = Router();
@@ -23,8 +22,7 @@ function push(out: Entry[], kind: string, text: string, at: unknown): void {
 // players who've been here since before this endpoint existed still see their
 // history instead of an empty panel.
 router.get("/api/activity", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: projects }, { data: journals }, { data: txs }, { data: unlocks }] =

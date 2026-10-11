@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { addNotification } from "./notifications.js";
 import { findAllInYswsArchive } from "../ysws/archive.js";
@@ -16,8 +15,35 @@ import { normalizeProjectUrl, MAX_DEMO_URL_LENGTH } from "./projectUrlSafety.js"
 import { isGitRepoUrl } from "./gitRepoUrl.js";
 import { urlAlive } from "./urlLiveness.js";
 import { recordShipForOperations } from "../operations/service.js";
+import { z } from "zod";
+import { validate, v, optStr, optBool, optNum, params } from "../http/validate.js";
 
 const router = Router();
+
+// Shapes and size bounds for project writes; parseProjectBody below still
+// does the trimming, clamping and URL safety checks.
+const urlArray = z.array(z.string().max(2000)).max(50).nullable().optional();
+const projectBody = z.object({
+  name: optStr(1000),
+  description: optStr(20_000),
+  repoUrl: optStr(20_000),
+  demoUrl: optStr(20_000),
+  imageUrl: optStr(20_000),
+  usedAi: optBool,
+  aiNotes: optStr(20_000),
+  projectType: optStr(64),
+  kind: optStr(32),
+  needsFunding: optBool,
+  fundingUsd: optNum,
+  cartScreenshotUrls: urlArray,
+  finishedBuild: optBool,
+  otherYsws: optBool,
+  otherYswsNotes: optStr(20_000),
+  hackatimeProjects: z.array(z.string().max(200)).max(200).nullable().optional(),
+  level: optNum,
+  sidequestId: optNum,
+});
+const journalBody = z.object({ content: optStr(50_000), title: optStr(1000), hours: optNum });
 
 // The date a project's Hackatime hours count from: the event cutoff, or the
 // earlier date a reviewer extended it to (projects.hours_extended_since).
@@ -133,8 +159,7 @@ const PROJECT_TYPES = [
 // List the logged-in user's projects, newest first , their own plus any
 // they're an accepted collaborator on (view/log-hours only, not editable).
 router.get("/api/projects", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data: owned, error } = await supabase
@@ -461,9 +486,8 @@ async function resolveTrialLink(
 }
 
 // Create a project, optionally linked to HackTime project names.
-router.post("/api/projects", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects", validate({ query: v.noQuery, body: projectBody }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const parsed = parseProjectBody(req.body);
@@ -487,9 +511,8 @@ router.post("/api/projects", async (req, res) => {
 });
 
 // Update one of the user's own projects.
-router.put("/api/projects/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.put("/api/projects/:id", validate({ query: v.noQuery, params: params({ id: v.id }), body: projectBody }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -544,9 +567,8 @@ router.put("/api/projects/:id", async (req, res) => {
 // thumbnail, and an eligibility attestation (not a school assignment or paid
 // Hack Club work). Undisclosed matches against the Hack Club YSWS archive get
 // a system note for the reviewer plus a mod_actions entry.
-router.post("/api/projects/:id/ship", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ updateNotes: optStr(20000), shipNote: optStr(10000), otherYsws: optBool, otherYswsNotes: optStr(10000), acceptNoTrialPrize: optBool }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -936,9 +958,8 @@ router.post("/api/projects/:id/ship", async (req, res) => {
 // ban proposal: status reset to "shipped" (reshippable) while the stale
 // first_pass_verdict stuck around, confusing the next reviewer instead of
 // escalating to them. Found via project #176, 2026-08-25.
-router.post("/api/projects/:id/unship", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/unship", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -980,9 +1001,8 @@ router.post("/api/projects/:id/unship", async (req, res) => {
 // deliberately credits nothing until this lands (see reviewProject in the
 // dashboard). Conditioning the update on trial_reward_choice still being
 // 'pending' is what stops a double-click paying both sides.
-router.post("/api/projects/:id/trial-reward", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ choice: optStr(16) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1142,8 +1162,7 @@ async function canAccessProject(userId: string, projectId: number): Promise<bool
 // List journal entries for a project the caller owns or collaborates on,
 // newest first.
 router.get("/api/projects/:id/journal", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1169,8 +1188,7 @@ router.get("/api/projects/:id/journal", async (req, res) => {
 // account) + their own journal hours, not the owner's , a collaborator's own
 // Hackatime link would otherwise never show up as tracked time anywhere.
 router.get("/api/projects/:id/hours", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1255,8 +1273,7 @@ router.get("/api/projects/:id/hours", async (req, res) => {
 // review verdict with its player-facing note. Internal audit notes are never
 // exposed here.
 router.get("/api/projects/:id/timeline", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1352,9 +1369,8 @@ function countJournalImages(content: string): number {
 }
 
 // Add a journal entry (markdown content + optional hours) to an own project.
-router.post("/api/projects/:id/journal", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/journal", validate({ query: v.noQuery, params: params({ id: v.id }), body: journalBody }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1399,9 +1415,8 @@ router.post("/api/projects/:id/journal", async (req, res) => {
 });
 
 // Edit one of the user's own journal entries (owner-only, same as delete).
-router.patch("/api/projects/:id/journal/:entryId", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.patch("/api/projects/:id/journal/:entryId", validate({ query: v.noQuery, params: params({ id: v.id, entryId: v.id }), body: journalBody }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1448,9 +1463,8 @@ router.patch("/api/projects/:id/journal/:entryId", async (req, res) => {
 });
 
 // Delete one of the user's own journal entries.
-router.delete("/api/projects/:id/journal/:entryId", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/projects/:id/journal/:entryId", validate({ query: v.noQuery, params: params({ id: v.id, entryId: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1474,9 +1488,8 @@ router.delete("/api/projects/:id/journal/:entryId", async (req, res) => {
 });
 
 // Delete one of the user's own projects.
-router.delete("/api/projects/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/projects/:id", validate({ query: v.noQuery, params: params({ id: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);

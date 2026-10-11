@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 
 const router = Router();
@@ -18,8 +17,7 @@ const WORLDS = new Set(["village", "open_world", "factory_island", "pixel_cafe"]
 // Trial resolves to "" for the same reason /api/sidequests hides it, the NPC
 // then falls through to its flavor-text branch instead of offering a dead quest.
 router.get("/api/npcs", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const world = typeof req.query.world === "string" ? req.query.world : "";

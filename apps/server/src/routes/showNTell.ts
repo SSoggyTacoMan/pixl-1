@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
+import { z } from "zod";
+import { validate, v, params } from "../http/validate.js";
 
 const router = Router();
 
@@ -12,8 +13,7 @@ const router = Router();
 // Browsable signed out (same pattern as the shop catalog), voting requires
 // a session.
 router.get("/api/show-n-tell", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
 
   const { data: round } = await supabase
     .from("show_n_tell_rounds")
@@ -120,9 +120,8 @@ router.get("/api/show-n-tell", async (req, res) => {
 // Voting on a DIFFERENT entry in the same round moves the vote there instead
 // of stacking (one live vote per round, per user), and voting for your own
 // entry (owner or an accepted collaborator) is rejected outright.
-router.post("/api/show-n-tell/entries/:id/vote", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/show-n-tell/entries/:id/vote", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const entryId = Number(req.params.id);

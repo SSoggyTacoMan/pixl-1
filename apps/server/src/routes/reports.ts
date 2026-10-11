@@ -1,15 +1,15 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { runReportAnalysis, postReportToSlack } from "../reports.js";
+import { z } from "zod";
+import { validate, v, optStr, optBool } from "../http/validate.js";
 
 const router = Router();
 
 // File a report from the web report page. Anonymous by default; the reporter
 // can opt to reveal their identity to the review team.
-router.post("/api/reports", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/reports", validate({ query: v.noQuery, body: z.object({ targetId: optStr(64), reason: optStr(5000), anonymous: optBool }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const targetId = String(req.body?.targetId ?? "").trim();
@@ -70,8 +70,7 @@ router.post("/api/reports", async (req, res) => {
 
 // Reports this player has filed (their own history).
 router.get("/api/reports/mine", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data } = await supabase
@@ -101,8 +100,7 @@ router.get("/api/reports/mine", async (req, res) => {
 
 // Player search to pick who to report (by display name), excluding self.
 router.get("/api/reports/players", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const q = String(req.query.q ?? "")

@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { orValue } from "../db/pgCompat.js";
 import { addNotification } from "./notifications.js";
 import { presenceFor } from "../ws/gameServer.js";
 import { isUserId, rowBetween, type FriendRow } from "../social.js";
+import { z } from "zod";
+import { validate, v, optStr } from "../http/validate.js";
 
 const router = Router();
 
@@ -37,8 +38,7 @@ async function namesFor(ids: string[]): Promise<Map<string, string>> {
 }
 
 router.get("/api/friends", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const rows = await rowsFor(session.userId);
@@ -66,9 +66,8 @@ router.get("/api/friends", async (req, res) => {
   res.json({ ok: true, friends, incoming, outgoing });
 });
 
-router.post("/api/friends/request", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/friends/request", validate({ query: v.noQuery, body: z.object({ userId: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const targetId = typeof req.body?.userId === "string" ? req.body.userId : "";
@@ -127,9 +126,8 @@ router.post("/api/friends/request", async (req, res) => {
   res.json({ ok: true, status: "outgoing" });
 });
 
-router.post("/api/friends/accept", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/friends/accept", validate({ query: v.noQuery, body: z.object({ userId: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const requesterId =
@@ -156,9 +154,8 @@ router.post("/api/friends/accept", async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/api/friends/remove", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/friends/remove", validate({ query: v.noQuery, body: z.object({ userId: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const otherId = typeof req.body?.userId === "string" ? req.body.userId : "";
@@ -178,8 +175,7 @@ router.post("/api/friends/remove", async (req, res) => {
 });
 
 router.get("/api/players/search", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const q = (typeof req.query.q === "string" ? req.query.q : "").trim();
@@ -205,8 +201,7 @@ router.get("/api/players/search", async (req, res) => {
 });
 
 router.get("/api/players/profile", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const targetId = typeof req.query.userId === "string" ? req.query.userId : "";

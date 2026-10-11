@@ -1,8 +1,9 @@
 import { Router } from "express";
 import type { TransactionSql } from "postgres";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { withLock } from "../db/advisoryLock.js";
+import { z } from "zod";
+import { validate, v, params } from "../http/validate.js";
 
 const router = Router();
 
@@ -49,9 +50,8 @@ async function grantEligibleCollectibles(tx: TransactionSql, ownerId: string): P
 
 // Upvote on an approved project. One per voter, can't upvote your own work.
 // Idempotent to re-hits; removable via the DELETE route below.
-router.post("/api/projects/:id/upvote", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/upvote", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -95,9 +95,8 @@ router.post("/api/projects/:id/upvote", async (req, res) => {
 // no-op). Never claws back a collectible already granted while the vote was
 // counted - the owner genuinely reached that threshold at least once, that's
 // kept for good (see grantEligibleCollectibles).
-router.delete("/api/projects/:id/upvote", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/projects/:id/upvote", validate({ query: v.noQuery, params: params({ id: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -121,8 +120,7 @@ router.delete("/api/projects/:id/upvote", async (req, res) => {
 // from any client (collectibles/index.html reads its number from
 // GET /api/collectibles instead) - kept for anything external.
 router.get("/api/upvotes/balance", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
   res.json({ ok: true, balance: await receivedUpvotes(session.userId) });
 });
@@ -131,8 +129,7 @@ router.get("/api/upvotes/balance", async (req, res) => {
 // bought - see grantEligibleCollectibles) + their live received-upvote count,
 // so the client can show progress toward the ones they don't have yet.
 router.get("/api/collectibles", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: items }, { data: owned }, balance] = await Promise.all([

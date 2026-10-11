@@ -56,7 +56,7 @@ if (!adminUrl) {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const call = async (token: string) => {
-      const res = await fetch(`${base}/api/thing?token=${token}`);
+      const res = await fetch(`${base}/api/thing`, { headers: { Authorization: `Bearer ${token}` } });
       return { status: res.status, body: (await res.json()) as { error?: string } };
     };
     return { cache, call };

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { issueSessionToken, verifySessionToken } from "../auth/session.js";
+import { issueSessionToken } from "../auth/session.js";
 import { containsBlocked, logViolation } from "../moderation.js";
 import { supabase } from "../db/client.js";
 import {
@@ -12,6 +12,8 @@ import {
   MAX_LEVEL,
 } from "../xp.js";
 import { decryptPII } from "../crypto.js";
+import { z } from "zod";
+import { validate, v, optStr, optBool, optNum } from "../http/validate.js";
 
 const router = Router();
 
@@ -27,9 +29,8 @@ export function nameProblem(raw: string): string | null {
   return null;
 }
 
-router.post("/api/profile/name", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/name", validate({ query: v.noQuery, body: z.object({ name: optStr(200) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false, reason: "Not signed in." });
 
   const raw = typeof req.body?.name === "string" ? req.body.name : "";
@@ -50,7 +51,7 @@ router.post("/api/profile/name", async (req, res) => {
   }
 
   // Re-issue the session token so the embedded displayName matches the new one.
-  const fresh = issueSessionToken({ userId: session.userId, displayName: name });
+  const fresh = issueSessionToken({ userId: session.userId, displayName: name, slackId: session.slackId });
   res.json({ ok: true, name, token: fresh });
 });
 
@@ -58,8 +59,7 @@ router.post("/api/profile/name", async (req, res) => {
 // are only ever changed server-side (by the dashboard on final approval), so
 // the game just displays whatever this returns.
 router.get("/api/profile/wallet", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: user }, approvedHours, re] = await Promise.all([
@@ -77,6 +77,9 @@ router.get("/api/profile/wallet", async (req, res) => {
     re,
     level: levelForRe(re),
     maxLevel: MAX_LEVEL,
+    // Where the current level started and where the next one starts, so a
+    // client can draw progress without re-implementing the level bands.
+    reForCurrentLevel: reForLevel(levelForRe(re)),
     reForNextLevel: reForLevel(Math.min(levelForRe(re) + 1, MAX_LEVEL)),
     pxPerHour: pxPerHourFor(re),
     usdPerHour: payoutUsdPerHour(re),
@@ -90,8 +93,7 @@ const EXPERIENCE_VALUES = ["beginner", "intermediate", "advanced"] as const;
 type Experience = (typeof EXPERIENCE_VALUES)[number];
 
 router.get("/api/profile/experience", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data, error } = await supabase
@@ -107,9 +109,8 @@ router.get("/api/profile/experience", async (req, res) => {
   res.json({ ok: true, experience });
 });
 
-router.post("/api/profile/experience", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/experience", validate({ query: v.noQuery, body: z.object({ experience: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const value = typeof req.body?.experience === "string" ? req.body.experience : "";
@@ -129,8 +130,7 @@ router.post("/api/profile/experience", async (req, res) => {
 
 // The player's own pixel ledger, newest first, with project names attached.
 router.get("/api/profile/transactions", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data, error } = await supabase
@@ -170,8 +170,7 @@ router.get("/api/profile/transactions", async (req, res) => {
 // Player-card photo settings. The photo itself goes through /api/uploads
 // (or comes from Slack at sign-up); these just point the card at it.
 router.get("/api/profile/card", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   let { data: user, error } = await supabase
@@ -192,9 +191,8 @@ router.get("/api/profile/card", async (req, res) => {
   });
 });
 
-router.post("/api/profile/card-image", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/card-image", validate({ query: v.noQuery, body: z.object({ url: optStr(2000) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const raw = typeof req.body?.url === "string" ? req.body.url.trim() : "";
@@ -238,8 +236,7 @@ const ONBOARDING_DONE = 2;
 const ONBOARDING_ALLOWLIST = new Set<string>([]);
 
 router.get("/api/profile/onboarding", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data, error } = await supabase
@@ -262,9 +259,8 @@ router.get("/api/profile/onboarding", async (req, res) => {
   res.json({ ok: true, step, done: step >= ONBOARDING_DONE });
 });
 
-router.post("/api/profile/onboarding", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/onboarding", validate({ query: v.noQuery, body: z.object({ step: optNum }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const raw = Number(req.body?.step);
@@ -291,9 +287,8 @@ router.post("/api/profile/onboarding", async (req, res) => {
   res.json({ ok: true, step, done: step >= ONBOARDING_DONE });
 });
 
-router.post("/api/profile/card-pixelate", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/card-pixelate", validate({ query: v.noQuery, body: z.object({ pixelate: optBool }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const pixelate = req.body?.pixelate === true;
@@ -341,8 +336,7 @@ function ageOn(birthday: Date, at: Date): number {
 }
 
 router.get("/api/profile/eligibility", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data, error } = await supabase

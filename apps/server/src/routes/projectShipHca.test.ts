@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import { issueSessionToken } from "../auth/session.js";
 import { db } from "../db/pgCompat.js";
+import { bearer, testAuthGate } from "../http/testkit.js";
 import projectsRouter from "./projects.js";
 
 function chainable(result: { data: unknown; error: unknown }) {
@@ -47,15 +48,16 @@ async function callAs(
 
   const app = express();
   app.use(express.json());
+  app.use(testAuthGate());
   app.use(projectsRouter);
   const server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   try {
     const token = issueSessionToken({ userId: "user-1", displayName: "Player" });
-    const res = await fetch(`http://127.0.0.1:${port}${path}?token=${token}`, {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, {
       method,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...bearer(token) },
       body: JSON.stringify(body),
     });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };

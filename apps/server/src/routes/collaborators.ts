@@ -1,9 +1,10 @@
 import { randomInt } from "crypto";
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { addNotification } from "./notifications.js";
 import { fetchTrackedSecondsSince } from "../hackatime/api.js";
+import { z } from "zod";
+import { validate, v, optStr, params } from "../http/validate.js";
 
 const router = Router();
 
@@ -32,9 +33,8 @@ async function projectOwner(projectId: number): Promise<{ id: number; name: stri
 // Owner invites another player onto their project. Re-invites a
 // previously declined/removed collaborator instead of stacking a duplicate
 // row, mirroring friends.ts's handling of a stale request row.
-router.post("/api/projects/:id/collaborators/invite", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/collaborators/invite", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ userId: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const projectId = Number(req.params.id);
@@ -96,8 +96,7 @@ router.post("/api/projects/:id/collaborators/invite", async (req, res) => {
 
 // Visible to the owner and to anyone (pending or accepted) invited onto it.
 router.get("/api/projects/:id/collaborators", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const projectId = Number(req.params.id);
@@ -149,8 +148,7 @@ router.get("/api/projects/:id/collaborators", async (req, res) => {
 // The caller's own incoming invites across every project, for a "pending
 // invites" list on the Projects page.
 router.get("/api/collaborations/pending", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data: rows, error } = await supabase
@@ -184,9 +182,8 @@ router.get("/api/collaborations/pending", async (req, res) => {
   });
 });
 
-router.post("/api/collaborators/:id/accept", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/collaborators/:id/accept", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -217,9 +214,8 @@ router.post("/api/collaborators/:id/accept", async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/api/collaborators/:id/decline", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/collaborators/:id/decline", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -244,9 +240,8 @@ router.post("/api/collaborators/:id/decline", async (req, res) => {
 // Owner removes an accepted collaborator, or a collaborator leaves on their
 // own, either way the row is marked 'removed' (not deleted) to keep past
 // payout history intact.
-router.post("/api/collaborators/:id/remove", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/collaborators/:id/remove", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -278,9 +273,8 @@ router.post("/api/collaborators/:id/remove", async (req, res) => {
 // An accepted collaborator links their own Hackatime projects (their own
 // account, tracked separately from the owner's, see parseProjectBody's
 // hackatime_projects handling in projects.ts for the same shape).
-router.put("/api/collaborators/:id/hackatime", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.put("/api/collaborators/:id/hackatime", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ hackatimeProjects: z.array(z.string().max(200)).max(200).nullable().optional() }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -337,9 +331,8 @@ export function randomCode(): string {
 // Owner gets (or generates, first time) a shareable join code, an
 // alternative to the name-search invite above. Anyone holding the code can
 // redeem it to join instantly, no lookup needed.
-router.post("/api/projects/:id/collaborators/code", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/collaborators/code", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const projectId = Number(req.params.id);
@@ -367,9 +360,8 @@ router.post("/api/projects/:id/collaborators/code", async (req, res) => {
 // Any player redeems a code to join that project as an accepted
 // collaborator immediately, the code itself is the invitation, so there's
 // no separate pending/accept step like the name-search invite has.
-router.post("/api/collaborators/redeem", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/collaborators/redeem", validate({ query: v.noQuery, body: z.object({ code: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const code = String(req.body?.code ?? "").trim().toUpperCase();

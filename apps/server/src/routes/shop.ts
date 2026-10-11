@@ -1,13 +1,31 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
 import { orValue } from "../db/pgCompat.js";
 import { activeEvents } from "../events.js";
 import { levelFor } from "../xp.js";
 import { addNotification } from "./notifications.js";
 import { decryptPII, encryptPII } from "../crypto.js";
+import { z } from "zod";
+import { validate, v, optStr, optNum, params } from "../http/validate.js";
 
 const router = Router();
+
+// Structured configurator picks (shop_items.config_options). A flat object
+// of short scalars or short lists, nothing deeper.
+const shopConfig = z
+  .record(
+    z.string().max(100),
+    z.union([
+      z.string().max(1000),
+      z.number(),
+      z.boolean(),
+      z.null(),
+      z.array(z.union([z.string().max(1000), z.number()])).max(50),
+    ]),
+  )
+  .refine((o) => Object.keys(o).length <= 50, "too many options")
+  .nullable()
+  .optional();
 
 const SHOP_REGIONS = ["US", "ASIA", "NORTH_AMERICA", "SOUTH_AMERICA", "EUROPE", "INDIA", "AFRICA", "BANGLADESH"];
 
@@ -303,10 +321,10 @@ async function beaconUnlocks(userId: string): Promise<{ available: number; owned
 // of that up against. Buying/saving/claiming still require a session, same
 // as before.
 router.get("/api/shop/items", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
-  // invalid token != guest
-  const sessionExpired = !!token && !session;
+  const session = req.session;
+  // Kept in the response for older clients; an expired session is now a 401
+  // from the auth gate before this handler runs.
+  const sessionExpired = false;
 
   const region = session ? await regionFor(session.userId) : "US";
   const { data, error } = await fetchItems(undefined, region);
@@ -460,9 +478,8 @@ router.get("/api/shop/items", async (req, res) => {
 });
 
 // Switch which regional catalog the player shops from.
-router.post("/api/shop/region", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/region", validate({ query: v.noQuery, body: z.object({ region: optStr(16) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const region = typeof req.body?.region === "string" ? req.body.region : "";
@@ -507,8 +524,7 @@ router.get("/api/shop/item/:id/public", async (req, res) => {
 // "Ridit" Signed Org Photos are left) , polled from the item detail page so
 // counts stay current as other players buy without a full page reload.
 router.get("/api/shop/stock/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -528,9 +544,8 @@ router.get("/api/shop/stock/:id", async (req, res) => {
 // Claim a trophy the player has earned. Server-authoritative: it re-checks the
 // XP requirement, so a client can't claim early. Idempotent via the unique
 // (user_id, item_id) constraint.
-router.post("/api/shop/claim/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/claim/:id", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -573,9 +588,8 @@ router.post("/api/shop/claim/:id", async (req, res) => {
 // every group. Re-posting while already saved overwrites the stored picks ,
 // the detail page calls this again on every config change once an item is
 // pinned, so a saved build stays in sync as the player keeps deciding.
-router.post("/api/shop/save/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/save/:id", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ option: optStr(1000), config: shopConfig }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -597,9 +611,8 @@ router.post("/api/shop/save/:id", async (req, res) => {
   res.json({ ok: true, saved: true });
 });
 
-router.delete("/api/shop/save/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/shop/save/:id", validate({ query: v.noQuery, params: params({ id: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -626,8 +639,7 @@ const ORDER_COLUMNS_FALLBACK =
   "id, item_name, option, price, status, note, created_at, fulfilled_at";
 
 router.get("/api/shop/orders", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const build = (cols: string) =>
@@ -682,9 +694,8 @@ router.get("/api/shop/orders", async (req, res) => {
 // it's idempotent), just reached from the player's own Orders tab instead of
 // /fulfillment - p_by is tagged "(self-cancel)" so the fulfillment log can
 // tell the two apart.
-router.post("/api/shop/orders/:id/cancel", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/orders/:id/cancel", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -715,9 +726,8 @@ router.post("/api/shop/orders/:id/cancel", async (req, res) => {
 // pixels deducted) happen inside buy_shop_item under a row lock, so a
 // double-click can't overspend. On success we open a pending order the team
 // fulfils from the dashboard and tell the player to expect us.
-router.post("/api/shop/buy/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ phone: optStr(64), option: optStr(1000), config: shopConfig, quantity: optNum, note: optStr(2000), stockChoice: optStr(500) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   // We physically ship every order, so an address has to be on file before we

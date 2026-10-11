@@ -2,6 +2,8 @@ import type { NextFunction, Request, Response } from "express";
 import { supabase } from "../db/client.js";
 import { sql } from "../db/pgCompat.js";
 import { verifySessionToken } from "./session.js";
+import { bearerToken } from "../http/bearer.js";
+import { auditRequestThrottled } from "../audit.js";
 
 const UNDEFINED_COLUMN = "42703";
 const REVOCATION_CACHE_TTL_MS = 10_000;
@@ -99,9 +101,9 @@ export function enforceSessionRevocation(deps: EnforceSessionRevocationDeps = {}
   const revokedAt = deps.revokedAt ?? sharedCache.get;
   const verify = deps.verify ?? verifySessionToken;
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const token = typeof req.query.token === "string" ? req.query.token : "";
-    if (!token) return next();
-    const session = verify(token);
+    // requireSession has normally verified the Bearer token already.
+    const token = req.session ? null : bearerToken(req);
+    const session = req.session ?? (token ? verify(token) : null);
     if (!session) return next();
     let state: RevocationLookup;
     try {
@@ -115,6 +117,14 @@ export function enforceSessionRevocation(deps: EnforceSessionRevocationDeps = {}
       return;
     }
     if (isSessionRevoked(session, state.revokedAtMs)) {
+      auditRequestThrottled(req, {
+        action: "auth.session_rejected",
+        actorType: "player",
+        actorId: session.userId,
+        target: req.method,
+        result: "denied",
+        meta: { reason: "revoked" },
+      });
       res.status(401).json({ ok: false, error: "session_revoked" });
       return;
     }

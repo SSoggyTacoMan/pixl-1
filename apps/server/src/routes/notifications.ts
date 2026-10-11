@@ -1,17 +1,9 @@
 import { Router } from "express";
-import { timingSafeEqual } from "crypto";
-import { verifySessionToken } from "../auth/session.js";
+import { z } from "zod";
 import { supabase } from "../db/client.js";
+import { validate, v } from "../http/validate.js";
 
 const router = Router();
-
-function validAdminKey(given: string): boolean {
-  const key = process.env.ADMIN_API_KEY;
-  if (!key || !given) return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(key);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 
 // Drop a notification into a user's inbox. Best-effort: failures are logged,
 // never thrown, so they can't break the action that triggered them.
@@ -26,15 +18,15 @@ export async function addNotification(
   if (error) console.error("[notifications] insert failed", error);
 }
 
-// Automation hook: external tools push notifications with the server's API
-// key. Omit userId to broadcast to every registered player.
-router.post("/api/admin/notifications", async (req, res) => {
-  const key =
-    req.header("x-api-key") ??
-    (typeof req.query.key === "string" ? req.query.key : "");
-  if (!validAdminKey(key))
-    return res.status(401).json({ ok: false, reason: "Bad API key." });
+// Service hook (behind adminServiceGate, see index.ts): push a notification
+// to one player, or omit userId to broadcast to every registered player.
+const adminNotificationBody = z.object({
+  title: z.string().max(1000),
+  body: z.string().max(5000),
+  userId: v.uuid.optional(),
+});
 
+router.post("/api/admin/notifications", validate({ query: v.noQuery, body: adminNotificationBody }), async (req, res) => {
   const title =
     typeof req.body?.title === "string" ? req.body.title.trim().slice(0, 100) : "";
   const body =
@@ -77,8 +69,7 @@ router.post("/api/admin/notifications", async (req, res) => {
 });
 
 router.get("/api/notifications", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { data, error } = await supabase
@@ -96,9 +87,8 @@ router.get("/api/notifications", async (req, res) => {
   res.json({ ok: true, notifications, unread });
 });
 
-router.post("/api/notifications/read", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/notifications/read", validate({ query: v.noQuery, body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const { error } = await supabase

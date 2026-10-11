@@ -1,14 +1,14 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { supabase } from "../db/client.js";
+import { z } from "zod";
+import { validate, v, params } from "../http/validate.js";
 
 const router = Router();
 
 // Quest log: every active sidequest, flagged with whether this player has
 // unlocked it (NPCs grant unlocks; that wiring lands later).
 router.get("/api/sidequests", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: quests, error }, { data: unlocks }, { data: projects }, { data: givers }] =
@@ -87,9 +87,8 @@ router.get("/api/sidequests", async (req, res) => {
 // Accept a Trial - the "I'll take it" from an NPC. Idempotent: the unique
 // (sidequest_id, user_id) on sidequest_unlocks means re-accepting is a no-op.
 // Only active Trials can be accepted.
-router.post("/api/sidequests/:id/accept", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/sidequests/:id/accept", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -127,8 +126,7 @@ const EXPERIENCE_DIFFICULTY: Record<string, number> = {
 };
 
 router.get("/api/sidequests/recommended", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: user }, { data: starters, error }] = await Promise.all([

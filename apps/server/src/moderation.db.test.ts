@@ -37,7 +37,7 @@ if (!adminUrl) {
   }
 
   async function buy(userId: string) {
-    const res = await fetch(`${base}/api/thing?token=${issueToken(userId)}`, { method: "POST" });
+    const res = await fetch(`${base}/api/thing`, { method: "POST", headers: { Authorization: `Bearer ${issueToken(userId)}` } });
     return res.status;
   }
 
