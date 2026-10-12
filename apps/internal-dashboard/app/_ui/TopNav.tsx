@@ -4,12 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 import Icon from "@hackclub/icons";
-import { isNavActive, type NavGroup, type NavItem, type NavModel } from "./nav";
+import { activeNavHref, type NavGroup, type NavItem, type NavModel } from "./nav";
 
-function NavLink({ item, count }: { item: NavItem; count?: number }) {
-  const pathname = usePathname();
+function NavLink({ item, count, active }: { item: NavItem; count?: number; active: boolean }) {
   return (
-    <Link href={item.href} className="hc-nav-link" data-active={isNavActive(pathname, item.href) ? true : undefined}>
+    <Link href={item.href} className="hc-nav-link" data-active={active ? true : undefined}>
       <Icon glyph={item.glyph} size={20} aria-hidden />
       {item.label}
       {count !== undefined && count > 0 && <span className="hc-nav-count">{count}</span>}
@@ -18,11 +17,19 @@ function NavLink({ item, count }: { item: NavItem; count?: number }) {
 }
 
 // Everything that isn't an everyday link, one section per group.
-function MoreMenu({ groups, counts }: { groups: NavGroup[]; counts: Record<string, number> }) {
+function MoreMenu({
+  groups,
+  counts,
+  activeHref,
+}: {
+  groups: NavGroup[];
+  counts: Record<string, number>;
+  activeHref: string | null;
+}) {
   const pathname = usePathname();
   const ref = useRef<HTMLDetailsElement>(null);
   const items = groups.flatMap((g) => g.items);
-  const active = items.some((item) => isNavActive(pathname, item.href));
+  const active = items.some((item) => item.href === activeHref);
   const total = items.reduce((sum, item) => sum + (counts[item.href] ?? 0), 0);
 
   // Close on navigation, outside click and Escape.
@@ -59,7 +66,7 @@ function MoreMenu({ groups, counts }: { groups: NavGroup[]; counts: Record<strin
             <ul>
               {group.items.map((item) => (
                 <li key={item.href}>
-                  <NavLink item={item} count={counts[item.href]} />
+                  <NavLink item={item} count={counts[item.href]} active={item.href === activeHref} />
                 </li>
               ))}
             </ul>
@@ -71,12 +78,13 @@ function MoreMenu({ groups, counts }: { groups: NavGroup[]; counts: Record<strin
 }
 
 export default function TopNav({ nav, counts }: { nav: NavModel; counts: Record<string, number> }) {
+  const activeHref = activeNavHref(usePathname(), nav);
   return (
     <nav className="flex items-center gap-1">
       {nav.primary.map((item) => (
-        <NavLink key={item.href} item={item} count={counts[item.href]} />
+        <NavLink key={item.href} item={item} count={counts[item.href]} active={item.href === activeHref} />
       ))}
-      {nav.groups.length > 0 && <MoreMenu groups={nav.groups} counts={counts} />}
+      {nav.groups.length > 0 && <MoreMenu groups={nav.groups} counts={counts} activeHref={activeHref} />}
     </nav>
   );
 }
