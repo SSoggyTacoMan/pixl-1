@@ -23,9 +23,12 @@ function conn(): ReturnType<typeof postgres> {
   return _sql;
 }
 
+// The target is a function so the proxy itself is callable: sql`...` as a
+// tagged template goes through `apply`, everything else through `get`.
 export const sql: ReturnType<typeof postgres> = new Proxy(
-  {} as ReturnType<typeof postgres>,
+  function () {} as unknown as ReturnType<typeof postgres>,
   {
+    apply: (_t, _this, args) => (conn() as unknown as (...a: unknown[]) => unknown)(...args),
     get: (_t, prop) => {
       const c = conn() as unknown as Record<string | symbol, unknown>;
       const v = c[prop];
