@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button, Input, Muted } from "@/app/_ui/ui";
 import { parseOptionGroups } from "@/lib/shopOptions";
 
 type Row = { name: string; choices: string };
@@ -39,43 +38,41 @@ export function OptionsEditor({
   const remove = (i: number) => setRows((rs) => rs.filter((_, idx) => idx !== i));
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       <input type="hidden" name={name} value={serialized} />
       {rows.length === 0 && (
-        <div className="text-xs text-muted-foreground">
-          No options yet. Add a group like “Color”, “Storage” or “RAM”.
-        </div>
+        <Muted className="text-sm">No options yet. Add a group like Color, Storage or RAM.</Muted>
       )}
       {rows.map((r, i) => (
-        <div key={i} className="flex gap-2 items-center">
+        <div key={i} className="flex items-center gap-2">
           <Input
             placeholder="Group (e.g. Color)"
             value={r.name}
             onChange={(e) => update(i, { name: e.target.value })}
             maxLength={40}
-            className="w-40 text-sm"
+            className="w-40 shrink-0"
           />
           <Input
             placeholder="Choices, comma-separated (e.g. 256GB, 512GB, 1TB)"
             value={r.choices}
             onChange={(e) => update(i, { choices: e.target.value })}
-            className="flex-1 text-sm"
+            className="flex-1"
           />
           <Button
             type="button"
             variant="ghost"
-            size="icon-sm"
+            size="sm"
+            icon="delete"
             onClick={() => remove(i)}
             aria-label="Remove option group"
-            className="shrink-0 text-muted-foreground hover:text-rose-600"
-          >
-            ✕
-          </Button>
+          />
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={add}>
-        + Add option group
-      </Button>
+      <div>
+        <Button type="button" variant="outline" size="sm" icon="plus" onClick={add}>
+          Add option group
+        </Button>
+      </div>
     </div>
   );
 }

@@ -3,52 +3,50 @@ import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { listSpotCheckProjects } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
 import { getHideReviewers } from "@/lib/liveModeServer";
-import { hackatimeUserIdsFor } from "@/lib/hackatime";
 import { listBlackoutQueueProjectIds } from "@/lib/operations";
-import { ReviewTable } from "@/app/_components/ReviewTable";
+import { Card, CardHeader } from "@/app/_ui/ui";
+import { TelescreenReviewTable } from "../TelescreenReviewTable";
 
 export const dynamic = "force-dynamic";
 
 // Super-admin-only final-verdict queue: projects Robert already reviewed as
 // "not fraud" (see lib/robertSync.ts), waiting on the real approve & credit /
-// request changes / ban decision - each row's project page shows Robert's
-// trust score and note alongside the full review form. Used to be a
-// read-only QA audit over every second_review project; now that spot check
-// IS the final verdict step, it's an action queue, oldest-first.
+// request changes / ban decision. Each row's project page shows Robert's
+// trust score and note alongside the full review form. Oldest first.
 export default async function SpotCheckPage() {
   const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
   if (!access.isOwner) redirect("/review");
 
-  const [rows, blackoutIds] = await Promise.all([
+  const [rows, blackoutIds, hideReviewers] = await Promise.all([
     // includeClaimed: a project another reviewer has open stays listed (tagged), like /review.
     listSpotCheckProjects(access.session.slackId, undefined, { includeClaimed: true }),
     listBlackoutQueueProjectIds(),
+    getHideReviewers(),
   ]);
   // While live (names not revealed), another reviewer's claim isn't resolved to a handle.
-  const hideReviewers = await getHideReviewers();
-  const [handles, hackatimeUserIds] = await Promise.all([
-    slackHandles(rows.flatMap((p) => [
-        p.users?.slack_id,
-        hideReviewers && p.claimedBy !== access.session.slackId ? null : p.claimedBy,
-      ])),
-    hackatimeUserIdsFor(rows),
-  ]);
+  const handles = await slackHandles(
+    rows.flatMap((p) => [
+      p.users?.slack_id,
+      hideReviewers && p.claimedBy !== access.session.slackId ? null : p.claimedBy,
+    ]),
+  );
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-3">Spot check</h1>
-      <p className="text-sm text-muted-foreground mb-4 max-w-2xl">
-        Projects a second-pass reviewer already triaged "not fraud" and are waiting on your real
-        verdict, oldest first. Open one to see their note and hours call before deciding.
+    <div className="flex flex-col gap-6">
+      <p className="hc-caption max-w-2xl text-sm">
+        Projects a second-pass reviewer already triaged &quot;not fraud&quot;, waiting on your real verdict,
+        oldest first. Open one to see their note and hours call before deciding.
       </p>
-      <ReviewTable
-        rows={rows}
-        handles={handles}
-        hackatimeUserIds={hackatimeUserIds}
-        blackoutIds={blackoutIds}
-        emptyLabel="Nothing waiting on a spot check right now."
-      />
+      <Card padding="flush">
+        <CardHeader title="Spot check" icon="checkmark" count={rows.length} />
+        <TelescreenReviewTable makerLinks={access.isOwner}
+          rows={rows}
+          handles={handles}
+          blackoutIds={blackoutIds}
+          emptyLabel="Nothing waiting on a spot check right now."
+        />
+      </Card>
     </div>
   );
 }

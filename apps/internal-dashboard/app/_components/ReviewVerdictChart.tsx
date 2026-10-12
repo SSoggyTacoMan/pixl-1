@@ -1,6 +1,7 @@
 "use client";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import Tabs from "@/app/_ui/Tabs";
+import { Badge, EmptyState } from "@/app/_ui/ui";
 
 export interface VerdictCounts {
   approved: number;
@@ -19,110 +20,81 @@ export interface VerdictWindow {
   reviewerList: { name: string; reviews: number }[];
 }
 
-// Fixed hue per category (never cycled), reused across every time window so a
-// bar's color always means the same verdict. Distinct from VERDICT_LABEL in
-// ReviewDetailTabs.tsx on purpose - that badge list conflates "approved" and
-// "approved (first pass)" under one "success" color since the label text
-// already tells them apart there, but a chart needs the two visually
-// separated to be readable at a glance.
-const BUCKETS: {
-  key: keyof VerdictCounts;
-  label: string;
-  bar: string;
-  text: string;
-}[] = [
-  { key: "approved", label: "Approved (final)", bar: "bg-emerald-500 dark:bg-emerald-600", text: "text-emerald-700 dark:text-emerald-400" },
-  { key: "firstPass", label: "Approved (first pass)", bar: "bg-blue-500 dark:bg-blue-600", text: "text-blue-700 dark:text-blue-400" },
-  { key: "changes", label: "Req changes", bar: "bg-amber-500 dark:bg-amber-600", text: "text-amber-700 dark:text-amber-400" },
-  { key: "rejected", label: "Rejected", bar: "bg-rose-500 dark:bg-rose-600", text: "text-rose-700 dark:text-rose-400" },
+// Fixed color per category (never cycled), reused across every time window so
+// a bar's color always means the same verdict. Final and first-pass approvals
+// get separate colors on purpose: a chart needs them apart at a glance.
+const BUCKETS: { key: keyof VerdictCounts; label: string; color: string }[] = [
+  { key: "approved", label: "Approved (final)", color: "var(--hc-green)" },
+  { key: "firstPass", label: "Approved (first pass)", color: "var(--hc-cyan)" },
+  { key: "changes", label: "Changes requested", color: "var(--hc-orange)" },
+  { key: "rejected", label: "Rejected", color: "var(--hc-red)" },
 ];
+
+function Figure({ value, label, title }: { value: string | number; label: string; title?: string }) {
+  return (
+    <div title={title}>
+      <div className="hc-stat-value">{value}</div>
+      <div className="hc-caption text-xs">{label}</div>
+    </div>
+  );
+}
+
+function WindowPanel({ w }: { w: VerdictWindow }) {
+  const total = BUCKETS.reduce((s, b) => s + w.counts[b.key], 0);
+  const max = Math.max(1, ...BUCKETS.map((b) => w.counts[b.key]));
+  if (total === 0) {
+    return <EmptyState title="No reviews in this window" icon="history" />;
+  }
+  return (
+    <div className="flex flex-col gap-4 pt-4">
+      <div className="hc-panel flex flex-wrap gap-8">
+        <Figure
+          value={w.reviewers}
+          label={`reviewer${w.reviewers === 1 ? "" : "s"}`}
+          title="Distinct reviewers who submitted a review in this window"
+        />
+        <Figure value={total} label={`review${total === 1 ? "" : "s"}`} />
+        <Figure
+          value={(total / Math.max(1, w.reviewers)).toFixed(1)}
+          label="per reviewer"
+          title="Reviews divided by reviewers"
+        />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {w.reviewerList.map((r, i) => (
+          <Badge key={`${r.name}-${i}`} outline>
+            {r.name} <span className="hc-muted">{r.reviews}</span>
+          </Badge>
+        ))}
+      </div>
+      <div className="flex flex-col gap-2">
+        {BUCKETS.map((b) => {
+          const count = w.counts[b.key];
+          return (
+            <div key={b.key} className="flex items-center gap-3" title={`${b.label}: ${count}`}>
+              <div className="hc-caption w-44 shrink-0 text-right text-sm">{b.label}</div>
+              <div className="h-6 flex-1 overflow-hidden rounded-md bg-[var(--sunken)]">
+                <div
+                  className="h-full rounded-md transition-[width]"
+                  style={{ width: `${Math.round((count / max) * 100)}%`, background: b.color }}
+                />
+              </div>
+              <div className="hc-mono w-10 shrink-0 text-sm font-bold" style={{ color: b.color }}>
+                {count}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export function ReviewVerdictChart({ windows }: { windows: VerdictWindow[] }) {
   return (
-    <Tabs defaultValue={windows[0]?.key ?? "all"}>
-      <TabsList>
-        {windows.map((w) => (
-          <TabsTrigger key={w.key} value={w.key}>
-            {w.label}
-          </TabsTrigger>
-        ))}
-      </TabsList>
-      {windows.map((w) => {
-        const total = BUCKETS.reduce((s, b) => s + w.counts[b.key], 0);
-        const max = Math.max(1, ...BUCKETS.map((b) => w.counts[b.key]));
-        return (
-          <TabsContent key={w.key} value={w.key} className="pt-4">
-            {total === 0 ? (
-              <div className="py-6 text-center text-sm text-muted-foreground">
-                No reviews in this window.
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-6 rounded-md bg-muted/50 px-4 py-3">
-                  <div>
-                    <div className="text-2xl font-semibold tabular-nums" title="Distinct reviewers who submitted a review in this window">
-                      {w.reviewers}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      reviewer{w.reviewers === 1 ? "" : "s"} reviewed
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-2xl font-semibold tabular-nums">{total}</div>
-                    <div className="text-xs text-muted-foreground">review{total === 1 ? "" : "s"}</div>
-                  </div>
-                  <div>
-                    <div className="text-2xl font-semibold tabular-nums" title="Reviews divided by reviewers">
-                      {(total / Math.max(1, w.reviewers)).toFixed(1)}
-                    </div>
-                    <div className="text-xs text-muted-foreground">per reviewer</div>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {w.reviewerList.map((r, i) => (
-                    <span
-                      key={`${r.name}-${i}`}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-sm"
-                      title={`${r.name}: ${r.reviews} review${r.reviews === 1 ? "" : "s"}`}
-                    >
-                      <span className="font-medium">{r.name}</span>
-                      <span className="tabular-nums text-muted-foreground">{r.reviews}</span>
-                    </span>
-                  ))}
-                </div>
-                {BUCKETS.map((b) => {
-                  const count = w.counts[b.key];
-                  const pct = Math.round((count / max) * 100);
-                  return (
-                    <div
-                      key={b.key}
-                      className="flex items-center gap-3"
-                      title={`${b.label}: ${count}`}
-                    >
-                      <div className="w-44 shrink-0 text-right text-sm text-muted-foreground">
-                        {b.label}
-                      </div>
-                      <div className="h-6 flex-1 overflow-hidden rounded-md bg-muted">
-                        <div
-                          className={`h-full rounded-md ${b.bar} transition-[width]`}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                      <div className={`w-10 shrink-0 text-sm font-semibold tabular-nums ${b.text}`}>
-                        {count}
-                      </div>
-                    </div>
-                  );
-                })}
-                <div className="pt-1 text-xs text-muted-foreground">
-                  {total} review{total === 1 ? "" : "s"} by {w.reviewers} reviewer
-                  {w.reviewers === 1 ? "" : "s"} in this window
-                </div>
-              </div>
-            )}
-          </TabsContent>
-        );
-      })}
-    </Tabs>
+    <Tabs
+      variant="segmented"
+      tabs={windows.map((w) => ({ key: w.key, label: w.label, content: <WindowPanel w={w} /> }))}
+    />
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition, type FormEvent, type ReactNode } from "react";
+import { ReadmePanel } from "@/app/_components/ReadmePanel";
 import type { CommitResult } from "@/lib/commits";
 import type { HackatimeReport } from "@/lib/hackatime";
 import type { JournalRow, ReviewAuditRow } from "@/lib/db";
@@ -9,30 +10,23 @@ import { CommitList } from "@/app/_components/CommitList";
 import { renderMarkdown } from "@/lib/markdown";
 import { HackatimePanel } from "@/app/_components/HackatimePanel";
 import { setJournalHours } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { useLiveMode, useReviewerName } from "@/app/_components/LiveMode";
 import { parseAuditNote, type AuditHeader } from "@/lib/auditNote";
 import { isSafeUrl } from "@/lib/safeUrl";
-import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge, Button, Callout, Card, CountBadge, EmptyState, formatDate, formatDateTime, Input, Mono, Muted, Textarea, TextLink, type Tone } from "@/app/_ui/ui";
+import { actionErrorMessage } from "@/app/_ui/actionError";
 
-const VERDICT_LABEL: Record<
-  string,
-  { label: string; variant: "success" | "destructive" | "info" | "secondary" }
-> = {
-  approved: { label: "Approved", variant: "success" },
-  first_pass_approved: { label: "Approved (1st pass)", variant: "success" },
-  needs_changes: { label: "Needs changes", variant: "destructive" },
-  banned: { label: "Banned", variant: "destructive" },
-  first_pass_banned: { label: "Ban proposed", variant: "destructive" },
-  reverted: { label: "Reverted", variant: "info" },
+const VERDICT_LABEL: Record<string, { label: string; tone: Tone }> = {
+  approved: { label: "Approved", tone: "success" },
+  first_pass_approved: { label: "Approved (1st pass)", tone: "success" },
+  needs_changes: { label: "Needs changes", tone: "danger" },
+  banned: { label: "Banned", tone: "danger" },
+  first_pass_banned: { label: "Ban proposed", tone: "danger" },
+  reverted: { label: "Reverted", tone: "info" },
 };
 
-// Friendly labels for the structured audit-note sections (see buildAuditNote
-// in lib/auditNote.ts), same mapping as the Audit notes page.
+// The structured audit-note sections (buildAuditNote in lib/auditNote.ts),
+// same labels as the Audit notes page.
 const SECTION_LABEL: Record<AuditHeader, string> = {
   "TECHNICAL FEATURES": "Technical features",
   "DEFLATION REASON": "Deflation reason",
@@ -50,21 +44,14 @@ export interface YswsImport {
 // never has to leave the dashboard to run a fraud check.
 const HURT_URL = "https://hurt-xi.vercel.app";
 
-// HURT reads this with URLSearchParams, which unescapes it fine either way,
-// but its own GitHub API calls choke on a percent-encoded repo URL (the
-// colon/slashes need to reach it literal) , so this must NOT be
-// encodeURIComponent'd like a normal query value.
+// Deliberately not encodeURIComponent'd: HURT's own GitHub API calls choke on
+// a percent-encoded repo URL. It also 404s on a trailing .git, so strip that.
 function hurtSrc(repoUrl: string): string {
-  // GitHub's own site tolerates a trailing .git on a repo URL, but HURT's
-  // GitHub API call doesn't , it treats ".git" as part of the repo name and
-  // 404s. Strip it so a repo_url saved from a clone link still loads.
-  const clean = repoUrl.replace(/\.git\/?$/i, "");
-  return `${HURT_URL}/?repo=${clean}`;
+  return `${HURT_URL}/?repo=${repoUrl.replace(/\.git\/?$/i, "")}`;
 }
 
-// HURT only accepts github.com URLs , anything else (GitLab, a zip, a bare
-// domain) makes it ignore the param and sit on its own empty input, so the tab
-// is hidden rather than shown broken.
+// HURT only accepts github.com URLs; anything else leaves it on an empty
+// input, so the tab is hidden rather than shown broken.
 function isGithubUrl(url: string | null): url is string {
   if (!url) return false;
   try {
@@ -75,13 +62,9 @@ function isGithubUrl(url: string | null): url is string {
   }
 }
 
-// The "Credit" field on a journal entry (Journals tab) lets a reviewer
-// deflate that entry's hours on its own, outside the main verdict form - it
-// used to have no reason field at all, so a deflation here left no
-// explanation anywhere (just a bare before/after in the mod log, see
-// setJournalHours in app/actions.ts). Mirrors the main verdict form's
-// deflationReason requirement: show a required "why" box the moment the
-// typed value would credit less than the entry's claimed hours.
+// Per-entry credit, outside the main verdict form. Lowering it below the
+// claimed hours needs a written reason, same rule as the verdict form's
+// deflationReason (setJournalHours enforces it server-side too).
 function JournalHoursForm({
   journalId,
   projectId,
@@ -96,23 +79,34 @@ function JournalHoursForm({
   deflationReason: string | null;
 }) {
   const [value, setValue] = useState(String(approvedHours ?? claimed));
-  // Uncontrolled fields inside a `<form action={...}>` get wiped by React's
-  // automatic post-submit form reset (it fires even on success), same as the
-  // "Credit" input above would if it weren't controlled via `value` - keep
-  // this one controlled too, or a correctly-filled-in reason vanishes right
-  // after the reviewer hits Set. Seeded from the persisted reason (see
-  // 0178_journal_deflation_reason.sql) so reopening this tab shows what was
-  // written before instead of an always-blank box.
+  // Seeded from the persisted reason so reopening shows what was written.
   const [reason, setReason] = useState(deflationReason ?? "");
+  const [pending, startTransition] = useTransition();
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const numeric = Number(value);
   const willDeflate = value.trim() !== "" && Number.isFinite(numeric) && numeric < claimed;
 
+  const onSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (pending) return;
+    const fd = new FormData(e.currentTarget);
+    setResult(null);
+    startTransition(async () => {
+      try {
+        await setJournalHours(fd);
+        setResult({ ok: true, text: "Saved." });
+      } catch (err) {
+        setResult({ ok: false, text: actionErrorMessage(err, "save this entry's hours") });
+      }
+    });
+  };
+
   return (
-    <form action={setJournalHours} className="flex flex-col gap-2">
+    <form onSubmit={onSubmit} className="flex flex-col gap-2">
       <input type="hidden" name="journalId" value={journalId} />
       <input type="hidden" name="projectId" value={projectId} />
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-muted-foreground">Credit</label>
+      <label className="flex flex-wrap items-center gap-2">
+        <span className="hc-label">Credit</span>
         <Input
           name="hours"
           type="number"
@@ -120,28 +114,48 @@ function JournalHoursForm({
           max={claimed}
           step="0.1"
           value={value}
-          onChange={(e) => setValue(e.target.value)}
-          className="w-20 h-7 text-xs"
+          onChange={(e) => {
+            setValue(e.target.value);
+            setResult(null);
+          }}
+          className="w-24"
         />
-        <span className="text-xs text-muted-foreground">/ {claimed}h</span>
-        <PendingButton variant="outline" size="sm" pendingText="Saving…">
-          Set
-        </PendingButton>
-      </div>
+        <Muted className="text-sm">/ {claimed}h</Muted>
+        <Button type="submit" variant="outline" size="sm" disabled={pending}>
+          {pending ? "Saving…" : "Set"}
+        </Button>
+        {result?.ok && <span className="hc-save-status" data-tone="success">{result.text}</span>}
+      </label>
       {willDeflate && (
         <Textarea
           name="deflationReason"
           required
           rows={2}
           placeholder="Why lower this entry's hours? (required)"
-          className="text-xs max-w-md"
+          className="max-w-md"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
       )}
+      {result && !result.ok && (
+        <Callout tone="danger" icon="important">
+          {result.text}
+        </Callout>
+      )}
     </form>
   );
 }
+
+function Section({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <p className="hc-eyebrow mb-1">{label}</p>
+      <p className="whitespace-pre-wrap break-words text-sm">{children}</p>
+    </div>
+  );
+}
+
+type TabKey = "commits" | "readme" | "journals" | "reviews" | "ysws" | "hackatime" | "fraud";
 
 export function ReviewDetailTabs({
   projectId,
@@ -172,20 +186,18 @@ export function ReviewDetailTabs({
   // internal audit-note sections (technical features, deflation reason, ...).
   const live = useLiveMode();
   const reviewerName = useReviewerName();
-  const [tab, setTab] = useState<
-    "commits" | "journals" | "reviews" | "ysws" | "hackatime" | "fraud"
-  >("commits");
-  // Don't make every review page load a third-party app , mount the frame the
-  // first time a reviewer actually opens the tab, then keep it mounted.
+  const [tab, setTab] = useState<TabKey>("commits");
+  // Don't load a third-party app on every review page: mount the frame the
+  // first time the tab is opened, then keep it mounted.
   const [fraudOpened, setFraudOpened] = useState(false);
-  // HURT is a hardware fraud-check tool (it inspects the repo for CAD/BOM/wiring
-  // evidence), irrelevant noise on a software project's review page.
+  // HURT is a hardware fraud check (CAD/BOM/wiring evidence), noise on software.
   const fraudRepo = projectKind === "hardware" && isGithubUrl(repoUrl) ? repoUrl : null;
 
   useEffect(() => {
     if (tab === "fraud") setFraudOpened(true);
   }, [tab]);
 
+  // The page header links to #hackatime.
   useEffect(() => {
     const open = () => {
       if (location.hash === "#hackatime" && hackatime) setTab("hackatime");
@@ -195,97 +207,88 @@ export function ReviewDetailTabs({
     return () => window.removeEventListener("hashchange", open);
   }, [hackatime]);
 
-  const tabs: { key: typeof tab; label: string; count?: number }[] = [
-    { key: "commits" as const, label: "Commits", count: commits.commits.length },
-    { key: "journals" as const, label: "Journals", count: journals.length },
+  const yswsMatches = yswsShips.filter((s) => s.urlMatch);
+  const multipleContributors = Object.keys(contributorNames).length > 1;
+
+  const tabs: { key: TabKey; label: string; count?: number }[] = [
+    { key: "commits", label: "Commits", count: commits.commits.length },
+    ...(repoUrl ? [{ key: "readme" as const, label: "README" }] : []),
+    { key: "journals", label: "Journals", count: journals.length },
     ...(hackatime?.ok
       ? [{ key: "hackatime" as const, label: "Hackatime", count: hackatime.projects.filter((p) => p.linked).length }]
       : []),
-    { key: "reviews" as const, label: "Past reviews", count: reviewAudits.length },
-    {
-      key: "ysws" as const,
-      label: "Other YSWS",
-      count: yswsShips.filter((s) => s.urlMatch).length + (yswsImport ? 1 : 0),
-    },
+    { key: "reviews", label: "Past reviews", count: reviewAudits.length },
+    { key: "ysws", label: "Other YSWS", count: yswsMatches.length + (yswsImport ? 1 : 0) },
     ...(fraudRepo ? [{ key: "fraud" as const, label: "HURT check" }] : []),
   ];
 
+  // The earliest/latest tracked Hackatime activity, so a reviewer can compare
+  // it against each other ship's approval date (the archive has no start date,
+  // so overlap can't be proven outright).
+  const trackedRange = (() => {
+    const linked = (hackatime?.projects ?? []).filter((p) => p.linked);
+    const firsts = linked.map((p) => p.firstActivity).filter((n): n is number => n != null);
+    const lasts = linked.map((p) => p.lastActivity).filter((n): n is number => n != null);
+    if (firsts.length === 0 || lasts.length === 0) return null;
+    return { first: Math.min(...firsts), last: Math.max(...lasts) };
+  })();
+
   return (
-    <Card className="overflow-hidden py-0">
-      <Tabs
-        value={tab}
-        onValueChange={(v) => setTab(v as typeof tab)}
-        className="gap-0"
-      >
-        <TabsList
-          variant="line"
-          className="h-auto w-full justify-start rounded-none border-b border-border px-2"
-        >
-          {tabs.map((t) => (
-            <TabsTrigger key={t.key} value={t.key} className="py-3">
-              {t.label}
-              {t.count !== undefined && (
-                <Badge
-                  variant={tab === t.key ? "default" : "secondary"}
-                  className="ml-1"
-                >
-                  {t.count}
-                </Badge>
-              )}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+    <Card padding="flush">
+      <div className="hc-tabs hc-tabs-fill" role="tablist">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            className="hc-tab gap-2"
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+            {t.count !== undefined && <CountBadge>{t.count}</CountBadge>}
+          </button>
+        ))}
+      </div>
 
-        <TabsContent value="commits">
-          <CommitList result={commits} />
-        </TabsContent>
+      <div role="tabpanel" hidden={tab !== "commits"}>
+        <CommitList result={commits} projectId={projectId} />
+      </div>
 
-        {hackatime && (
-          <TabsContent value="hackatime">
-            <HackatimePanel report={hackatime} />
-          </TabsContent>
-        )}
+      <div role="tabpanel" hidden={tab !== "readme"}>
+        <ReadmePanel projectId={projectId} active={tab === "readme"} />
+      </div>
 
-        <TabsContent value="journals">
-          <div className="divide-y divide-border">
-            {journals.length === 0 && (
-              <div className="p-5 text-sm text-muted-foreground">
-                No journal entries.
-              </div>
-            )}
+      {hackatime && (
+        <div role="tabpanel" hidden={tab !== "hackatime"}>
+          <HackatimePanel report={hackatime} />
+        </div>
+      )}
+
+      <div role="tabpanel" hidden={tab !== "journals"}>
+        {journals.length === 0 ? (
+          <EmptyState title="No journal entries" icon="docs" />
+        ) : (
+          <ul>
             {journals.map((j) => {
               const claimed = Math.round((Number(j.hours) || 0) * 10) / 10;
               const deflated = j.approved_hours != null && Number(j.approved_hours) !== claimed;
               return (
-                <div key={j.id} className="p-4">
-                  <div className="flex items-center gap-3 mb-1 flex-wrap">
-                    {Object.keys(contributorNames).length > 1 && (
-                      <Badge variant="outline">
-                        {contributorNames[j.user_id] ?? "unknown"}
-                      </Badge>
-                    )}
-                    <Badge variant={deflated ? "secondary" : "secondary"} className={deflated ? "line-through opacity-60" : ""}>
-                      {claimed}h claimed
-                    </Badge>
-                    {deflated && (
-                      <Badge variant="warning">
-                        {Math.round(Number(j.approved_hours) * 10) / 10}h credited
-                      </Badge>
-                    )}
-                    {j.edited_at && (
-                      <span className="text-xs text-muted-foreground">
-                        edited {new Date(j.edited_at).toLocaleString()}
-                      </span>
-                    )}
-                    <span className="text-xs text-muted-foreground ml-auto">
-                      {new Date(j.created_at).toLocaleString()}
+                <li key={j.id} className="flex flex-col gap-2 border-b border-[var(--border)] p-4 last:border-b-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {multipleContributors && <Badge outline>{contributorNames[j.user_id] ?? "unknown"}</Badge>}
+                    <span className={deflated ? "line-through opacity-60" : ""}>
+                      <Badge>{claimed}h claimed</Badge>
                     </span>
+                    {deflated && (
+                      <Badge tone="warning">{Math.round(Number(j.approved_hours) * 10) / 10}h credited</Badge>
+                    )}
+                    {j.edited_at && <Muted className="text-xs">edited {formatDateTime(j.edited_at)}</Muted>}
+                    <Muted className="ml-auto text-xs">{formatDateTime(j.created_at)}</Muted>
                   </div>
-                  {j.title && (
-                    <div className="text-sm font-semibold mb-1">{j.title}</div>
-                  )}
+                  {j.title && <p className="text-sm font-bold">{j.title}</p>}
                   <div
-                    className="md text-sm break-words text-foreground/80 mb-2"
+                    className="hc-markdown text-sm"
                     dangerouslySetInnerHTML={{ __html: renderMarkdown(j.content) }}
                   />
                   <JournalHoursForm
@@ -295,228 +298,153 @@ export function ReviewDetailTabs({
                     approvedHours={j.approved_hours}
                     deflationReason={j.deflation_reason}
                   />
-                </div>
+                </li>
               );
             })}
-          </div>
-        </TabsContent>
-
-        <TabsContent value="ysws">
-          {yswsImport && (
-            <div className="p-4 border-b border-border bg-muted/40">
-              <div className="flex flex-wrap items-center gap-2 mb-1">
-                <Badge variant="info">imported from {yswsImport.ysws}</Badge>
-                <Badge variant="secondary">{yswsImport.hours}h there</Badge>
-                {yswsImport.approvedAt && (
-                  <span className="text-xs text-muted-foreground ml-auto">
-                    approved {new Date(yswsImport.approvedAt).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-              <div className="text-sm text-foreground/70">
-                The maker brought this in through the importer, so the earlier ship was
-                declared up front , this is not an undisclosed double dip. Those{" "}
-                {yswsImport.hours}h were not credited here; only time tracked since the
-                import counts. Credit the new work, not the whole project.
-              </div>
-            </div>
-          )}
-          {(() => {
-            const matches = yswsShips.filter((s) => s.urlMatch);
-            const Row = (s: YswsShip, i: number) => (
-              <div key={i} className="p-4">
-                <div className="flex flex-wrap items-center gap-2 mb-1">
-                  <span className="font-medium text-sm">{s.ysws}</span>
-                  {s.urlMatch && (
-                    <Badge variant="destructive">
-                      same repo/demo as this submission
-                    </Badge>
-                  )}
-                  <Badge variant="secondary">{s.hours}h</Badge>
-                  <span className="text-xs text-muted-foreground ml-auto">
-                    {s.approvedAt
-                      ? `approved ${new Date(s.approvedAt).toLocaleDateString()}`
-                      : "no date"}
-                  </span>
-                </div>
-                {s.description && (
-                  <div className="text-sm text-foreground/70 break-words mb-1">
-                    {s.description}
-                  </div>
-                )}
-                <div className="flex gap-3 text-xs">
-                  {s.codeUrl && s.codeUrl !== "null" && isSafeUrl(s.codeUrl) && (
-                    <a href={s.codeUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                      repo ↗
-                    </a>
-                  )}
-                  {s.demoUrl && s.demoUrl !== "null" && isSafeUrl(s.demoUrl) && (
-                    <a href={s.demoUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                      demo ↗
-                    </a>
-                  )}
-                </div>
-              </div>
-            );
-            return (
-              <div className="divide-y divide-border">
-                {matches.length === 0 ? (
-                  <div className="p-5 text-sm text-muted-foreground">
-                    {yswsImport
-                      ? "The archive doesn't match this project's current repo/demo , the links were edited since it was imported. The import record above still applies."
-                      : "This project's repo/demo isn't in the YSWS archive , no sign it was double-dipped."}
-                  </div>
-                ) : (
-                  <>
-                    <div className="px-4 pt-4 text-xs font-semibold uppercase tracking-wide text-destructive">
-                      ⚠ This exact project also shipped to another YSWS
-                    </div>
-                    {(() => {
-                      // The archive only gives an approval date for the OTHER
-                      // ship, not a start date - so "overlap" can't be proven
-                      // outright. What we can show: this project's own
-                      // earliest/latest tracked Hackatime activity, so a
-                      // reviewer can eyeball whether it falls before/after
-                      // each other ship's approval date below.
-                      const linked = (hackatime?.projects ?? []).filter(
-                        (p) => p.linked && (p.firstActivity || p.lastActivity),
-                      );
-                      if (linked.length === 0) return null;
-                      const firsts = linked
-                        .map((p) => p.firstActivity)
-                        .filter((n): n is number => n != null);
-                      const lasts = linked
-                        .map((p) => p.lastActivity)
-                        .filter((n): n is number => n != null);
-                      if (firsts.length === 0 || lasts.length === 0) return null;
-                      const first = Math.min(...firsts);
-                      const last = Math.max(...lasts);
-                      return (
-                        <div className="px-4 pt-1.5 text-xs text-muted-foreground">
-                          This project&apos;s own tracked coding time here:{" "}
-                          <span className="font-medium text-foreground/80">
-                            {new Date(first * 1000).toLocaleDateString()} –{" "}
-                            {new Date(last * 1000).toLocaleDateString()}
-                          </span>{" "}
-                          , compare against each ship&apos;s approval date below to judge overlap.
-                        </div>
-                      );
-                    })()}
-                    {matches.map(Row)}
-                  </>
-                )}
-              </div>
-            );
-          })()}
-        </TabsContent>
-
-        {fraudRepo && (
-          <TabsContent value="fraud">
-            <div className="flex items-center gap-3 border-b border-border px-4 py-2 text-xs text-muted-foreground">
-              <span>
-                HURT, loaded with{" "}
-                <span className="font-mono break-all text-foreground/80">{fraudRepo}</span>
-              </span>
-              <a
-                href={hurtSrc(fraudRepo)}
-                target="_blank"
-                rel="noreferrer"
-                className="ml-auto shrink-0 text-primary hover:underline"
-              >
-                open full screen ↗
-              </a>
-            </div>
-            {fraudOpened ? (
-              <iframe
-                key={fraudRepo}
-                src={hurtSrc(fraudRepo)}
-                title="HURT check"
-                className="block h-[80vh] w-full border-0 bg-white"
-                referrerPolicy="no-referrer"
-              />
-            ) : (
-              <div className="p-5 text-sm text-muted-foreground">Loading…</div>
-            )}
-          </TabsContent>
+          </ul>
         )}
+      </div>
 
-        <TabsContent value="reviews">
-          <div className="divide-y divide-border">
-            {reviewAudits.length === 0 && (
-              <div className="p-5 text-sm text-muted-foreground">
-                No past reviews.
+      <div role="tabpanel" hidden={tab !== "ysws"}>
+        {yswsImport && (
+          <div className="border-b border-[var(--border)] p-4">
+            <Callout tone="info" icon="important">
+              <div className="mb-1 flex flex-wrap items-center gap-2">
+                <Badge tone="info">imported from {yswsImport.ysws}</Badge>
+                <Badge>{yswsImport.hours}h there</Badge>
+                {yswsImport.approvedAt && (
+                  <Muted className="text-xs">approved {formatDate(yswsImport.approvedAt)}</Muted>
+                )}
               </div>
-            )}
+              The maker brought this in through the importer, so the earlier ship was declared up front. This is not an
+              undisclosed double dip. Those {yswsImport.hours}h were not credited here; only time tracked since the
+              import counts. Credit the new work, not the whole project.
+            </Callout>
+          </div>
+        )}
+        {yswsMatches.length === 0 ? (
+          <EmptyState title="No other YSWS ships" icon="checkmark">
+            {yswsImport
+              ? "The archive doesn't match this project's current repo or demo, so the links were edited since it was imported. The import record above still applies."
+              : "This project's repo and demo aren't in the YSWS archive. No sign it was double-dipped."}
+          </EmptyState>
+        ) : (
+          <>
+            <div className="flex flex-col gap-2 border-b border-[var(--border)] p-4">
+              <Callout tone="danger" icon="important">
+                This exact project also shipped to another YSWS.
+              </Callout>
+              {trackedRange && (
+                <p className="hc-caption text-sm">
+                  This project&apos;s own tracked coding time here:{" "}
+                  <Mono>
+                    {formatDate(trackedRange.first * 1000)} to{" "}
+                    {formatDate(trackedRange.last * 1000)}
+                  </Mono>
+                  . Compare it against each ship&apos;s approval date below to judge overlap.
+                </p>
+              )}
+            </div>
+            <ul>
+              {yswsMatches.map((s, i) => (
+                <li key={i} className="flex flex-col gap-1 border-b border-[var(--border)] p-4 last:border-b-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-bold">{s.ysws}</span>
+                    <Badge tone="danger">same repo/demo as this submission</Badge>
+                    <Badge>{s.hours}h</Badge>
+                    <Muted className="ml-auto text-xs">
+                      {s.approvedAt ? `approved ${formatDate(s.approvedAt)}` : "no date"}
+                    </Muted>
+                  </div>
+                  {s.description && <p className="hc-caption break-words text-sm">{s.description}</p>}
+                  <div className="flex gap-3 text-sm">
+                    {s.codeUrl && s.codeUrl !== "null" && isSafeUrl(s.codeUrl) && (
+                      <TextLink href={s.codeUrl} external>
+                        Repo
+                      </TextLink>
+                    )}
+                    {s.demoUrl && s.demoUrl !== "null" && isSafeUrl(s.demoUrl) && (
+                      <TextLink href={s.demoUrl} external>
+                        Demo
+                      </TextLink>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+
+      {fraudRepo && (
+        <div role="tabpanel" hidden={tab !== "fraud"}>
+          <div className="hc-caption flex items-center gap-3 border-b border-[var(--border)] px-4 py-3 text-sm">
+            <span className="min-w-0">
+              HURT, loaded with <Mono>{fraudRepo}</Mono>
+            </span>
+            <TextLink href={hurtSrc(fraudRepo)} external className="ml-auto shrink-0">
+              Open full screen
+            </TextLink>
+          </div>
+          {fraudOpened ? (
+            <iframe
+              key={fraudRepo}
+              src={hurtSrc(fraudRepo)}
+              title="HURT check"
+              className="block h-[80vh] w-full border-0 bg-white"
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <p className="hc-caption p-6 text-sm">Loading…</p>
+          )}
+        </div>
+      )}
+
+      <div role="tabpanel" hidden={tab !== "reviews"}>
+        {reviewAudits.length === 0 ? (
+          <EmptyState title="No past reviews" icon="history">
+            This is the first time anyone is reviewing it.
+          </EmptyState>
+        ) : (
+          <ul>
             {reviewAudits.map((v) => {
-              const meta = VERDICT_LABEL[v.verdict] ?? {
-                label: v.verdict.replaceAll("_", " "),
-                variant: "secondary" as const,
-              };
+              const meta = VERDICT_LABEL[v.verdict] ?? { label: v.verdict.replaceAll("_", " "), tone: "neutral" as const };
               const sections = v.audit_note && !live ? parseAuditNote(v.audit_note) : null;
               const sectionKeys = sections
                 ? (Object.keys(SECTION_LABEL) as AuditHeader[]).filter((h) => sections[h]?.trim())
                 : [];
               const hasMore = sectionKeys.length > 0 || !!v.note?.trim();
               return (
-                <details key={v.id} className="p-4 text-sm group">
-                  <summary className="flex flex-wrap items-center gap-x-4 gap-y-1 cursor-pointer select-none list-none">
-                    <Badge variant={meta.variant}>{meta.label}</Badge>
-                    <div className="flex-1 min-w-48">
-                      <span className="font-medium">
+                <li key={v.id} className="border-b border-[var(--border)] p-3 last:border-b-0">
+                  <details className="hc-details">
+                    <summary>
+                      <Badge tone={meta.tone}>{meta.label}</Badge>
+                      <span className="min-w-0 flex-1">
                         {reviewerName(v.reviewer)}
+                        <Muted>
+                          {v.approved_hours !== null && v.approved_hours !== v.claimed_hours
+                            ? ` · ${v.claimed_hours}h → ${v.approved_hours}h credited`
+                            : ` · ${v.claimed_hours}h credited`}
+                        </Muted>
                       </span>
-                      {v.approved_hours !== null && v.approved_hours !== v.claimed_hours ? (
-                        <span className="text-foreground/70">
-                          {" "}
-                          · {v.claimed_hours}h → {v.approved_hours}h credited
-                        </span>
-                      ) : (
-                        <span className="text-foreground/70"> · {v.claimed_hours}h credited</span>
-                      )}
+                      <Muted className="text-xs font-normal">{formatDateTime(v.created_at)}</Muted>
+                    </summary>
+                    <div className="hc-details-body flex flex-col gap-3">
+                      {v.note?.trim() && <Section label="Note to player">{v.note}</Section>}
+                      {sections && sectionKeys.map((h) => (
+                        <Section key={h} label={SECTION_LABEL[h]}>
+                          {sections[h]}
+                        </Section>
+                      ))}
+                      {!hasMore && <p className="hc-caption text-sm">No additional notes.</p>}
                     </div>
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(v.created_at).toLocaleString()}
-                    </span>
-                    {hasMore && (
-                      <span className="text-xs text-brand shrink-0 basis-full sm:basis-auto">
-                        click to expand ↓
-                      </span>
-                    )}
-                  </summary>
-                  <div className="mt-3 space-y-3 pl-1 border-l-2 border-border">
-                    <div className="pl-3 space-y-3">
-                      {v.note?.trim() && (
-                        <div>
-                          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                            Note to player
-                          </div>
-                          <p className="text-sm text-foreground/80 mt-1 whitespace-pre-wrap break-words">
-                            {v.note}
-                          </p>
-                        </div>
-                      )}
-                      {sections &&
-                        sectionKeys.map((h) => (
-                          <div key={h}>
-                            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                              {SECTION_LABEL[h]}
-                            </div>
-                            <p className="text-sm text-foreground/80 mt-1 whitespace-pre-wrap break-words">
-                              {sections[h]}
-                            </p>
-                          </div>
-                        ))}
-                      {!hasMore && (
-                        <p className="text-sm text-muted-foreground">No additional notes.</p>
-                      )}
-                    </div>
-                  </div>
-                </details>
+                  </details>
+                </li>
               );
             })}
-          </div>
-        </TabsContent>
-      </Tabs>
+          </ul>
+        )}
+      </div>
     </Card>
   );
 }

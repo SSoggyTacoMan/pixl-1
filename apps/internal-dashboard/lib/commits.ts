@@ -132,8 +132,8 @@ function isRateLimit(r: Response): boolean {
 // token at all succeeds - far better than showing a reviewer an empty
 // Commits tab. Costs nothing when the token is accepted (the common case)
 // since the retry only fires on a non-quota 403.
-async function ghFetch(url: string, init?: RequestInit): Promise<Response> {
-  const headers = { ...BASE_HEADERS, Accept: "application/vnd.github+json" };
+async function ghFetch(url: string, init?: RequestInit, accept = "application/vnd.github+json"): Promise<Response> {
+  const headers = { ...BASE_HEADERS, Accept: accept };
   const opts: RequestInit = { signal: AbortSignal.timeout(8000), ...init };
   const token = process.env.GITHUB_TOKEN;
   if (!token) return fetch(url, { ...opts, headers });
@@ -360,4 +360,180 @@ export async function attachCommitStats(result: CommitResult, cap = 20): Promise
       }
     }),
   );
+}
+
+// ---- One commit's diff, and the README (review page: Commits and README tabs) ----
+
+export interface DiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  /** Unified diff hunks. Missing for binary files and anything the host
+   * decided was too large to inline. */
+  patch: string | null;
+  /** The patch was cut off at PATCH_CAP. */
+  truncated?: boolean;
+}
+
+export interface CommitDiff {
+  files: DiffFile[];
+  /** More files changed than were returned. */
+  moreFiles: number;
+  error: string | null;
+}
+
+const DIFF_FILE_CAP = 40;
+const PATCH_CAP = 20_000;
+const SHA_RX = /^[0-9a-f]{7,40}$/i;
+
+function capPatch(patch: unknown): Pick<DiffFile, "patch" | "truncated"> {
+  if (typeof patch !== "string" || !patch) return { patch: null };
+  if (patch.length <= PATCH_CAP) return { patch };
+  return { patch: patch.slice(0, PATCH_CAP), truncated: true };
+}
+
+const diffCache = new Map<string, { result: CommitDiff; at: number }>();
+
+// A commit never changes, so a successful diff is cached for the process's
+// lifetime window below; errors are not cached.
+export async function fetchCommitDiff(
+  repoUrl: string | null,
+  sha: string,
+  deps?: SsrfGuardDeps,
+): Promise<CommitDiff> {
+  const ref = parseRepoRef(repoUrl);
+  if (!ref || !SHA_RX.test(sha)) return { files: [], moreFiles: 0, error: "unsupported" };
+  const key = `${ref.host}/${ref.path}@${sha}`;
+  const hit = diffCache.get(key);
+  if (hit && Date.now() - hit.at < 60 * 60 * 1000) return hit.result;
+
+  let result: CommitDiff;
+  try {
+    if (ref.provider === "github") {
+      const r = await ghFetch(`https://api.github.com/repos/${ref.path}/commits/${sha}`, { cache: "no-store" });
+      if (isRateLimit(r)) return { files: [], moreFiles: 0, error: "rate_limited" };
+      if (!r.ok) return { files: [], moreFiles: 0, error: r.status === 404 ? "not_found" : `http_${r.status}` };
+      const json = (await r.json()) as { files?: any[] };
+      const all = Array.isArray(json.files) ? json.files : [];
+      result = {
+        files: all.slice(0, DIFF_FILE_CAP).map((f) => ({
+          path: String(f.filename ?? "?"),
+          status: String(f.status ?? "modified"),
+          additions: Number(f.additions) || 0,
+          deletions: Number(f.deletions) || 0,
+          ...capPatch(f.patch),
+        })),
+        moreFiles: Math.max(0, all.length - DIFF_FILE_CAP),
+        error: null,
+      };
+    } else if (ref.provider === "gitlab") {
+      const r = await gitlabFetch(
+        `https://${ref.host}/api/v4/projects/${encodeURIComponent(ref.path)}/repository/commits/${sha}/diff?per_page=${DIFF_FILE_CAP}`,
+        ref.host,
+        deps,
+      );
+      if (!r || r.status < 200 || r.status >= 300 || !Array.isArray(r.json))
+        return { files: [], moreFiles: 0, error: r?.status === 404 ? "not_found" : "fetch_failed" };
+      result = {
+        files: (r.json as any[]).map((f) => {
+          const patch = capPatch(f.diff);
+          const lines = (patch.patch ?? "").split("\n");
+          return {
+            path: String(f.new_path ?? f.old_path ?? "?"),
+            status: f.new_file ? "added" : f.deleted_file ? "removed" : f.renamed_file ? "renamed" : "modified",
+            additions: lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length,
+            deletions: lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length,
+            ...patch,
+          };
+        }),
+        moreFiles: 0,
+        error: null,
+      };
+    } else {
+      // Forgejo/Gitea's JSON API lists a commit's files without their patches.
+      return { files: [], moreFiles: 0, error: "unsupported" };
+    }
+  } catch {
+    return { files: [], moreFiles: 0, error: "fetch_failed" };
+  }
+  diffCache.set(key, { result, at: Date.now() });
+  return result;
+}
+
+export interface RepoReadme {
+  /** "html" is GitHub's own sanitized rendering; "markdown" is the raw file
+   * for hosts that don't render it for us. */
+  kind: "html" | "markdown" | null;
+  content: string;
+  /** Base for relative links and images inside the README. */
+  baseHref: string | null;
+  error: string | null;
+}
+
+const README_CAP = 400_000;
+const readmeCache = new Map<string, { result: RepoReadme; at: number }>();
+
+function noReadme(error: string): RepoReadme {
+  return { kind: null, content: "", baseHref: null, error };
+}
+
+function fromBase64(content: unknown): string {
+  return typeof content === "string" ? Buffer.from(content, "base64").toString("utf8").slice(0, README_CAP) : "";
+}
+
+export async function fetchReadme(repoUrl: string | null, deps?: SsrfGuardDeps): Promise<RepoReadme> {
+  const ref = parseRepoRef(repoUrl);
+  if (!ref) return noReadme("unsupported");
+  const key = `${ref.host}/${ref.path}`;
+  const hit = readmeCache.get(key);
+  if (hit && Date.now() - hit.at < COMMITS_CACHE_TTL_MS) return hit.result;
+
+  let result: RepoReadme;
+  try {
+    if (ref.provider === "github") {
+      // GitHub renders and sanitizes it for us, exactly as github.com shows it
+      // (tables, task lists, alerts, HTML blocks, proxied images).
+      const r = await ghFetch(
+        `https://api.github.com/repos/${ref.path}/readme`,
+        { cache: "no-store" },
+        "application/vnd.github.html+json",
+      );
+      if (r.status === 404) return noReadme("not_found");
+      if (isRateLimit(r)) return noReadme("rate_limited");
+      if (!r.ok) return noReadme(`http_${r.status}`);
+      result = {
+        kind: "html",
+        content: (await r.text()).slice(0, README_CAP),
+        baseHref: `https://github.com/${ref.path}/raw/HEAD/`,
+        error: null,
+      };
+    } else if (ref.provider === "gitlab") {
+      const r = await gitlabFetch(
+        `https://${ref.host}/api/v4/projects/${encodeURIComponent(ref.path)}/repository/files/README.md?ref=HEAD`,
+        ref.host,
+        deps,
+      );
+      if (!r || r.status < 200 || r.status >= 300) return noReadme(r?.status === 404 ? "not_found" : "fetch_failed");
+      result = {
+        kind: "markdown",
+        content: fromBase64((r.json as { content?: string }).content),
+        baseHref: `https://${ref.host}/${ref.path}/-/raw/HEAD/`,
+        error: null,
+      };
+    } else {
+      const r = await forgejoFetch(`https://${ref.host}/api/v1/repos/${ref.path}/contents/README.md`, ref.host, deps);
+      if (!r || r.status < 200 || r.status >= 300) return noReadme(r?.status === 404 ? "not_found" : "fetch_failed");
+      result = {
+        kind: "markdown",
+        content: fromBase64((r.json as { content?: string }).content),
+        baseHref: `https://${ref.host}/${ref.path}/raw/branch/HEAD/`,
+        error: null,
+      };
+    }
+  } catch {
+    return noReadme("fetch_failed");
+  }
+  readmeCache.set(key, { result, at: Date.now() });
+  return result;
 }

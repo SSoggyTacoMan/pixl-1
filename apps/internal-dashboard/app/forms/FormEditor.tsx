@@ -2,16 +2,11 @@
 
 import { useState } from "react";
 import { saveFormConfig } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
-import { Card } from "@/components/ui/card";
+import { ActionButton, Badge, Button, Card, Code, Field, Input, Muted, Textarea } from "@/app/_ui/ui";
 import type { FormConfigRow, FormQuestion } from "@/lib/db";
 
 // A datetime-local input wants "YYYY-MM-DDTHH:mm" in local time, not the ISO
-// UTC string form_configs.close_at stores - this only affects the editor's
+// UTC string form_configs.close_at stores. This only affects the editor's
 // own display, saveFormConfig re-converts to UTC on submit.
 function toLocalInputValue(iso: string | null): string {
   if (!iso) return "";
@@ -36,61 +31,50 @@ export function FormEditor({ config }: { config: FormConfigRow }) {
   const closed = !!config.close_at && new Date(config.close_at).getTime() <= Date.now();
 
   return (
-    <Card className="p-4 md:p-5 gap-4">
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">
-          /form/{config.form_key}
-        </span>
-        {closed && (
-          <span className="text-xs font-medium text-rose-600">closed - submissions blocked</span>
-        )}
-        <span className="text-xs text-muted-foreground ml-auto">
+    <Card>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Code>/form/{config.form_key}</Code>
+        {closed && <Badge tone="danger">closed, submissions blocked</Badge>}
+        <Muted className="ml-auto text-xs">
           {config.updated_by ? `last edited by ${config.updated_by}` : "never edited"}
-        </span>
+        </Muted>
       </div>
 
-      <form action={saveFormConfig} className="space-y-4">
+      <form action={saveFormConfig} className="flex flex-col gap-3">
         <input type="hidden" name="formKey" value={config.form_key} />
         <input type="hidden" name="questionsJson" value={JSON.stringify(questions)} />
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">Title</Label>
+          <Field label="Title">
             <Input name="title" value={title} onChange={(e) => setTitle(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">Closes at (leave blank for open-ended)</Label>
-            <Input
-              type="datetime-local"
-              name="closeAt"
-              value={closeAt}
-              onChange={(e) => setCloseAt(e.target.value)}
-            />
-          </div>
+          </Field>
+          <Field label="Closes at" hint="Leave blank for open-ended.">
+            <Input type="datetime-local" name="closeAt" value={closeAt} onChange={(e) => setCloseAt(e.target.value)} />
+          </Field>
         </div>
 
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">Description</Label>
+        <Field label="Description">
           <Textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             name="description"
             rows={2}
-            className="text-sm resize-y"
           />
-        </div>
+        </Field>
 
-        <div className="space-y-2">
-          <Label className="text-xs text-muted-foreground">Questions</Label>
+        <div className="flex flex-col gap-2">
+          <span className="hc-label">Questions</span>
           {questions.map((q, i) => (
-            <div key={i} className="flex gap-2 items-start">
+            <div key={i} className="flex items-start gap-2">
               <Input
+                aria-label="Question key"
                 placeholder="key (e.g. message)"
                 value={q.key}
                 onChange={(e) => updateQuestion(i, { key: e.target.value })}
-                className="w-40 shrink-0 font-mono text-xs"
+                className="hc-mono w-40 shrink-0"
               />
               <Input
+                aria-label="Question label"
                 placeholder="Question shown to the submitter"
                 value={q.label}
                 onChange={(e) => updateQuestion(i, { label: e.target.value })}
@@ -98,8 +82,9 @@ export function FormEditor({ config }: { config: FormConfigRow }) {
               />
               <Button
                 type="button"
-                variant="outline"
+                variant="ghost"
                 size="sm"
+                icon="delete"
                 onClick={() => removeQuestion(i)}
                 disabled={questions.length <= 1}
               >
@@ -107,14 +92,18 @@ export function FormEditor({ config }: { config: FormConfigRow }) {
               </Button>
             </div>
           ))}
-          <Button type="button" variant="outline" size="sm" onClick={addQuestion}>
-            Add question
-          </Button>
+          <div>
+            <Button type="button" variant="outline" size="sm" icon="plus" onClick={addQuestion}>
+              Add question
+            </Button>
+          </div>
         </div>
 
-        <PendingButton size="sm" pendingText="Saving…">
-          Save
-        </PendingButton>
+        <div>
+          <ActionButton size="sm" pendingLabel="Saving...">
+            Save
+          </ActionButton>
+        </div>
       </form>
     </Card>
   );

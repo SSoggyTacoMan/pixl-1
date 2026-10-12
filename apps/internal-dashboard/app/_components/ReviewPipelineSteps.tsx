@@ -1,35 +1,25 @@
-import { cn } from "@/lib/utils";
-
 type StepState = "done" | "current" | "upcoming";
+
+const DOT: Record<StepState, string> = {
+  done: "var(--hc-green)",
+  current: "var(--hc-purple)",
+  upcoming: "var(--border-strong)",
+};
 
 function Step({ label, state }: { label: string; state: StepState }) {
   return (
     <div className="flex items-center gap-1.5">
-      <span
-        className={cn(
-          "w-1.5 h-1.5 rounded-full shrink-0",
-          state === "done" && "bg-emerald-500",
-          state === "current" && "bg-violet-500",
-          state === "upcoming" && "bg-muted-foreground/30",
-        )}
-      />
-      <span
-        className={cn(
-          "text-xs",
-          state === "upcoming" ? "text-muted-foreground" : "text-foreground font-medium",
-        )}
-      >
-        {label}
-      </span>
+      <span className="hc-dot shrink-0" style={{ background: DOT[state] }} />
+      <span className={`text-xs ${state === "upcoming" ? "hc-muted" : "font-bold"}`}>{label}</span>
     </div>
   );
 }
 
-// Fraud review is Robert now (see lib/robertSync.ts) - a project can sit in
+// Fraud review is Robert now (see lib/robertSync.ts): a project can sit in
 // status "fraud_review" for a while waiting on it, so it gets its own step
 // rather than being lumped into "upcoming" alongside shipped/first pass.
-// "Unified" has no signal we can read - it's a manual step the team does in
-// Airtable after this system's part is done - so it's never marked "done"
+// "Unified" has no signal we can read (it's a manual step the team does in
+// Airtable after this system's part is done), so it's never marked "done"
 // automatically, just shown as the final stop.
 export function ReviewPipelineSteps({
   shippedAt,

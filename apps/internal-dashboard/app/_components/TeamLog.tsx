@@ -1,14 +1,6 @@
 import { listTeamLog, type TeamLogRow } from "@/lib/db";
 import { undoTeamChange } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableRow,
-} from "@/components/ui/table";
+import { ActionButton, Badge, Card, CardHeader, Muted, Table, formatDateTime, type Tone } from "@/app/_ui/ui";
 
 function describe(row: TeamLogRow): string {
   const before = row.before ?? [];
@@ -22,93 +14,69 @@ function describe(row: TeamLogRow): string {
     case "added":
       return `added to the team with ${fmt(after)}`;
     case "removed":
-      return after.length > 0
-        ? `removed (kept ${fmt(after)})`
-        : `removed from the team (had ${fmt(before)})`;
+      return after.length > 0 ? `removed (kept ${fmt(after)})` : `removed from the team (had ${fmt(before)})`;
     case "updated":
-      return `permissions changed: ${fmt(before)} → ${fmt(after)}`;
+      return `permissions changed: ${fmt(before)} to ${fmt(after)}`;
     case "undo":
-      return `change undone: ${fmt(before)} → ${fmt(after)}`;
+      return `change undone: ${fmt(before)} to ${fmt(after)}`;
     case "super added":
-      return "promoted to super admin , full access, can grant permissions";
+      return "promoted to super admin, full access, can grant permissions";
     case "super removed":
       return "super admin access removed";
     default:
-      return `${row.action}: ${fmt(before)} → ${fmt(after)}`;
+      return `${row.action}: ${fmt(before)} to ${fmt(after)}`;
   }
 }
 
-const ACTION_VARIANT: Record<
-  string,
-  "success" | "destructive" | "secondary" | "warning"
-> = {
+const ACTION_TONE: Record<string, Tone> = {
   added: "success",
-  removed: "destructive",
-  updated: "secondary",
+  removed: "danger",
+  updated: "neutral",
   undo: "warning",
   "super added": "success",
-  "super removed": "destructive",
+  "super removed": "danger",
 };
 
+// The last 20 team changes (reviewers page and admins page), each undoable.
 export async function TeamLog() {
   const rows = await listTeamLog(20);
   if (rows.length === 0) return null;
   return (
-    <div>
-      <div className="text-sm font-medium text-muted-foreground mb-3">Team log</div>
-      <Card className="overflow-hidden py-0">
-        <Table>
-          <TableBody>
-            {rows.map((row) => (
-              <TableRow key={`${row.source}-${row.id}`} className="hover:bg-transparent">
-                <TableCell className="p-4 align-top whitespace-normal">
-                  <div className="text-sm">
-                    <span className="font-semibold">
-                      {row.name || row.slack_id}
-                    </span>{" "}
-                    <Badge
-                      variant={ACTION_VARIANT[row.action] ?? "secondary"}
-                      className="text-[0.65rem] uppercase tracking-wide align-middle mx-1"
-                    >
-                      {row.action}
-                    </Badge>
-                    <span className="text-foreground/70">{describe(row)}</span>
-                  </div>
-                  {row.reason && (
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      Reason: {row.reason}
-                    </div>
-                  )}
-                  <div className="text-xs text-muted-foreground mt-0.5 truncate">
-                    by {row.actor || "unknown"} ·{" "}
-                    {new Date(row.created_at).toLocaleString("en-GB", {
-                      day: "numeric",
-                      month: "short",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </div>
-                </TableCell>
-                <TableCell className="p-4 align-top text-right w-px">
-                  {row.source === "audit" && row.action !== "undo" && (
-                    <form action={undoTeamChange}>
-                      <input type="hidden" name="id" value={row.id} />
-                      <PendingButton
-                        variant="outline"
-                        size="sm"
-                        pendingText="Undoing…"
-                        confirm="Undo this team change?"
-                      >
-                        Undo
-                      </PendingButton>
-                    </form>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Card>
-    </div>
+    <Card padding="flush">
+      <CardHeader title="Team log" icon="history" />
+      <Table headers={["Change", "By", ""]}>
+        {rows.map((row) => (
+          <tr key={`${row.source}-${row.id}`} className="align-top">
+            <td className="whitespace-normal">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-bold">{row.name || row.slack_id}</span>
+                <Badge tone={ACTION_TONE[row.action] ?? "neutral"}>{row.action}</Badge>
+                <span>{describe(row)}</span>
+              </div>
+              {row.reason && <Muted className="mt-1 block text-xs">Reason: {row.reason}</Muted>}
+            </td>
+            <td className="whitespace-nowrap">
+              <div>{row.actor || "unknown"}</div>
+              <Muted className="text-xs">{formatDateTime(row.created_at)}</Muted>
+            </td>
+            <td className="w-px">
+              {row.source === "audit" && row.action !== "undo" && (
+                <form action={undoTeamChange}>
+                  <input type="hidden" name="id" value={row.id} />
+                  <ActionButton
+                    variant="outline"
+                    size="sm"
+                    pendingLabel="Undoing..."
+                    confirm="Undo this team change?"
+                  >
+                    Undo
+                  </ActionButton>
+                </form>
+              )}
+            </td>
+          </tr>
+        ))}
+      </Table>
+    </Card>
   );
 }

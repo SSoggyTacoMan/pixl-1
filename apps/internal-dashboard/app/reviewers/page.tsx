@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   requirePage,
   EDIT_SUBMISSION,
@@ -7,35 +6,29 @@ import {
   NO_REVIEW,
   SECOND_PASS,
 } from "@/lib/guard";
-import {
-  listAdmins,
-  reviewerStatsBySlackId,
-  displayNamesBySlackId,
-  type ReviewerStats,
-} from "@/lib/db";
+import { listAdmins, reviewerStatsBySlackId, displayNamesBySlackId, type ReviewerStats } from "@/lib/db";
 import { addReviewer } from "@/app/actions";
 import { slackHandles } from "@/lib/slack";
 import { TeamLog } from "@/app/_components/TeamLog";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
+  ActionButton,
+  Badge,
+  Card,
+  CardHeader,
+  EmptyRow,
+  Field,
+  FilterBar,
+  Input,
+  Mono,
+  Muted,
+  PageHeader,
   Pagination,
-  PaginationContent,
-  PaginationItem,
-  PaginationLink,
-} from "@/components/ui/pagination";
-import {
+  Stat,
+  StatGrid,
   Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  TextLink,
+  formatDate,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -53,59 +46,30 @@ const EMPTY_STATS: ReviewerStats = {
   lastReview: null,
 };
 
-function fmtDate(iso: string | null): string {
-  if (!iso) return "never";
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-function StatCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="px-4 py-2 text-center">
-      <div className="text-lg font-semibold tabular-nums leading-tight">{value}</div>
-      <div className="text-[0.7rem] text-muted-foreground mt-0.5 whitespace-nowrap">{label}</div>
-    </div>
-  );
-}
-
 export default async function ReviewersPage({
   searchParams,
 }: {
   searchParams: Promise<{ q?: string; page?: string }>;
 }) {
-  const access = await requirePage("owner");
+  await requirePage("owner");
   const { q, page } = await searchParams;
 
   const [admins, stats] = await Promise.all([listAdmins(), reviewerStatsBySlackId()]);
   const tableReviewers = admins.filter((a) => a.permissions.includes("review"));
   const inTable = new Set(tableReviewers.map((r) => r.slack_id));
-  const blocked = new Set(
-    admins.filter((a) => a.permissions.includes(NO_REVIEW)).map((a) => a.slack_id),
-  );
+  const blocked = new Set(admins.filter((a) => a.permissions.includes(NO_REVIEW)).map((a) => a.slack_id));
   // Owners (ADMIN_SLACK_IDS) review whether or not they have an admins row.
   const owners = new Set(ownerSlackIds());
   const secondPassIds = secondPassSlackIds();
   const isFinalReviewer = (id: string, perms: string[]) =>
     perms.includes(SECOND_PASS) || (secondPassIds.length > 0 ? secondPassIds.includes(id) : owners.has(id));
-  const implicit = [...owners].filter(
-    (id) => !inTable.has(id) && !blocked.has(id),
-  );
+  const implicit = [...owners].filter((id) => !inTable.has(id) && !blocked.has(id));
   const allReviewers = [
     ...implicit.map((id) => ({ slack_id: id, name: "", permissions: [] as string[] })),
-    ...tableReviewers.map((r) => ({
-      slack_id: r.slack_id,
-      name: r.name,
-      permissions: r.permissions,
-    })),
+    ...tableReviewers.map((r) => ({ slack_id: r.slack_id, name: r.name, permissions: r.permissions })),
   ];
   const ids = allReviewers.map((r) => r.slack_id);
-  const [handles, playerNames] = await Promise.all([
-    slackHandles(ids),
-    displayNamesBySlackId(ids),
-  ]);
+  const [handles, playerNames] = await Promise.all([slackHandles(ids), displayNamesBySlackId(ids)]);
   const displayFor = (r: { slack_id: string; name: string }) =>
     r.name || handles.get(r.slack_id) || playerNames.get(r.slack_id) || r.slack_id;
 
@@ -124,10 +88,8 @@ export default async function ReviewersPage({
   const total = filtered.length;
   const pages = Math.max(1, Math.ceil(total / PER));
   const cur = Math.min(Math.max(parseInt(page ?? "1", 10) || 1, 1), pages);
-  const start = (cur - 1) * PER;
-  const reviewers = filtered.slice(start, start + PER);
-  const qp = (n: number) =>
-    `/reviewers?page=${n}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
+  const reviewers = filtered.slice((cur - 1) * PER, cur * PER);
+  const qp = (n: number) => `/reviewers?page=${n}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
 
   const totals = [...stats.values()].reduce(
     (acc, s) => {
@@ -140,177 +102,87 @@ export default async function ReviewersPage({
   );
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold text-foreground tracking-tight">Reviewers</h1>
-          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-            Everyone who can work the ship queue. Click a reviewer for their full stats and
-            review history.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          <Card className="flex-row divide-x divide-border py-0">
-            <StatCell label="reviews all-time" value={String(totals.reviews)} />
-            <StatCell label="final approvals" value={String(totals.approved)} />
-            <StatCell
-              label="hours credited"
-              value={String(Math.round(totals.hours * 10) / 10)}
-            />
-          </Card>
-        </div>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Reviewers"
+        count={allReviewers.length}
+        description="Everyone who can work the ship queue. Open a reviewer for their full stats and review history."
+      />
 
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-4">Add a reviewer</div>
-        <form action={addReviewer} className="grid sm:grid-cols-[1fr_1fr_auto] gap-4 items-end">
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Name</span>
-            <Input name="name" placeholder="e.g. Alex Rivera" className="w-full text-sm" />
-          </Label>
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Slack member ID</span>
-            <Input
-              name="slackId"
-              required
-              placeholder="U0XXXXXXX"
-              className="w-full text-sm font-mono"
-            />
-          </Label>
-          <PendingButton className="bg-brand text-white border-transparent" pendingText="Adding…">
+      <StatGrid>
+        <Stat label="Reviews all-time" value={totals.reviews} icon="checkmark" />
+        <Stat label="Final approvals" value={totals.approved} icon="checkmark-all" tone="success" />
+        <Stat label="Hours credited" value={Math.round(totals.hours * 10) / 10} icon="clock" />
+      </StatGrid>
+
+      <Card>
+        <CardHeader title="Add a reviewer" icon="member-add" />
+        <form action={addReviewer} className="grid items-end gap-4 sm:grid-cols-[1fr_1fr_auto]">
+          <Field label="Name">
+            <Input name="name" placeholder="e.g. Alex Rivera" />
+          </Field>
+          <Field label="Slack member ID">
+            <Input name="slackId" required placeholder="U0XXXXXXX" className="hc-mono" />
+          </Field>
+          <ActionButton icon="member-add" pendingLabel="Adding...">
             Add reviewer
-          </PendingButton>
+          </ActionButton>
         </form>
-        <p className="text-xs text-muted-foreground mt-2">
-          Slack → profile → ⋯ → Copy member ID. If they&apos;re already an admin, this just
-          grants them review access on top.
+        <p className="hc-caption mt-3 text-xs">
+          Slack, profile, the three dots menu, Copy member ID. If they&apos;re already an admin, this just grants
+          them review access on top.
         </p>
       </Card>
 
       <div>
-        <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
-          <div className="text-sm font-medium text-muted-foreground">
-            {total} reviewer{total === 1 ? "" : "s"}
-            {needle ? ` matching “${q}”` : ""}
-          </div>
-          <form className="flex gap-2">
-            <Input
-              name="q"
-              defaultValue={q ?? ""}
-              placeholder="Search reviewers…"
-              className="text-sm w-56"
-            />
-            <Button type="submit">Search</Button>
-          </form>
-        </div>
-
-        <Card className="overflow-hidden py-0">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="p-3">Reviewer</TableHead>
-                <TableHead className="p-3">Reviews</TableHead>
-                <TableHead className="p-3">Approved</TableHead>
-                <TableHead className="p-3">Hours credited</TableHead>
-                <TableHead className="p-3">Flags</TableHead>
-                <TableHead className="p-3">Last review</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {reviewers.map((r) => {
-                const handle = (r.slack_id && handles.get(r.slack_id)) ?? r.slack_id;
-                const s = stats.get(r.slack_id) ?? EMPTY_STATS;
-                return (
-                  <TableRow key={r.slack_id}>
-                    <TableCell className="p-3">
-                      <Link
-                        href={`/reviewers/${r.slack_id}`}
-                        className="font-bold hover:text-brand"
-                      >
+        <FilterBar q={q} placeholder="Search reviewers by name, handle or Slack ID" />
+        <Card padding="flush">
+          <CardHeader title={needle ? `Matching "${q}"` : "Team"} icon="leaders" count={total} />
+          <Table headers={["Reviewer", "Reviews", "Approved", "Hours credited", "Flags", "Last review"]}>
+            {reviewers.map((r) => {
+              const handle = handles.get(r.slack_id) ?? r.slack_id;
+              const s = stats.get(r.slack_id) ?? EMPTY_STATS;
+              return (
+                <tr key={r.slack_id}>
+                  <td>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <TextLink href={`/reviewers/${r.slack_id}`} className="font-bold">
                         {displayFor(r)}
-                      </Link>
-                      <span className="inline-flex gap-1 ml-2 align-middle">
-                        {owners.has(r.slack_id) && (
-                          <Badge variant="destructive" className="text-[0.65rem] uppercase tracking-wide">
-                            admin
-                          </Badge>
-                        )}
-                        {isFinalReviewer(r.slack_id, r.permissions) && (
-                          <Badge variant="success" className="text-[0.65rem] uppercase tracking-wide">
-                            second pass
-                          </Badge>
-                        )}
-                        {r.permissions.includes(EDIT_SUBMISSION) && (
-                          <Badge variant="info" className="text-[0.65rem] uppercase tracking-wide">
-                            edits submissions
-                          </Badge>
-                        )}
-                      </span>
-                      <div className="text-xs text-muted-foreground font-mono">{handle}</div>
-                    </TableCell>
-                    <TableCell className="p-3 tabular-nums">{s.reviews}</TableCell>
-                    <TableCell className="p-3 tabular-nums">{s.approved}</TableCell>
-                    <TableCell className="p-3 tabular-nums">
-                      {Math.round(s.hoursApproved * 10) / 10}
-                    </TableCell>
-                    <TableCell
-                      className={`p-3 tabular-nums ${
-                        s.flagged > 0 ? "text-rose-600 dark:text-rose-400 font-bold" : ""
-                      }`}
-                    >
-                      {s.flagged}
-                    </TableCell>
-                    <TableCell className="p-3 text-muted-foreground">{fmtDate(s.lastReview)}</TableCell>
-                  </TableRow>
-                );
-              })}
-              {reviewers.length === 0 && (
-                <TableRow className="hover:bg-transparent">
-                  <TableCell className="p-5 text-muted-foreground" colSpan={6}>
-                    {needle
-                      ? "No reviewers match that search."
-                      : "No reviewers yet. Add someone above to start clearing the queue."}
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
+                      </TextLink>
+                      {owners.has(r.slack_id) && <Badge tone="danger">Admin</Badge>}
+                      {isFinalReviewer(r.slack_id, r.permissions) && <Badge tone="success">Second pass</Badge>}
+                      {r.permissions.includes(EDIT_SUBMISSION) && <Badge tone="info">Edits submissions</Badge>}
+                    </div>
+                    <Muted className="text-xs">
+                      <Mono>{handle}</Mono>
+                    </Muted>
+                  </td>
+                  <td className="hc-mono">{s.reviews}</td>
+                  <td className="hc-mono">{s.approved}</td>
+                  <td className="hc-mono">{Math.round(s.hoursApproved * 10) / 10}</td>
+                  <td>
+                    {s.flagged > 0 ? (
+                      <Badge tone="danger" icon="flag">
+                        {s.flagged}
+                      </Badge>
+                    ) : (
+                      <span className="hc-mono">0</span>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap">
+                    <Muted>{s.lastReview ? formatDate(s.lastReview) : "never"}</Muted>
+                  </td>
+                </tr>
+              );
+            })}
+            {reviewers.length === 0 && (
+              <EmptyRow colSpan={6} title={needle ? "No reviewers match that search" : "No reviewers yet"} icon="leaders">
+                {needle ? undefined : "Add someone above to start clearing the queue."}
+              </EmptyRow>
+            )}
           </Table>
         </Card>
-
-        {total > 0 && (
-          <div className="flex items-center justify-between gap-3 mt-4 text-sm">
-            <span className="text-muted-foreground">
-              Showing {start + 1}–{Math.min(start + PER, total)} of {total}
-            </span>
-            <Pagination className="mx-0 w-auto justify-end">
-              <PaginationContent>
-                <PaginationItem>
-                  <PaginationLink
-                    href={qp(cur - 1)}
-                    aria-label="Previous page"
-                    className={cur <= 1 ? "pointer-events-none opacity-40" : ""}
-                  >
-                    ←
-                  </PaginationLink>
-                </PaginationItem>
-                <PaginationItem>
-                  <span className="px-2 text-muted-foreground tabular-nums">
-                    {cur} / {pages}
-                  </span>
-                </PaginationItem>
-                <PaginationItem>
-                  <PaginationLink
-                    href={qp(cur + 1)}
-                    aria-label="Next page"
-                    className={cur >= pages ? "pointer-events-none opacity-40" : ""}
-                  >
-                    →
-                  </PaginationLink>
-                </PaginationItem>
-              </PaginationContent>
-            </Pagination>
-          </div>
-        )}
+        <Pagination page={cur} totalPages={pages} hrefFor={qp} />
       </div>
 
       <TeamLog />

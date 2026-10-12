@@ -1,4 +1,4 @@
-import { Card } from "@/components/ui/card";
+import { Card, EmptyState } from "@/app/_ui/ui";
 
 // Stand-in for a page that is nothing but PII (fulfillment, Slack lookup, ...)
 // while live mode is on. Rendered instead of the page, so the data is never
@@ -11,11 +11,12 @@ export function LiveBlocked({
   reason?: string;
 }) {
   return (
-    <Card className="p-8 max-w-lg mx-auto mt-10 text-center gap-2">
-      <div className="text-base font-semibold">{what} is hidden in live mode</div>
-      <div className="text-sm text-muted-foreground">
-        {reason}, so it stays closed while you are live. Turn off live mode in the top bar to open it.
-      </div>
-    </Card>
+    <div className="mx-auto mt-10 max-w-lg">
+      <Card>
+        <EmptyState title={`${what} is hidden in live mode`} icon="private">
+          {reason}, so it stays closed while you are live. Turn off live mode in the top bar to open it.
+        </EmptyState>
+      </Card>
+    </div>
   );
 }

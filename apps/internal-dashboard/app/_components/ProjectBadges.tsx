@@ -1,53 +1,33 @@
-import { Badge as UIBadge } from "@/components/ui/badge";
+import type { ReactNode } from "react";
+import { Badge as KitBadge, StatusBadge as KitStatusBadge, type Tone as KitTone } from "@/app/_ui/ui";
+
+// Project badges shared by the review, project and player pages.
 
 type Tone = "gray" | "green" | "amber" | "rose" | "blue" | "violet";
 
-const TONE_VARIANT = {
-  gray: "secondary",
+const TONE: Record<Tone, KitTone> = {
+  gray: "neutral",
   green: "success",
   amber: "warning",
-  rose: "destructive",
+  rose: "danger",
   blue: "info",
-  violet: "violet",
-} as const;
-
-export function Badge({
-  tone = "gray",
-  children,
-}: {
-  tone?: Tone;
-  children: React.ReactNode;
-}) {
-  return <UIBadge variant={TONE_VARIANT[tone]}>{children}</UIBadge>;
-}
-
-const STATUS: Record<string, { label: string; tone: Tone; dot: string }> = {
-  draft: { label: "Draft", tone: "gray", dot: "bg-gray-400" },
-  shipped: { label: "In review", tone: "amber", dot: "bg-amber-500" },
-  fraud_review: { label: "Fraud review", tone: "blue", dot: "bg-blue-500" },
-  second_review: { label: "Final review", tone: "violet", dot: "bg-violet-500" },
-  approved: { label: "Approved", tone: "green", dot: "bg-emerald-500" },
-  needs_changes: { label: "Needs changes", tone: "rose", dot: "bg-rose-500" },
+  violet: "purple",
 };
 
-export function StatusBadge({ status }: { status: string }) {
-  const s = STATUS[status] ?? { label: status, tone: "gray" as const, dot: "bg-gray-400" };
-  return (
-    <Badge tone={s.tone}>
-      <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
-      {s.label}
-    </Badge>
-  );
+export function Badge({ tone = "gray", children }: { tone?: Tone; children: ReactNode }) {
+  return <KitBadge tone={TONE[tone]}>{children}</KitBadge>;
 }
 
-const LEVEL_NAMES = ["Greenhorn", "Deputy", "Outlaw", "Legend"];
+export const StatusBadge = KitStatusBadge;
+
+const LEVEL_NAMES = ["Spark", "Signal", "Grid", "Nexus"];
 
 export function LevelBadge({ level }: { level: number }) {
   const idx = Math.min(Math.max(Math.round(level) || 1, 1), 4);
   return (
-    <Badge tone="blue">
-      L{idx} · {LEVEL_NAMES[idx - 1]}
-    </Badge>
+    <KitBadge tone="info">
+      T{idx} {LEVEL_NAMES[idx - 1]}
+    </KitBadge>
   );
 }
 
@@ -68,41 +48,33 @@ const TYPE_LABELS: Record<string, string> = {
 // The kind of thing the maker shipped, so a reviewer knows how to run/judge it.
 export function TypeBadge({ type }: { type?: string | null }) {
   if (!type) return null;
-  return <Badge tone="gray">{TYPE_LABELS[type] ?? type}</Badge>;
+  return <KitBadge>{TYPE_LABELS[type] ?? type}</KitBadge>;
 }
 
 // Reviewer-nominated standout project. Cosmetic only, see toggleProjectPeak.
 export function BeaconBadge() {
-  return <Badge tone="amber">★ Beacon</Badge>;
+  return (
+    <KitBadge tone="yellow" icon="rep">
+      Beacon
+    </KitBadge>
+  );
 }
 
 // Hardware-only funding ask, set by the player via needs_funding. See the
 // funding panel in review/[id]/page.tsx for the BOM / cart screenshot detail.
-export function FundingBadge({
-  needsFunding,
-  fundingUsd,
-}: {
-  needsFunding: boolean;
-  fundingUsd?: number | null;
-}) {
+export function FundingBadge({ needsFunding, fundingUsd }: { needsFunding: boolean; fundingUsd?: number | null }) {
   if (!needsFunding) return null;
   return (
-    <Badge tone="green">
-      Funding: {fundingUsd ? `$${Number(fundingUsd).toFixed(2)}` : "requested"}
-    </Badge>
+    <KitBadge tone="success">Funding: {fundingUsd ? `$${Number(fundingUsd).toFixed(2)}` : "requested"}</KitBadge>
   );
 }
 
-export function ShipBadges({
-  project,
-}: {
-  project: { is_update: boolean; used_ai: boolean; other_ysws: boolean };
-}) {
+export function ShipBadges({ project }: { project: { is_update: boolean; used_ai: boolean; other_ysws: boolean } }) {
   return (
     <>
-      {project.is_update && <Badge tone="blue">Update</Badge>}
-      {project.used_ai && <Badge tone="violet">AI used</Badge>}
-      {project.other_ysws && <Badge tone="amber">Other YSWS disclosed</Badge>}
+      {project.is_update && <KitBadge tone="info">Update</KitBadge>}
+      {project.used_ai && <KitBadge tone="purple">AI used</KitBadge>}
+      {project.other_ysws && <KitBadge tone="warning">Other YSWS disclosed</KitBadge>}
     </>
   );
 }

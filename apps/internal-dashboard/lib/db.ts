@@ -1,4 +1,5 @@
 import { queueWaitStartMs, type QueueWaitInput } from "./queueWait";
+import { DEFAULT_STAFF_SETTINGS, parseStaffSettings, type StaffSettings } from "./staffSettings";
 import { randomBytes } from "node:crypto";
 import { decryptPII } from "./crypto";
 import { reForProject } from "@/app/_generated/config";
@@ -192,10 +193,10 @@ export interface ProjectRow {
   second_pass_telescreen_checked: boolean;
   second_pass_hours_deflated: boolean;
   second_pass_heartbeats_added: boolean;
-  // Reviewer override that counts Hackatime hours from before the global
-  // hackatimeCutoff for this one project, see extendHoursCutoff in
-  // app/actions.ts. hours_extended_since is the "since" date used the last
-  // time it was applied; null means no override is in effect.
+  // A past reviewer override that counted Hackatime hours from before the
+  // global hackatimeCutoff for this one project. The override can no longer
+  // be set from the dashboard; these only describe ones already applied.
+  // hours_extended_since is the "since" date used; null means none.
   hours_extended_since: string | null;
   hours_extended_by: string;
   hours_extended_note: string;
@@ -254,46 +255,6 @@ export interface AdminRow {
   created_at: string;
 }
 
-// Cross-link for the Slack Lookup tool: does this Slack ID have a Pixl account?
-export async function getPlayerBySlackId(
-  slackId: string,
-): Promise<Pick<UserRow, "id" | "display_name" | "real_name"> | null> {
-  const { data, error } = await db
-    .from("users")
-    .select("id, display_name, real_name")
-    .eq("slack_id", slackId)
-    .maybeSingle();
-  if (error) {
-    console.error("getPlayerBySlackId", error.message);
-    return null;
-  }
-  return data;
-}
-
-// Name -> Slack id suggestions for the Slack Lookup tool, so admins don't
-// have to go dig a U0… id out of another tab first. Deliberately lighter
-// than listPlayers() , no project/violation/ban joins, just enough to pick
-// the right person off a short list.
-export async function searchPlayerHandles(
-  query: string,
-  limit = 8,
-): Promise<Pick<UserRow, "id" | "display_name" | "real_name" | "slack_id">[]> {
-  const like = query.replace(/[,()%*\\]/g, " ").trim();
-  if (!like) return [];
-  const { data, error } = await db
-    .from("users")
-    .select("id, display_name, real_name, slack_id")
-    .not("slack_id", "is", null)
-    .or(`display_name.ilike.%${like}%,real_name.ilike.%${like}%`)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-  if (error) {
-    console.error("searchPlayerHandles", error.message);
-    return [];
-  }
-  return data ?? [];
-}
-
 export async function getAdmin(slackId: string): Promise<AdminRow | null> {
   const { data, error } = await db
     .from("admins")
@@ -319,6 +280,26 @@ export async function getGuidelinesAck(slackId: string): Promise<number | null> 
     return null;
   }
   return data ? Number((data as { version: number }).version) : null;
+}
+
+// Dashboard preferences for one staff member (theme, accent, confetti...).
+// Falls back to the defaults on any error, so a missing row or table can never
+// take the dashboard down.
+export async function getStaffSettings(slackId: string): Promise<StaffSettings> {
+  const { data, error } = await db.from("staff_settings").select("settings").eq("slack_id", slackId).maybeSingle();
+  if (error) {
+    console.error("getStaffSettings", error.message);
+    return DEFAULT_STAFF_SETTINGS;
+  }
+  return parseStaffSettings((data as { settings: unknown } | null)?.settings);
+}
+
+export async function saveStaffSettingsRow(slackId: string, settings: StaffSettings): Promise<boolean> {
+  const { error } = await db
+    .from("staff_settings")
+    .upsert({ slack_id: slackId, settings, updated_at: new Date().toISOString() }, { onConflict: "slack_id" });
+  if (error) console.error("saveStaffSettings", error.message);
+  return !error;
 }
 
 export async function ackGuidelines(slackId: string, version: number): Promise<void> {
@@ -3386,28 +3367,6 @@ export async function globalSearch(
     players: (playersRes.data ?? []) as SearchResults["players"],
     projects: (projectsRes.data ?? []) as SearchResults["projects"],
   };
-}
-
-export interface NewsRow {
-  id: number;
-  body: string;
-  link_url: string | null;
-  posted_at: string;
-  active: boolean;
-}
-
-// Every post, hidden ones included, since this backs the editor rather than the
-// player-facing feed (that one lives on the game server at GET /api/news).
-export async function listNews(): Promise<NewsRow[]> {
-  const { data, error } = await db
-    .from("news")
-    .select("*")
-    .order("posted_at", { ascending: false });
-  if (error) {
-    console.error("listNews", error.message);
-    return [];
-  }
-  return (data ?? []) as NewsRow[];
 }
 
 export interface VaultReward {

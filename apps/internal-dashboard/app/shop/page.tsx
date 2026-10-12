@@ -1,10 +1,18 @@
-import Link from "next/link";
-import { redirect } from "next/navigation";
+/* eslint-disable @next/next/no-img-element */
 import { requirePage } from "@/lib/guard";
-import { listShopItems, listPersonalShopItems, listShopOptionStock, listSidequests, SHOP_REGIONS, SHOP_REGION_LABELS, SHOP_CATEGORIES, SHOP_CATEGORY_LABELS, type ShopRegion } from "@/lib/db";
+import {
+  listShopItems,
+  listPersonalShopItems,
+  listShopOptionStock,
+  listSidequests,
+  SHOP_REGIONS,
+  SHOP_REGION_LABELS,
+  SHOP_CATEGORIES,
+  SHOP_CATEGORY_LABELS,
+  type ShopRegion,
+  type ShopItemRow,
+} from "@/lib/db";
 import { addShopItem, toggleShopItem, deleteShopItem, updateShopItem, updateShopItemPrices } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Disclosure } from "@/app/_components/Disclosure";
 import { OptionsEditor } from "@/app/_components/OptionsEditor";
 import { AddShopItemForm } from "@/app/_components/AddShopItemForm";
 import { PersonalShopItems } from "@/app/_components/PersonalShopItems";
@@ -12,38 +20,79 @@ import { ShopItemEditConfigurator } from "@/app/_components/ShopItemEditConfigur
 import { BulkUploadShopItemsForm } from "@/app/_components/BulkUploadShopItemsForm";
 import { parseOptionGroups } from "@/lib/shopOptions";
 import { config } from "@/app/_generated/config";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
+  ActionButton,
+  Badge,
+  ButtonLink,
+  Card,
+  CardHeader,
+  Checkbox,
+  Details,
+  EmptyState,
+  Field,
+  Flash,
+  Icon,
+  Input,
+  LinkTabs,
+  Muted,
+  NativeSelect,
+  PageHeader,
   Pagination,
-  PaginationContent,
-  PaginationItem,
-  PaginationLink,
-} from "@/components/ui/pagination";
+  type GlyphName,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
 const PER = 8;
 
-const FILE_INPUT =
-  "block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80";
+function ItemThumb({ src, glyph }: { src: string | null | undefined; glyph: GlyphName }) {
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt=""
+        className="h-20 w-20 shrink-0 rounded-md border border-[var(--border)] object-cover [image-rendering:pixelated]"
+      />
+    );
+  }
+  return (
+    <span className="hc-muted grid h-20 w-20 shrink-0 place-items-center rounded-md border border-[var(--border)] bg-[var(--sunken)]">
+      <Icon glyph={glyph} size={32} />
+    </span>
+  );
+}
+
+function ToggleForm({ item }: { item: ShopItemRow }) {
+  return (
+    <form action={toggleShopItem}>
+      <input type="hidden" name="id" value={item.id} />
+      <input type="hidden" name="active" value={item.active ? "0" : "1"} />
+      <ActionButton
+        variant="outline"
+        size="sm"
+        icon={item.active ? "private" : "view"}
+        pendingLabel={item.active ? "Hiding..." : "Showing..."}
+      >
+        {item.active ? "Hide" : "Show"}
+      </ActionButton>
+    </form>
+  );
+}
 
 export default async function ShopPage({
   searchParams,
 }: {
   searchParams: Promise<{ page?: string; region?: string; q?: string; personalError?: string; shopError?: string }>;
 }) {
-  const access = await requirePage("owner");
+  await requirePage("owner");
   const { page, region: rawRegion, q, personalError, shopError } = await searchParams;
   const region: ShopRegion = (SHOP_REGIONS as readonly string[]).includes(rawRegion ?? "")
     ? (rawRegion as ShopRegion)
     : "US";
   const query = (q ?? "").trim().toLowerCase();
   // Trophies (unlock_xp > 0, e.g. the 3D Printed Blahaj) are earned by
-  // leveling up, not bought with pixels or tied to a region, pull them out
-  // into their own section regardless of which region tab is selected.
+  // leveling up, not bought with pixels or tied to a region, so they get their
+  // own section whichever region tab is selected.
   const [regionItems, everyItem, allSidequests, personalItems] = await Promise.all([
     listShopItems(region),
     listShopItems(),
@@ -51,12 +100,11 @@ export default async function ShopPage({
     listPersonalShopItems(),
   ]);
   // Active Trials the admin can gate a shop item behind (unlock via completion).
-  const gateTrials = allSidequests.filter((q) => q.active);
+  const gateTrials = allSidequests.filter((t) => t.active);
   const trophies = everyItem.filter((i) => i.unlock_xp > 0);
-  // Every region's price for a given item, by name, for the "edit prices in
-  // every region" mini-form below , so an admin can reprice all 7 regions in
-  // one place instead of switching the region tab per edit. A region with no
-  // row for this item (never stocked there) just shows 0/not-available.
+  // Every region's price for a given item, by name, for the "edit price in
+  // every region" form, so an admin can reprice all regions in one place. A
+  // region with no row for this item just shows 0 (not for sale).
   const pricesByName = new Map<string, Partial<Record<ShopRegion, number>>>();
   for (const it of everyItem) {
     if (it.unlock_xp > 0) continue;
@@ -75,511 +123,350 @@ export default async function ShopPage({
   const start = (cur - 1) * PER;
   const items = allItems.slice(start, start + PER);
   const stockByItem = await listShopOptionStock(items.map((i) => i.id));
+  const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Shop</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Items shown in the in-game Pixl shop. Purchases aren&apos;t enabled yet , players can
-          only browse, so feel free to stock the shelves.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Shop"
+        description="Items in the in-game Pixl shop, per region. Only active items show in game."
+        actions={
+          <ButtonLink href="/shop-detail" variant="outline" size="sm" icon="list">
+            Regional pricing
+          </ButtonLink>
+        }
+      />
+
+      <Flash error={shopError} />
 
       {trophies.length > 0 && (
-        <div>
-          <div className="text-sm font-medium text-muted-foreground mb-3">
-            🏆 Trophies · earned by leveling up, not bought or region-scoped
-          </div>
-          <div className="grid gap-4">
+        <Card padding="flush">
+          <CardHeader title="Trophies" icon="badge-award" count={trophies.length} />
+          <p className="hc-caption px-4 pt-3 text-sm">Earned by leveling up, not bought or tied to a region.</p>
+          <div className="flex flex-col divide-y divide-[var(--border)]">
             {trophies.map((item) => (
-              <Card key={item.id} className={`p-4 gap-4 flex-row ${item.active ? "" : "opacity-60"}`}>
-                {item.image_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={item.image_url}
-                    alt=""
-                    className="w-20 h-20 rounded-lg object-cover border border-border shrink-0 [image-rendering:pixelated]"
-                  />
-                ) : (
-                  <span className="grid place-items-center w-20 h-20 rounded-lg bg-muted border border-border shrink-0 text-2xl">
-                    🏆
-                  </span>
-                )}
+              <div key={item.id} className={`flex gap-4 px-4 py-4 ${item.active ? "" : "opacity-60"}`}>
+                <ItemThumb src={item.image_url} glyph="badge-award" />
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold">{item.name}</span>
-                    <Badge variant="secondary" className="tabular-nums">
-                      Unlocks at {item.unlock_xp} XP
-                    </Badge>
-                    {!item.active && <Badge variant="secondary">hidden</Badge>}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold">{item.name}</span>
+                    <Badge tone="purple">Unlocks at {item.unlock_xp} XP</Badge>
+                    {!item.active && <Badge>Hidden</Badge>}
                   </div>
-                  {item.description && (
-                    <div className="text-sm text-muted-foreground mt-1">{item.description}</div>
-                  )}
-                  <div className="flex items-center gap-2 mt-3">
-                    <form action={toggleShopItem}>
-                      <input type="hidden" name="id" value={item.id} />
-                      <input type="hidden" name="active" value={item.active ? "0" : "1"} />
-                      <PendingButton
-                        variant="outline"
-                        size="sm"
-                        pendingText={item.active ? "Hiding…" : "Showing…"}
-                      >
-                        {item.active ? "Hide" : "Show"}
-                      </PendingButton>
-                    </form>
+                  {item.description && <p className="hc-caption mt-1 text-sm">{item.description}</p>}
+                  <div className="mt-3">
+                    <ToggleForm item={item} />
                   </div>
                 </div>
-              </Card>
+              </div>
             ))}
           </div>
-        </div>
+        </Card>
       )}
 
       <PersonalShopItems items={personalItems} error={personalError} />
 
-      {shopError && (
-        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {shopError}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {SHOP_REGIONS.map((r) => (
-            <Link
-              key={r}
-              href={`/shop?region=${r}${q ? `&q=${encodeURIComponent(q)}` : ""}`}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
-                r === region
-                  ? "bg-brand text-white border-transparent"
-                  : "border-border text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {SHOP_REGION_LABELS[r]}
-            </Link>
-          ))}
-        </div>
-        <form className="flex gap-2">
-          <input type="hidden" name="region" value={region} />
-          <Input
-            name="q"
-            defaultValue={q ?? ""}
-            placeholder="Search item names…"
-            className="w-full min-w-0 max-w-64 text-sm"
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <LinkTabs
+            active={region}
+            tabs={SHOP_REGIONS.map((r) => ({ key: r, href: `/shop?region=${r}${qParam}`, label: SHOP_REGION_LABELS[r] }))}
           />
-          {q && (
-            <Link
-              href={`/shop?region=${region}`}
-              className="text-sm text-muted-foreground hover:text-foreground self-center"
-            >
-              Clear
-            </Link>
-          )}
-        </form>
-      </div>
-
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-4">Add an item to {SHOP_REGION_LABELS[region]}</div>
-        <AddShopItemForm action={addShopItem} region={region} />
-        <Disclosure summary="Bulk upload from CSV" className="mt-5">
-          <BulkUploadShopItemsForm region={region} />
-        </Disclosure>
-      </Card>
-
-      <div>
-        <div className="text-sm font-medium text-muted-foreground mb-3">
-          {allItems.length} item{allItems.length === 1 ? "" : "s"} in {SHOP_REGION_LABELS[region]} ·
-          only active ones show in game
+          <form className="flex items-center gap-2">
+            <input type="hidden" name="region" value={region} />
+            <div className="relative w-64">
+              <Icon
+                glyph="search"
+                size={20}
+                className="hc-muted pointer-events-none absolute top-1/2 left-2 -translate-y-1/2"
+              />
+              <Input name="q" type="search" defaultValue={q ?? ""} placeholder="Search items..." className="hc-input-search" />
+            </div>
+            {q && (
+              <ButtonLink href={`/shop?region=${region}`} variant="ghost" size="sm">
+                Clear
+              </ButtonLink>
+            )}
+          </form>
         </div>
+
+        <Card>
+          <CardHeader title={`Add an item to ${SHOP_REGION_LABELS[region]}`} icon="plus" />
+          <AddShopItemForm action={addShopItem} region={region} />
+          <div className="mt-5">
+            <Details summary="Bulk upload from CSV">
+              <BulkUploadShopItemsForm region={region} />
+            </Details>
+          </div>
+        </Card>
+
+        <h2 className="hc-heading flex items-center gap-2 text-base">
+          {allItems.length} item{allItems.length === 1 ? "" : "s"} in {SHOP_REGION_LABELS[region]}
+          {query && <Muted className="text-sm font-normal">matching &quot;{q}&quot;</Muted>}
+        </h2>
+
         {allItems.length === 0 ? (
-          <Card className="p-8 text-center text-muted-foreground text-sm">
-            Empty shelves. Add the first item above.
+          <Card>
+            <EmptyState title="Empty shelves" icon="bag">
+              {query ? "Nothing matches that search." : "Add the first item above."}
+            </EmptyState>
           </Card>
         ) : (
-          <div className="grid gap-4">
-            {items.map((item) => (
-              <Card key={item.id} className={`p-4 gap-4 flex-row ${item.active ? "" : "opacity-60"}`}>
-                {item.image_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={item.image_url}
-                    alt=""
-                    className="w-20 h-20 rounded-lg object-cover border border-border shrink-0 [image-rendering:pixelated]"
-                  />
-                ) : (
-                  <span className="grid place-items-center w-20 h-20 rounded-lg bg-muted border border-border shrink-0 text-2xl">
-                    🛍️
-                  </span>
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold">{item.name}</span>
-                    <Badge variant="success" className="tabular-nums">
-                      {item.price} px
-                    </Badge>
-                    <Badge
-                      variant="secondary"
-                      className="tabular-nums"
-                      title="What fulfillers can spend sourcing this item"
-                    >
-                      ${(item.price * config.economy.pixelValueUsd).toFixed(2)}
-                    </Badge>
-                    <Badge variant="secondary">
-                      {SHOP_CATEGORY_LABELS[item.category] ?? SHOP_CATEGORY_LABELS.other}
-                    </Badge>
-                    {item.discount_percent > 0 && (
-                      <Badge
-                        variant="warning"
-                        className="tabular-nums"
-                        title={`Effective price: ${Math.round((item.price * (100 - item.discount_percent)) / 100)} px`}
-                      >
-                        {item.discount_percent}% OFF
-                      </Badge>
-                    )}
-                    {!item.active && <Badge variant="secondary">hidden</Badge>}
-                  </div>
-                  {item.description && (
-                    <div className="text-sm text-muted-foreground mt-1">{item.description}</div>
-                  )}
-                  {item.options.length > 0 && (
-                    <div className="mt-2 space-y-1.5">
-                      {parseOptionGroups(item.options).map((g, gi) => (
-                        <div key={gi} className="flex items-center gap-1.5 flex-wrap">
-                          {g.name && (
-                            <span className="text-xs font-medium text-muted-foreground">{g.name}:</span>
-                          )}
-                          {g.choices.map((c) => (
-                            <Badge key={c} variant="secondary">
-                              {c}
+          <div className="flex flex-col gap-4">
+            {items.map((item) => {
+              const stock = stockByItem.get(item.id) ?? [];
+              return (
+                <Card key={item.id} className={item.active ? "" : "opacity-60"}>
+                  <div className="flex gap-4">
+                    <ItemThumb src={item.image_url} glyph="bag" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="hc-heading text-lg">{item.name}</span>
+                        <Badge tone="success">{item.price} px</Badge>
+                        <Badge outline>${(item.price * config.economy.pixelValueUsd).toFixed(2)} budget</Badge>
+                        <Badge>{SHOP_CATEGORY_LABELS[item.category] ?? SHOP_CATEGORY_LABELS.other}</Badge>
+                        {item.discount_percent > 0 && (
+                          <Badge tone="warning">
+                            {item.discount_percent}% off ({Math.round((item.price * (100 - item.discount_percent)) / 100)} px)
+                          </Badge>
+                        )}
+                        {!item.active && <Badge>Hidden</Badge>}
+                      </div>
+                      {item.description && <p className="hc-caption mt-1 text-sm">{item.description}</p>}
+                      {item.options.length > 0 && (
+                        <div className="mt-2 flex flex-col gap-1.5">
+                          {parseOptionGroups(item.options).map((g, gi) => (
+                            <div key={gi} className="flex flex-wrap items-center gap-1.5">
+                              {g.name && <Muted className="text-xs font-bold">{g.name}:</Muted>}
+                              {g.choices.map((c) => (
+                                <Badge key={c} outline>
+                                  {c}
+                                </Badge>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {stock.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                          <Muted className="text-xs font-bold">Stock:</Muted>
+                          {stock.map((s) => (
+                            <Badge key={s.choice} tone={s.remaining <= 0 ? "danger" : "neutral"}>
+                              {s.choice} {s.remaining}/{s.total}
                             </Badge>
                           ))}
                         </div>
-                      ))}
+                      )}
+                      <div className="mt-3 flex items-center gap-2">
+                        <ToggleForm item={item} />
+                        <form action={deleteShopItem}>
+                          <input type="hidden" name="id" value={item.id} />
+                          <ActionButton
+                            variant="danger"
+                            size="sm"
+                            icon="delete"
+                            pendingLabel="Deleting..."
+                            confirm={`Delete "${item.name}" from the shop? This can't be undone.`}
+                          >
+                            Delete
+                          </ActionButton>
+                        </form>
+                      </div>
                     </div>
-                  )}
-                  {(stockByItem.get(item.id)?.length ?? 0) > 0 && (
-                    <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-xs">
-                      <span className="font-medium text-muted-foreground">Stock:</span>
-                      {stockByItem.get(item.id)!.map((s) => (
-                        <Badge key={s.choice} variant={s.remaining <= 0 ? "destructive" : "secondary"}>
-                          {s.choice} {s.remaining}/{s.total}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2 mt-3">
-                    <form action={toggleShopItem}>
-                      <input type="hidden" name="id" value={item.id} />
-                      <input type="hidden" name="active" value={item.active ? "0" : "1"} />
-                      <PendingButton
-                        variant="outline"
-                        size="sm"
-                        pendingText={item.active ? "Hiding…" : "Showing…"}
-                      >
-                        {item.active ? "Hide" : "Show"}
-                      </PendingButton>
-                    </form>
-                    <form action={deleteShopItem}>
-                      <input type="hidden" name="id" value={item.id} />
-                      <PendingButton
-                        variant="outline"
-                        size="sm"
-                        pendingText="Deleting…"
-                        confirm={`Delete "${item.name}" from the shop? This can't be undone.`}
-                        className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
-                      >
-                        Delete
-                      </PendingButton>
-                    </form>
                   </div>
-                  <Disclosure summary="Edit item" className="mt-3">
-                    <form action={updateShopItem} className="space-y-3">
-                      <input type="hidden" name="id" value={item.id} />
-                      <input type="hidden" name="original_name" value={item.name} />
-                      <div className="grid grid-cols-[1fr_6.5rem] gap-3">
-                        <Label className="block font-normal">
-                          <span className="block text-xs font-medium text-muted-foreground mb-1">Name</span>
-                          <Input
-                            name="name"
-                            required
-                            maxLength={60}
-                            defaultValue={item.name}
-                            className="w-full text-sm"
-                          />
-                        </Label>
-                        <Label className="block font-normal">
-                          <span className="block text-xs font-medium text-muted-foreground mb-1">Price (px)</span>
-                          <Input
-                            name="price"
-                            type="number"
-                            min={0}
-                            required
-                            defaultValue={item.price}
-                            className="w-full text-sm"
-                          />
-                        </Label>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <Label className="block font-normal">
-                          <span className="block text-xs font-medium text-muted-foreground mb-1">Region</span>
-                          <select
-                            name="region"
-                            defaultValue={item.region}
-                            className="w-full text-sm h-9 rounded-md border border-border bg-background px-3"
-                          >
-                            {SHOP_REGIONS.map((r) => (
-                              <option key={r} value={r}>
-                                {SHOP_REGION_LABELS[r]}
-                              </option>
-                            ))}
-                          </select>
-                        </Label>
-                        <Label className="block font-normal">
-                          <span className="block text-xs font-medium text-muted-foreground mb-1">Category</span>
-                          <select
-                            name="category"
-                            defaultValue={item.category}
-                            className="w-full text-sm h-9 rounded-md border border-border bg-background px-3"
-                          >
-                            {SHOP_CATEGORIES.map((c) => (
-                              <option key={c} value={c}>
-                                {SHOP_CATEGORY_LABELS[c]}
-                              </option>
-                            ))}
-                          </select>
-                        </Label>
-                      </div>
-                      <Label className="block font-normal">
-                        <span className="block text-xs font-medium text-muted-foreground mb-1">Description</span>
-                        <Input
-                          name="description"
-                          maxLength={300}
-                          defaultValue={item.description}
-                          className="w-full text-sm"
-                        />
-                      </Label>
-                      <div className="block">
-                        <span className="block text-xs font-medium text-muted-foreground mb-1">Options</span>
-                        <OptionsEditor name="options" initial={item.options} />
-                      </div>
-                      <div className="block rounded-md border border-border p-3">
-                        <ShopItemEditConfigurator
-                          hasConfig={!!item.config_options}
-                          basePrice={item.config_options?.base_price ?? item.price}
-                          referenceUrl={item.config_options?.reference_url ?? ""}
-                          groups={(item.config_options?.groups ?? []).map((g) => ({
-                            name: g.name,
-                            type: g.type === "multi" ? ("multi" as const) : ("single" as const),
-                            choices: g.choices,
-                          }))}
-                          pixelValueUsd={config.economy.pixelValueUsd}
-                        />
-                      </div>
-                      <div className="block">
-                        <span className="block text-xs font-medium text-muted-foreground mb-1">
-                          Unlock via Trial (locked until the player ships ONE of the ticked Trials; none = buyable)
-                        </span>
-                        <div className="flex flex-col gap-1 max-h-40 overflow-y-auto rounded-md border border-border p-2">
-                          {gateTrials.length === 0 && (
-                            <span className="text-xs text-muted-foreground">No active Trials.</span>
-                          )}
-                          {gateTrials.map((q) => (
-                            <label key={q.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                              <input
-                                type="checkbox"
-                                name="unlock_trials"
-                                value={q.id}
-                                defaultChecked={(item.unlock_trial_ids ?? [])
-                                  .map(Number)
-                                  .includes(q.id)}
-                                className="h-4 w-4 rounded border-border accent-brand"
-                              />
-                              <span>
-                                {q.name}
-                                {q.region ? (
-                                  <span className="text-muted-foreground"> · {q.region}</span>
-                                ) : null}
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                      <Label className="block font-normal">
-                        <span className="block text-xs font-medium text-muted-foreground mb-1">
-                          Replace image (optional , leave empty to keep the current one)
-                        </span>
-                        <input
-                          name="image"
-                          type="file"
-                          accept="image/png,image/jpeg,image/webp"
-                          className={FILE_INPUT}
-                        />
-                      </Label>
-                      <label className="flex items-start gap-2 text-sm text-muted-foreground cursor-pointer">
-                        <input
-                          type="checkbox"
-                          name="apply_all_regions"
-                          value="1"
-                          className="mt-0.5 h-4 w-4 rounded border-border accent-brand"
-                        />
-                        <span>
-                          Apply <span className="font-medium text-foreground">name, description &amp; category</span> to
-                          this item in every region (price, options &amp; image stay per-region)
-                        </span>
-                      </label>
-                      <div className="rounded-md border border-border p-3 space-y-2">
-                        <label className="flex items-start gap-2 text-sm cursor-pointer">
-                          <input
-                            type="checkbox"
-                            name="manual_locked"
-                            value="1"
-                            defaultChecked={item.manual_locked}
-                            className="mt-0.5 h-4 w-4 rounded border-border accent-brand"
-                          />
-                          <span>
-                            <span className="font-medium text-foreground">Locked</span> , blocks
-                            purchase regardless of any Trial gate. Applies to this item in every
-                            region.
-                          </span>
-                        </label>
-                        <Label className="block font-normal">
-                          <span className="block text-xs font-medium text-muted-foreground mb-1">
-                            Unlock note (shown to players instead of the Trial prompt)
-                          </span>
-                          <Input
-                            name="lock_note"
-                            maxLength={300}
-                            defaultValue={item.lock_note}
-                            placeholder="e.g. back in stock next chapter"
-                            className="w-full text-sm"
-                          />
-                        </Label>
-                      </div>
-                      <label className="flex items-start gap-2 text-sm cursor-pointer rounded-md border border-border p-3">
-                        <input
-                          type="checkbox"
-                          name="beacon_locked"
-                          value="1"
-                          defaultChecked={item.beacon_locked}
-                          className="mt-0.5 h-4 w-4 rounded border-border accent-brand"
-                        />
-                        <span>
-                          <span className="font-medium text-foreground">Beacon-locked</span> , only
-                          buyable by players who have a Beacon project (see the project page&apos;s
-                          Beacon nomination) they haven&apos;t already spent on another Beacon-locked
-                          item. One Beacon unlocks exactly one Beacon-locked item. Applies to this
-                          item in every region.
-                        </span>
-                      </label>
-                      <Label className="block font-normal">
-                        <span className="block text-xs font-medium text-muted-foreground mb-1">
-                          Discount % (0 = none) - one percentage for every region, off the base price
-                          and every config add-on
-                        </span>
-                        <Input
-                          name="discount_percent"
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="1"
-                          defaultValue={item.discount_percent || 0}
-                          className="w-24 text-sm"
-                        />
-                      </Label>
-                      <label className="flex items-start gap-2 text-sm text-muted-foreground cursor-pointer">
-                        <input
-                          type="checkbox"
-                          name="silent"
-                          value="1"
-                          className="mt-0.5 h-4 w-4 rounded border-border accent-brand"
-                        />
-                        <span>
-                          Save silently , don&apos;t notify Pixo/Slack about this change
-                        </span>
-                      </label>
-                      <PendingButton
-                        className="bg-brand text-white border-transparent"
-                        pendingText="Saving…"
-                      >
-                        Save changes
-                      </PendingButton>
-                    </form>
 
-                    <Disclosure summary="Edit price in every region" className="mt-3">
-                      <form action={updateShopItemPrices} className="space-y-3">
+                  <div className="mt-4 flex flex-col gap-3">
+                    <Details summary="Edit item">
+                      <EditItemForm item={item} gateTrials={gateTrials} />
+                    </Details>
+                    <Details summary="Edit price in every region">
+                      <form action={updateShopItemPrices} className="flex flex-col gap-3">
                         <input type="hidden" name="item_name" value={item.name} />
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                           {SHOP_REGIONS.map((r) => (
-                            <Label key={r} className="block font-normal">
-                              <span className="block text-xs font-medium text-muted-foreground mb-1">
-                                {SHOP_REGION_LABELS[r]}
-                              </span>
+                            <Field key={r} label={SHOP_REGION_LABELS[r]}>
                               <Input
                                 name={`price_${r}`}
                                 type="number"
                                 min={0}
                                 defaultValue={pricesByName.get(item.name)?.[r] ?? 0}
-                                className="w-full text-sm"
                               />
-                            </Label>
+                            </Field>
                           ))}
                         </div>
-                        <span className="block text-xs text-muted-foreground">
-                          0 means not for sale in that region. Only prices change here , name,
-                          description, options &amp; image stay per-region, edit those above.
-                        </span>
-                        <PendingButton
-                          className="bg-brand text-white border-transparent"
-                          pendingText="Saving…"
-                        >
-                          Save prices
-                        </PendingButton>
+                        <Muted className="text-xs">
+                          0 means not for sale in that region. Only prices change here; name, description, options and
+                          image stay per-region, edit those above.
+                        </Muted>
+                        <div>
+                          <ActionButton pendingLabel="Saving...">Save prices</ActionButton>
+                        </div>
                       </form>
-                    </Disclosure>
-                  </Disclosure>
-                </div>
-              </Card>
-            ))}
+                    </Details>
+                  </div>
+                </Card>
+              );
+            })}
           </div>
         )}
 
         {allItems.length > PER && (
-          <div className="flex items-center justify-between gap-3 mt-4 text-sm">
-            <span className="text-muted-foreground">
-              Showing {start + 1}–{Math.min(start + PER, allItems.length)} of {allItems.length}
-            </span>
-            <Pagination className="mx-0 w-auto justify-end">
-              <PaginationContent>
-                <PaginationItem>
-                  <PaginationLink
-                    href={`/shop?region=${region}&page=${cur - 1}${q ? `&q=${encodeURIComponent(q)}` : ""}`}
-                    aria-label="Previous page"
-                    className={cur <= 1 ? "pointer-events-none opacity-40" : ""}
-                  >
-                    ←
-                  </PaginationLink>
-                </PaginationItem>
-                <PaginationItem>
-                  <span className="px-2 text-muted-foreground tabular-nums">
-                    {cur} / {pages}
-                  </span>
-                </PaginationItem>
-                <PaginationItem>
-                  <PaginationLink
-                    href={`/shop?region=${region}&page=${cur + 1}${q ? `&q=${encodeURIComponent(q)}` : ""}`}
-                    aria-label="Next page"
-                    className={cur >= pages ? "pointer-events-none opacity-40" : ""}
-                  >
-                    →
-                  </PaginationLink>
-                </PaginationItem>
-              </PaginationContent>
-            </Pagination>
+          <div className="flex flex-col gap-1">
+            <Muted className="text-sm">
+              Showing {start + 1}-{Math.min(start + PER, allItems.length)} of {allItems.length}
+            </Muted>
+            <Pagination page={cur} totalPages={pages} hrefFor={(p) => `/shop?region=${region}&page=${p}${qParam}`} />
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+function EditItemForm({
+  item,
+  gateTrials,
+}: {
+  item: ShopItemRow;
+  gateTrials: { id: number; name: string; region: string | null }[];
+}) {
+  const unlockIds = (item.unlock_trial_ids ?? []).map(Number);
+  return (
+    <form action={updateShopItem} className="flex flex-col gap-4">
+      <input type="hidden" name="id" value={item.id} />
+      <input type="hidden" name="original_name" value={item.name} />
+      <div className="grid gap-3 sm:grid-cols-[1fr_8rem]">
+        <Field label="Name">
+          <Input name="name" required maxLength={60} defaultValue={item.name} />
+        </Field>
+        <Field label="Price (px)">
+          <Input name="price" type="number" min={0} required defaultValue={item.price} />
+        </Field>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Region">
+          <NativeSelect name="region" defaultValue={item.region}>
+            {SHOP_REGIONS.map((r) => (
+              <option key={r} value={r}>
+                {SHOP_REGION_LABELS[r]}
+              </option>
+            ))}
+          </NativeSelect>
+        </Field>
+        <Field label="Category">
+          <NativeSelect name="category" defaultValue={item.category}>
+            {SHOP_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {SHOP_CATEGORY_LABELS[c]}
+              </option>
+            ))}
+          </NativeSelect>
+        </Field>
+      </div>
+      <Field label="Description">
+        <Input name="description" maxLength={300} defaultValue={item.description} />
+      </Field>
+      <div className="flex flex-col gap-1.5">
+        <span className="hc-label">Options</span>
+        <OptionsEditor name="options" initial={item.options} />
+      </div>
+      <ShopItemEditConfigurator
+        hasConfig={!!item.config_options}
+        basePrice={item.config_options?.base_price ?? item.price}
+        referenceUrl={item.config_options?.reference_url ?? ""}
+        groups={(item.config_options?.groups ?? []).map((g) => ({
+          name: g.name,
+          type: g.type === "multi" ? ("multi" as const) : ("single" as const),
+          choices: g.choices,
+        }))}
+        pixelValueUsd={config.economy.pixelValueUsd}
+      />
+      <div className="flex flex-col gap-1.5">
+        <span className="hc-label">
+          Unlock via Trial
+          <span className="hc-label-hint">
+            Locked until the player ships one of the ticked Trials. None ticked means anyone can buy it.
+          </span>
+        </span>
+        <div className="hc-panel flex max-h-40 flex-col gap-1.5 overflow-y-auto">
+          {gateTrials.length === 0 && <Muted className="text-sm">No active Trials.</Muted>}
+          {gateTrials.map((t) => (
+            <Checkbox
+              key={t.id}
+              name="unlock_trials"
+              value={t.id}
+              defaultChecked={unlockIds.includes(t.id)}
+              label={
+                <>
+                  {t.name}
+                  {t.region && <Muted> · {t.region}</Muted>}
+                </>
+              }
+            />
+          ))}
+        </div>
+      </div>
+      <Field label="Replace image" hint="Optional. Leave empty to keep the current one.">
+        <input name="image" type="file" accept="image/png,image/jpeg,image/webp" className="hc-file" />
+      </Field>
+      <Checkbox
+        name="apply_all_regions"
+        value="1"
+        label={
+          <>
+            Apply <strong>name, description &amp; category</strong> to this item in every region (price, options &amp;
+            image stay per-region)
+          </>
+        }
+      />
+      <div className="hc-panel flex flex-col gap-3">
+        <Checkbox
+          name="manual_locked"
+          value="1"
+          defaultChecked={item.manual_locked}
+          label={
+            <>
+              <strong>Locked</strong>: blocks purchase regardless of any Trial gate. Applies to this item in every
+              region.
+            </>
+          }
+        />
+        <Field label="Unlock note" hint="Shown to players instead of the Trial prompt">
+          <Input name="lock_note" maxLength={300} defaultValue={item.lock_note} placeholder="e.g. back in stock next chapter" />
+        </Field>
+      </div>
+      <div className="hc-panel">
+        <Checkbox
+          name="beacon_locked"
+          value="1"
+          defaultChecked={item.beacon_locked}
+          label={
+            <>
+              <strong>Beacon-locked</strong>: only buyable by players who have a Beacon project (see the project
+              page&apos;s Beacon nomination) they haven&apos;t already spent on another Beacon-locked item. One Beacon
+              unlocks exactly one Beacon-locked item. Applies to this item in every region.
+            </>
+          }
+        />
+      </div>
+      <Field
+        label="Discount %"
+        hint="0 = none. One percentage for every region, off the base price and every config add-on."
+      >
+        <Input
+          name="discount_percent"
+          type="number"
+          min="0"
+          max="100"
+          step="1"
+          defaultValue={item.discount_percent || 0}
+          className="w-24"
+        />
+      </Field>
+      <Checkbox name="silent" value="1" label="Save silently (don't notify Pixo/Slack about this change)" />
+      <div>
+        <ActionButton pendingLabel="Saving...">Save changes</ActionButton>
+      </div>
+    </form>
   );
 }

@@ -55,17 +55,14 @@ export function LiveReview() {
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 text-xs font-medium ${
-        live ? "text-hc-green" : "text-ink/40"
-      }`}
+      className="hc-mono hc-muted inline-flex items-center gap-2 text-xs font-bold"
       title={live ? "The queue updates automatically" : "Live updates paused"}
     >
       <span
-        className={`w-1.5 h-1.5 rounded-full ${
-          live ? "bg-hc-green" : "bg-ink/30"
-        } ${flash ? "animate-ping" : live ? "animate-pulse" : ""}`}
+        className={`hc-dot ${flash ? "animate-ping" : live ? "animate-pulse" : ""}`}
+        style={live ? { background: "var(--hc-green)" } : undefined}
       />
-      {flash ? "Updating…" : live ? "Live" : "Paused"}
+      {flash ? "Updating..." : live ? "Live" : "Paused"}
     </span>
   );
 }

@@ -1,8 +1,6 @@
 "use client";
 
 import { useRef } from "react";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { updateSecondPassChecklist } from "@/app/actions";
 
 const ITEMS = [
@@ -19,7 +17,7 @@ export function SecondPassChecklist({
   values: { second_pass_telescreen_checked: boolean; second_pass_hours_deflated: boolean; second_pass_heartbeats_added: boolean };
 }) {
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       {ITEMS.map((item) => (
         <ChecklistRow
           key={item.field}
@@ -33,6 +31,7 @@ export function SecondPassChecklist({
   );
 }
 
+// Each tick submits on its own; the page revalidates with the saved value.
 function ChecklistRow({
   projectId,
   field,
@@ -50,10 +49,10 @@ function ChecklistRow({
       <input type="hidden" name="projectId" value={projectId} />
       <input type="hidden" name="field" value={field} />
       <input type="hidden" name="checked" value={(!checked).toString()} />
-      <Label className="flex items-center gap-2 text-sm font-normal cursor-pointer">
-        <Checkbox checked={checked} onCheckedChange={() => formRef.current?.requestSubmit()} />
-        {label}
-      </Label>
+      <label className="hc-check">
+        <input type="checkbox" checked={checked} onChange={() => formRef.current?.requestSubmit()} />
+        <span>{label}</span>
+      </label>
     </form>
   );
 }

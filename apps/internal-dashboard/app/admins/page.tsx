@@ -1,4 +1,4 @@
-import Link from "next/link";
+import type { ReactNode } from "react";
 import {
   requirePage,
   ownerSlackIds,
@@ -18,13 +18,25 @@ import {
   removeFulfillerAction,
   updateReviewPayoutSettings,
 } from "@/app/actions";
-import { slackHandles } from "@/lib/slack";
 import { TeamLog } from "@/app/_components/TeamLog";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import SlackName from "@/app/_ui/SlackName";
+import {
+  ActionButton,
+  Badge,
+  ButtonLink,
+  Card,
+  CardHeader,
+  Code,
+  EmptyRow,
+  Field,
+  Input,
+  Mono,
+  Muted,
+  PageHeader,
+  Table,
+  TextLink,
+  type GlyphName,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -43,47 +55,60 @@ function SlackIdForm({
   withName?: boolean;
 }) {
   return (
-    <form action={action} className="flex flex-wrap gap-2 items-end">
-      {withName && (
-        <Input name="name" placeholder="Name (optional)" className="max-w-48 text-sm" />
-      )}
-      <Input
-        name="slackId"
-        required
-        placeholder="Slack member ID (U0...)"
-        className="max-w-56 text-sm font-mono"
-      />
-      <PendingButton pendingText="Adding...">{label}</PendingButton>
+    <form action={action} className="flex flex-wrap items-end gap-2 p-4">
+      {withName && <Input name="name" placeholder="Name (optional)" className="max-w-48" />}
+      <Input name="slackId" required placeholder="Slack member ID (U0...)" className="hc-mono max-w-56" />
+      <ActionButton icon="member-add" pendingLabel="Adding...">
+        {label}
+      </ActionButton>
     </form>
   );
 }
 
-function PersonChip({
-  slackId,
-  label,
+function PeopleCard({
+  title,
+  icon,
+  ids,
+  add,
+  addLabel,
   remove,
+  note,
 }: {
-  slackId: string;
-  label: string;
+  title: string;
+  icon: GlyphName;
+  ids: string[];
+  add: (formData: FormData) => Promise<void>;
+  addLabel: string;
   remove: (formData: FormData) => Promise<void>;
+  note?: ReactNode;
 }) {
   return (
-    <li className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1 text-sm">
-      <span className="font-medium">{label}</span>
-      <span className="font-mono text-xs text-muted-foreground">{slackId}</span>
-      <form action={remove}>
-        <input type="hidden" name="slackId" value={slackId} />
-        <PendingButton
-          variant="ghost"
-          size="sm"
-          pendingText="Removing..."
-          confirm={`Remove ${label}?`}
-          className="text-destructive h-6 px-1.5 text-xs"
-        >
-          remove
-        </PendingButton>
-      </form>
-    </li>
+    <Card padding="flush">
+      <CardHeader title={title} icon={icon} count={ids.length} />
+      <SlackIdForm action={add} label={addLabel} />
+      {note && <p className="hc-caption px-4 pb-4 text-sm">{note}</p>}
+      <Table headers={["Person", "Slack ID", ""]}>
+        {ids.map((id) => (
+          <tr key={id}>
+            <td className="font-bold">
+              <SlackName id={id} />
+            </td>
+            <td>
+              <Mono>{id}</Mono>
+            </td>
+            <td className="text-right">
+              <form action={remove}>
+                <input type="hidden" name="slackId" value={id} />
+                <ActionButton variant="ghost" size="sm" pendingLabel="Removing..." confirm={`Remove ${id}?`}>
+                  Remove
+                </ActionButton>
+              </form>
+            </td>
+          </tr>
+        ))}
+        {ids.length === 0 && <EmptyRow colSpan={3} title="Nobody yet" icon={icon} />}
+      </Table>
+    </Card>
   );
 }
 
@@ -100,188 +125,159 @@ export default async function AdminsPage() {
   const reviewers = admins.filter(
     (a) => a.permissions.includes(REVIEW) && !a.permissions.includes(NO_REVIEW),
   );
-  const handles = await slackHandles([
-    ...owners,
-    ...reviewers.map((r) => r.slack_id),
-    ...helpers.map((h) => h.slack_user_id),
-    ...fulfillers.map((f) => f.slack_user_id),
-  ]);
-  const label = (slackId: string, name?: string) => name || handles.get(slackId) || slackId;
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Team</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Owners can do everything. Reviewers only work the review queue, ticket helpers only
-          work tickets, fulfillers only work the order queue. Every change here is written to
-          the audit log.
-        </p>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Team"
+        description="Owners can do everything. Reviewers only work the review queue, ticket helpers only work tickets, fulfillers only work the order queue. Every change here is written to the audit log."
+      />
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card padding="flush">
+          <CardHeader title="Owners" icon="admin-badge" count={owners.length} />
+          <Table headers={["Owner", "Slack ID"]}>
+            {owners.map((id) => (
+              <tr key={id}>
+                <td className="font-bold">
+                  <SlackName id={id} />
+                </td>
+                <td>
+                  <Mono>{id}</Mono>
+                </td>
+              </tr>
+            ))}
+            {owners.length === 0 && (
+              <EmptyRow colSpan={2} title="Nobody is an owner" icon="admin-badge">
+                ADMIN_SLACK_IDS is empty.
+              </EmptyRow>
+            )}
+          </Table>
+          <p className="hc-caption p-4 text-sm">
+            Owners come from the <Code>ADMIN_SLACK_IDS</Code> env var only. Change it in the deployment
+            env and redeploy; it can&apos;t be changed from the dashboard or the database.
+          </p>
+        </Card>
+
+        <Card padding="flush">
+          <CardHeader
+            title="Reviewers"
+            icon="checkmark"
+            count={reviewers.length}
+            action={
+              <ButtonLink href="/reviewers" variant="ghost" size="sm">
+                Stats and settings
+              </ButtonLink>
+            }
+          />
+          <SlackIdForm action={addReviewer} label="Add reviewer" withName />
+          <p className="hc-caption px-4 pb-4 text-sm">
+            Final-reviewer (second pass), queue scope (software or hardware), edit-submission access
+            and removal are on each reviewer&apos;s page.
+          </p>
+          <Table headers={["Reviewer", "Slack ID", "Access", ""]}>
+            {reviewers.map((r) => {
+              const scope = reviewQueueScopeFor(r.permissions);
+              const finalReviewer = r.permissions.includes(SECOND_PASS) || secondPassIds.includes(r.slack_id);
+              const href = `/reviewers/${encodeURIComponent(r.slack_id)}`;
+              return (
+                <tr key={r.slack_id}>
+                  <td>
+                    <TextLink href={href} className="font-bold">
+                      {r.name || <SlackName id={r.slack_id} />}
+                    </TextLink>
+                  </td>
+                  <td>
+                    <Mono>{r.slack_id}</Mono>
+                  </td>
+                  <td>
+                    <div className="flex flex-wrap gap-1">
+                      {finalReviewer && <Badge tone="success">Second pass</Badge>}
+                      {scope !== "both" && (
+                        <Badge outline>
+                          <span className="capitalize">{scope}</span> only
+                        </Badge>
+                      )}
+                      {r.permissions.includes(EDIT_SUBMISSION) && <Badge outline>Edit submission</Badge>}
+                      {!finalReviewer && scope === "both" && !r.permissions.includes(EDIT_SUBMISSION) && (
+                        <Muted>-</Muted>
+                      )}
+                    </div>
+                  </td>
+                  <td className="text-right">
+                    <ButtonLink href={href} variant="ghost" size="sm">
+                      Manage
+                    </ButtonLink>
+                  </td>
+                </tr>
+              );
+            })}
+            {reviewers.length === 0 && <EmptyRow colSpan={4} title="No reviewers yet" icon="checkmark" />}
+          </Table>
+        </Card>
+
+        <PeopleCard
+          title="Ticket helpers"
+          icon="support-fill"
+          ids={helpers.map((h) => h.slack_user_id)}
+          add={addHelperAction}
+          addLabel="Add helper"
+          remove={removeHelperAction}
+          note={
+            <>
+              Same list the Pixorpheus bot manages with <Code>/pixl-addhelper</Code>.
+            </>
+          }
+        />
+
+        <PeopleCard
+          title="Fulfillers"
+          icon="package-seam"
+          ids={fulfillers.map((f) => f.slack_user_id)}
+          add={addFulfillerAction}
+          addLabel="Add fulfiller"
+          remove={removeFulfillerAction}
+        />
       </div>
 
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight">Owners</h2>
-        <Card className="p-5 gap-0 space-y-3">
-          {owners.length === 0 && (
-            <div className="text-sm text-muted-foreground">
-              ADMIN_SLACK_IDS is empty, so nobody is an owner.
-            </div>
-          )}
-          {owners.map((id) => (
-            <div key={id} className="flex items-center justify-between gap-4 flex-wrap">
-              <div className="min-w-0">
-                <div className="font-semibold truncate">{label(id)}</div>
-                <div className="text-xs text-muted-foreground font-mono truncate">{id}</div>
-              </div>
-              <Badge variant="secondary" className="text-[0.65rem] uppercase tracking-wide">
-                owner
-              </Badge>
-            </div>
-          ))}
-          <p className="text-xs text-muted-foreground pt-2 border-t border-border">
-            Owners come from the ADMIN_SLACK_IDS env var only. Change it in the deployment env
-            and redeploy; it can&apos;t be changed from the dashboard or the database.
-          </p>
-        </Card>
-      </section>
-
-      <section className="space-y-3">
-        <div className="flex items-end justify-between gap-4 flex-wrap">
-          <h2 className="text-lg font-semibold tracking-tight">
-            Reviewers <span className="text-muted-foreground font-normal">({reviewers.length})</span>
-          </h2>
-          <Link href="/reviewers" className="text-sm text-brand underline">
-            Stats and per-reviewer settings
-          </Link>
-        </div>
-        <Card className="p-5 gap-0 space-y-4">
-          <SlackIdForm action={addReviewer} label="Add reviewer" withName />
-          <p className="text-xs text-muted-foreground">
-            Final-reviewer (second pass), queue scope (software/hardware), edit-submission
-            access and removal are on each reviewer&apos;s page.
-          </p>
-          {reviewers.length > 0 && (
-            <ul className="divide-y divide-border border border-border rounded-lg">
-              {reviewers.map((r) => {
-                const scope = reviewQueueScopeFor(r.permissions);
-                const finalReviewer =
-                  r.permissions.includes(SECOND_PASS) || secondPassIds.includes(r.slack_id);
-                return (
-                  <li key={r.slack_id} className="flex items-center gap-2 px-3 py-2 text-sm flex-wrap">
-                    <Link href={`/reviewers/${encodeURIComponent(r.slack_id)}`} className="font-medium hover:text-brand">
-                      {label(r.slack_id, r.name)}
-                    </Link>
-                    <span className="font-mono text-xs text-muted-foreground">{r.slack_id}</span>
-                    {finalReviewer && <Badge variant="success">second pass</Badge>}
-                    {scope !== "both" && <Badge variant="outline">{scope} only</Badge>}
-                    {r.permissions.includes(EDIT_SUBMISSION) && (
-                      <Badge variant="outline">edit submission</Badge>
-                    )}
-                    <Link
-                      href={`/reviewers/${encodeURIComponent(r.slack_id)}`}
-                      className="ml-auto text-xs text-brand underline"
-                    >
-                      Manage
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Card>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight">
-          Ticket helpers <span className="text-muted-foreground font-normal">({helpers.length})</span>
-        </h2>
-        <Card className="p-5 gap-0 space-y-4">
-          <SlackIdForm action={addHelperAction} label="Add helper" />
-          <p className="text-xs text-muted-foreground">
-            Same list the Pixorpheus bot manages with <code>/pixl-addhelper</code>.
-          </p>
-          {helpers.length > 0 && (
-            <ul className="flex flex-wrap gap-2">
-              {helpers.map((h) => (
-                <PersonChip
-                  key={h.slack_user_id}
-                  slackId={h.slack_user_id}
-                  label={label(h.slack_user_id)}
-                  remove={removeHelperAction}
-                />
-              ))}
-            </ul>
-          )}
-        </Card>
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight">
-          Fulfillers <span className="text-muted-foreground font-normal">({fulfillers.length})</span>
-        </h2>
-        <Card className="p-5 gap-0 space-y-4">
-          <SlackIdForm action={addFulfillerAction} label="Add fulfiller" />
-          {fulfillers.length > 0 && (
-            <ul className="flex flex-wrap gap-2">
-              {fulfillers.map((f) => (
-                <PersonChip
-                  key={f.slack_user_id}
-                  slackId={f.slack_user_id}
-                  label={label(f.slack_user_id)}
-                  remove={removeFulfillerAction}
-                />
-              ))}
-            </ul>
-          )}
-        </Card>
-      </section>
-
-      <section className="space-y-3">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight">Reviewer payouts</h2>
-          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-            Pixels a reviewer earns per review, set separately for an approval vs a
-            request-changes verdict. Set either to 0 to turn off payouts for that verdict. Both
-            still stack with an active Review Blitz multiplier and get cut for rushed reviews.
-          </p>
-        </div>
-        <Card className="p-5 md:p-6 gap-0">
-          <form action={updateReviewPayoutSettings} className="space-y-4">
-            <div className="grid sm:grid-cols-2 gap-4">
-              <Label className="block font-normal">
-                <span className="block text-sm font-medium mb-1.5">Pixels per approval</span>
-                <Input
-                  name="approvedPixels"
-                  type="number"
-                  min={0}
-                  step={0.5}
-                  defaultValue={payoutSettings.approvedPixels}
-                  className="w-full text-sm"
-                />
-              </Label>
-              <Label className="block font-normal">
-                <span className="block text-sm font-medium mb-1.5">Pixels per request-changes</span>
-                <Input
-                  name="needsChangesPixels"
-                  type="number"
-                  min={0}
-                  step={0.5}
-                  defaultValue={payoutSettings.needsChangesPixels}
-                  className="w-full text-sm"
-                />
-              </Label>
-            </div>
-            {payoutSettings.updatedBy && (
-              <p className="text-xs text-muted-foreground">Last changed by {payoutSettings.updatedBy}</p>
-            )}
-            <div className="flex justify-end">
-              <PendingButton className="bg-brand text-white border-transparent" pendingText="Saving...">
-                Save payout rates
-              </PendingButton>
-            </div>
-          </form>
-        </Card>
-      </section>
+      <Card>
+        <CardHeader title="Reviewer payouts" icon="purse-fill" />
+        <p className="hc-caption mb-4 max-w-2xl text-sm">
+          Pixels a reviewer earns per review, set separately for an approval and a request-changes
+          verdict. Set either to 0 to turn off payouts for that verdict. Both still stack with an
+          active Review Blitz multiplier and get cut for rushed reviews.
+        </p>
+        <form action={updateReviewPayoutSettings} className="flex flex-col gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Pixels per approval">
+              <Input
+                name="approvedPixels"
+                type="number"
+                min={0}
+                step={0.5}
+                defaultValue={payoutSettings.approvedPixels}
+              />
+            </Field>
+            <Field label="Pixels per request-changes">
+              <Input
+                name="needsChangesPixels"
+                type="number"
+                min={0}
+                step={0.5}
+                defaultValue={payoutSettings.needsChangesPixels}
+              />
+            </Field>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Muted className="text-xs">
+              {payoutSettings.updatedBy ? `Last changed by ${payoutSettings.updatedBy}` : ""}
+            </Muted>
+            <ActionButton icon="checkmark" pendingLabel="Saving...">
+              Save payout rates
+            </ActionButton>
+          </div>
+        </form>
+      </Card>
 
       <TeamLog />
     </div>

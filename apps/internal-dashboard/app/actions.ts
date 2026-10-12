@@ -64,7 +64,7 @@ import { decryptPII } from "@/lib/crypto";
 import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
 import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
-import { fetchHackatimeReport, fetchTrackedSecondsSince, fetchTrustFactor } from "@/lib/hackatime";
+import { fetchHackatimeReport, fetchTrustFactor } from "@/lib/hackatime";
 import { fetchCommits, attachCommitStats } from "@/lib/commits";
 import { yswsShipsFor } from "@/lib/ysws";
 import { generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
@@ -102,6 +102,8 @@ import {
   type ReviewQueueScope,
 } from "@/lib/guard";
 import { audit } from "@/lib/audit";
+import { clampReviewPanelWidth, parseStaffSettings, type StaffSettings } from "@/lib/staffSettings";
+import { getStaffSettings, saveStaffSettingsRow } from "@/lib/db";
 import { GUIDELINES_VERSION } from "@/lib/guidelines";
 import { applyBlackoutDecision } from "@/lib/operationsReview";
 import { BLACKOUT_SLUG, getBlackoutEntry, operationRpc } from "@/lib/operations";
@@ -2819,99 +2821,6 @@ export const toggleProjectPeak = guardedAction("toggleProjectPeak", "reviewer", 
   revalidatePath("/", "layout");
 });
 
-// Normally only hours from hackatimeCutoffUnix onward count (see
-// HACKATIME_CUTOFF in apps/server). Some projects are legitimately started
-// earlier and picked back up , this lets a reviewer re-pull the player's
-// Hackatime spans from an earlier date for this one project and recredit
-// hackatime_seconds accordingly. Requires a note so it's auditable, and only
-// raises the stored total (never used to quietly lower it, ReviewForm's own
-// "credited hours" field already covers lowering).
-export const extendHoursCutoff = guardedAction("extendHoursCutoff", "reviewer", async (access, formData: FormData): Promise<void> => {
-  const by = actorName(access);
-  const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
-  const projectId = Number(formData.get("projectId") ?? 0);
-  const sinceRaw = String(formData.get("since") ?? "").trim();
-  const note = String(formData.get("note") ?? "").trim().slice(0, 1000);
-  const back = safeRedirectPath(formData.get("returnTo"), `/review/${projectId}`);
-  if (!projectId) return;
-  if (!note)
-    redirect(`${back}?error=${encodeURIComponent("A note is required to extend the hours cutoff.")}`);
-
-  const since = new Date(sinceRaw);
-  if (isNaN(since.getTime()) || since.getTime() >= hackatimeCutoffUnix * 1000)
-    redirect(
-      `${back}?error=${encodeURIComponent(`Pick a date before the ${hackatimeCutoffLabel} cutoff.`)}`,
-    );
-  const sinceUnix = Math.floor(since.getTime() / 1000);
-
-  const { data: project } = await db
-    .from("projects")
-    .select("user_id, name, status, banned_at, hackatime_projects, hackatime_seconds")
-    .eq("id", projectId)
-    .single();
-  if (!project) return;
-  // Super-admins are already trusted with bigger self-adjacent calls
-  // (deflateProjectHours et al) - a plain reviewer still can't touch their
-  // own project's cutoff, self-review = cheating.
-  await authorizeProjectAction(access, projectId, back, { ownMessage: "You can't act on your own project." });
-  // Draft/shipped/second_review/needs_changes are all fair game - a reviewer
-  // may want to set this up before the player even ships. approved is too
-  // late (payout's already computed) and a banned/rejected project shouldn't
-  // be touched here at all.
-  if (project.status === "approved" || project.status === "rejected" || project.banned_at)
-    redirect(`${back}?error=${encodeURIComponent("This project has already been finalized.")}`);
-  if (((project.hackatime_projects as string[]) ?? []).length === 0)
-    redirect(`${back}?error=${encodeURIComponent("Link a Hackatime project to this project first.")}`);
-
-  const { data: owner } = await db
-    .from("users")
-    .select("slack_id, hackatime_token")
-    .eq("id", project.user_id)
-    .single();
-  const linked = (project.hackatime_projects as string[]) ?? [];
-  const newSeconds = await fetchTrackedSecondsSince(
-    (owner as { slack_id?: string } | null)?.slack_id ?? null,
-    (owner as { hackatime_token?: string } | null)?.hackatime_token ?? null,
-    linked,
-    sinceUnix,
-  );
-  if (newSeconds === null)
-    redirect(`${back}?error=${encodeURIComponent("Couldn't reach Hackatime, try again.")}`);
-  const currentSeconds = Number(project.hackatime_seconds) || 0;
-  if (newSeconds <= currentSeconds)
-    redirect(
-      `${back}?error=${encodeURIComponent("Hackatime didn't return more hours than already credited , nothing changed.")}`,
-    );
-
-  const { error } = await db
-    .from("projects")
-    .update({
-      hackatime_seconds: newSeconds,
-      hours_extended_since: since.toISOString(),
-      hours_extended_by: reviewer,
-      hours_extended_note: note,
-    })
-    .eq("id", projectId);
-  if (error) {
-    console.error("extendHoursCutoff failed", error.message);
-    redirect(`${back}?error=${encodeURIComponent("Failed to save , try again.")}`);
-  }
-  await logModAction(
-    project.user_id,
-    "project_hours_extended",
-    `${project.name}: counted hours from ${since.toISOString().slice(0, 10)} (${Math.round(currentSeconds / 3600)}h -> ${Math.round(newSeconds / 3600)}h) , ${note}`,
-    by,
-  );
-  const sinceLabel = since.toISOString().slice(0, 10);
-  await notifyOwner(
-    project.user_id,
-    "Hours cutoff extended",
-    `Your project "${project.name}"'s Hackatime cutoff was extended by ${reviewer}: we're now counting hours from ${sinceLabel} instead of the usual ${hackatimeCutoffLabel} cutoff.\n\nReason: ${note}`,
-  );
-  revalidatePath(back);
-  redirect(back);
-});
-
 export const rejectProject = guardedAction("rejectProject", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
@@ -3112,6 +3021,27 @@ export const setLiveMode = guardedAction("setLiveMode", "staff", async (access, 
   // Every new live session starts with other reviewers' names hidden again.
   jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
   revalidatePath("/", "layout");
+});
+
+// The settings menu in the top bar. Cosmetic preferences only, stored against
+// the signed-in staff member, so the input is re-parsed rather than trusted.
+export const saveStaffSettings = guardedAction("saveStaffSettings", "staff", async (access, input: StaffSettings): Promise<{ ok: boolean }> => {
+  // The menu doesn't own the review panel width, so keep whatever is stored.
+  const current = await getStaffSettings(access.session.slackId);
+  const next = parseStaffSettings({ ...input, reviewPanelWidth: current.reviewPanelWidth });
+  const ok = await saveStaffSettingsRow(access.session.slackId, next);
+  if (ok) revalidatePath("/", "layout");
+  return { ok };
+});
+
+// The draggable divider on the review page (app/review/[id]/ReviewSplit.tsx).
+export const saveReviewPanelWidth = guardedAction("saveReviewPanelWidth", "reviewer", async (access, width: number): Promise<{ ok: boolean }> => {
+  const current = await getStaffSettings(access.session.slackId);
+  const ok = await saveStaffSettingsRow(access.session.slackId, {
+    ...current,
+    reviewPanelWidth: clampReviewPanelWidth(width),
+  });
+  return { ok };
 });
 
 // The "Show reviewer names" button: while live, reveals (or re-hides) other
@@ -3973,16 +3903,6 @@ export const removeFulfillerAction = guardedAction("team.removeFulfiller", "owne
   await recordTeamChange(access, slackId, slackId, "fulfiller removed", ["fulfiller"], []);
   revalidatePath("/fulfillment");
   revalidatePath("/admins");
-});
-
-export const kickPlayer = guardedAction("kickPlayer", "owner", async (access, formData: FormData): Promise<void> => {
-  const by = actorName(access);
-  const userId = String(formData.get("userId") ?? "");
-  const reason = String(formData.get("reason") ?? "").trim().slice(0, 100);
-  if (!userId) return;
-  const kicked = await kickOnlinePlayer(userId, reason);
-  if (kicked) await logModAction(userId, "kick", reason || "(no reason)", by);
-  revalidatePath("/online");
 });
 
 // Clears every saved (user, scene) row so the player spawns at each scene's
@@ -5876,73 +5796,6 @@ export const deleteVaultLevel = guardedAction("deleteVaultLevel", "owner", async
   const { error } = await db.from("vault_levels").delete().eq("id", id);
   if (error) console.error("deleteVaultLevel", error.message);
   revalidatePath("/community-goals");
-});
-
-// posted_at is writable so a post can be backdated to when the thing actually
-// happened, rather than when someone got round to writing it up.
-function newsPostedAt(formData: FormData): string | undefined {
-  const raw = String(formData.get("posted_at") ?? "").trim();
-  if (!raw) return undefined;
-  const at = new Date(raw);
-  return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
-}
-
-export const addNews = guardedAction("addNews", "owner", async (access, formData: FormData): Promise<void> => {
-  const body = String(formData.get("body") ?? "").trim().slice(0, 500);
-  const link_url = String(formData.get("link_url") ?? "").trim().slice(0, 500);
-  if (!body)
-    redirect(`/news?error=${encodeURIComponent("A post needs something to say.")}`);
-  const posted_at = newsPostedAt(formData);
-  const { error } = await db.from("news").insert({
-    body,
-    link_url: link_url || null,
-    active: true,
-    ...(posted_at ? { posted_at } : {}),
-  });
-  if (error) {
-    console.error("addNews", error.message);
-    redirect(`/news?error=${encodeURIComponent("Couldn't save , is migration 0117 applied?")}`);
-  }
-  revalidatePath("/news");
-  redirect("/news?saved=1");
-});
-
-export const updateNews = guardedAction("updateNews", "owner", async (access, formData: FormData): Promise<void> => {
-  const id = Number(formData.get("id") ?? 0);
-  if (!id) return;
-  const link_url = String(formData.get("link_url") ?? "").trim().slice(0, 500);
-  const posted_at = newsPostedAt(formData);
-  const patch = {
-    body: String(formData.get("body") ?? "").trim().slice(0, 500),
-    link_url: link_url || null,
-    ...(posted_at ? { posted_at } : {}),
-  };
-  const { error } = await db.from("news").update(patch).eq("id", id);
-  if (error) {
-    console.error("updateNews", error.message);
-    redirect(`/news?error=${encodeURIComponent("Couldn't update that post.")}`);
-  }
-  revalidatePath("/news");
-  redirect("/news?saved=1");
-});
-
-export const toggleNews = guardedAction("toggleNews", "owner", async (access, formData: FormData): Promise<void> => {
-  const id = Number(formData.get("id") ?? 0);
-  if (!id) return;
-  const { error } = await db
-    .from("news")
-    .update({ active: formData.get("active") === "1" })
-    .eq("id", id);
-  if (error) console.error("toggleNews", error.message);
-  revalidatePath("/news");
-});
-
-export const deleteNews = guardedAction("deleteNews", "owner", async (access, formData: FormData): Promise<void> => {
-  const id = Number(formData.get("id") ?? 0);
-  if (!id) return;
-  const { error } = await db.from("news").delete().eq("id", id);
-  if (error) console.error("deleteNews", error.message);
-  revalidatePath("/news");
 });
 
 export const addStoryNode = guardedAction("addStoryNode", "owner", async (access, formData: FormData): Promise<void> => {

@@ -2,8 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Badge, Button, Callout, Muted } from "@/app/_ui/ui";
 import {
   checkShopItemsConflicts,
   commitShopItemsCsv,
@@ -149,93 +148,104 @@ export function BulkUploadShopItemsForm({ region }: { region: ShopRegion }) {
   const conflictCount = Object.keys(conflicts).length;
 
   return (
-    <div className="space-y-4">
-      <div>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
         <input
           ref={fileRef}
           type="file"
           accept=".csv,text/csv"
           onChange={onFile}
           disabled={pending}
-          className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
+          className="hc-file"
         />
-        <p className="text-xs text-muted-foreground mt-1.5">
-          Columns: name (required), price, region, description, options, image_url, unlock_xp. Extra
-          columns are ignored.
-        </p>
+        <Muted className="text-xs">
+          Columns: name (required), price, region, description, options, image_url, unlock_xp. Extra columns are
+          ignored.
+        </Muted>
       </div>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && (
+        <Callout tone="danger" icon="important">
+          {error}
+        </Callout>
+      )}
 
       {result && (
-        <div className="text-sm rounded-md border border-border bg-muted/40 p-3">
+        <Callout tone={result.errors.length > 0 ? "warning" : "success"} icon="checkmark">
           Added {result.added}, replaced {result.replaced}, skipped {result.skipped}.
           {result.errors.length > 0 && (
-            <ul className="list-disc list-inside mt-1.5 text-destructive">
+            <ul className="mt-1.5 list-inside list-disc">
               {result.errors.map((e, i) => (
                 <li key={i}>{e}</li>
               ))}
             </ul>
           )}
-        </div>
+        </Callout>
       )}
 
       {rows.length > 0 && (
-        <div className="space-y-3">
-          <div className="text-sm text-muted-foreground">
+        <div className="flex flex-col gap-3">
+          <p className="hc-caption text-sm">
             {rows.length} row{rows.length === 1 ? "" : "s"} parsed
             {conflictCount > 0 && (
               <>
                 {" "}
-                · <span className="text-foreground font-medium">{conflictCount}</span> already
-                exist{conflictCount === 1 ? "s" : ""} , choose replace or skip below
+                · <strong>{conflictCount}</strong> already exist{conflictCount === 1 ? "s" : ""}, choose replace or
+                skip below
               </>
             )}
-          </div>
-          <div className="rounded-md border border-border divide-y divide-border overflow-hidden">
-            {rows.map((r) => {
-              const hit = conflicts[r.key];
-              return (
-                <div key={r.key} className="flex items-center gap-3 px-3 py-2 text-sm">
-                  <div className="min-w-0 flex-1">
-                    <span className="font-medium">{r.name}</span>{" "}
-                    <span className="text-muted-foreground">{r.price} px · {r.region}</span>
-                  </div>
-                  {hit ? (
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Badge variant="secondary">exists · {hit.price} px</Badge>
-                      <div className="flex rounded-md border border-border overflow-hidden text-xs">
-                        <button
-                          type="button"
-                          onClick={() => setResolutions((r0) => ({ ...r0, [r.key]: "replace" }))}
-                          className={`px-2 py-1 ${resolutions[r.key] === "replace" ? "bg-brand text-white" : "bg-background hover:bg-muted"}`}
-                        >
-                          Replace
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setResolutions((r0) => ({ ...r0, [r.key]: "skip" }))}
-                          className={`px-2 py-1 border-l border-border ${resolutions[r.key] !== "replace" ? "bg-brand text-white" : "bg-background hover:bg-muted"}`}
-                        >
-                          Skip
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <Badge variant="success" className="shrink-0">new</Badge>
-                  )}
-                </div>
-              );
-            })}
+          </p>
+          <div className="hc-table-wrap rounded-[var(--radius-lg)] border border-[var(--border)]">
+            <table className="hc-table">
+              <tbody>
+                {rows.map((r) => {
+                  const hit = conflicts[r.key];
+                  return (
+                    <tr key={r.key}>
+                      <td className="min-w-0">
+                        <span className="font-bold">{r.name}</span>{" "}
+                        <Muted>
+                          {r.price} px · {r.region}
+                        </Muted>
+                      </td>
+                      <td className="text-right">
+                        {hit ? (
+                          <div className="inline-flex items-center gap-2">
+                            <Badge tone="warning">exists · {hit.price} px</Badge>
+                            <div className="hc-segmented w-40" role="tablist">
+                              <button
+                                type="button"
+                                role="tab"
+                                aria-selected={resolutions[r.key] === "replace"}
+                                className="hc-segmented-item"
+                                onClick={() => setResolutions((r0) => ({ ...r0, [r.key]: "replace" }))}
+                              >
+                                Replace
+                              </button>
+                              <button
+                                type="button"
+                                role="tab"
+                                aria-selected={resolutions[r.key] !== "replace"}
+                                className="hc-segmented-item"
+                                onClick={() => setResolutions((r0) => ({ ...r0, [r.key]: "skip" }))}
+                              >
+                                Skip
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <Badge tone="success">new</Badge>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              disabled={pending}
-              onClick={onImport}
-              className="bg-brand text-white border-transparent"
-            >
-              {pending ? "Importing…" : `Import ${rows.length} item${rows.length === 1 ? "" : "s"}`}
+            <Button type="button" disabled={pending} onClick={onImport} icon="cloud-upload">
+              {pending ? "Importing..." : `Import ${rows.length} item${rows.length === 1 ? "" : "s"}`}
             </Button>
             <Button type="button" variant="outline" disabled={pending} onClick={reset}>
               Cancel

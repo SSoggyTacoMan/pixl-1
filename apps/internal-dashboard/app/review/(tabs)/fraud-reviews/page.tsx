@@ -1,19 +1,13 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
-import { listRobertReviews, type RobertReviewRow } from "@/lib/db";
+import { listRobertReviews, listSecondReviewProjects, type RobertReviewRow } from "@/lib/db";
+import { slackHandles } from "@/lib/slack";
+import { listBlackoutQueueProjectIds } from "@/lib/operations";
+import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
+import { reviewerName } from "@/lib/liveMode";
+import { TelescreenReviewTable } from "../TelescreenReviewTable";
 import { FRAUD_SCORE_THRESHOLD } from "@/lib/robertOutcome";
-import { StatusBadge } from "@/app/_components/ProjectBadges";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Badge, Card, CardHeader, EmptyState, Mono, Muted, StatusBadge, Table, TextLink } from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +44,29 @@ export default async function FraudReviewsPage() {
   await requireGuidelinesAck(access);
   if (!access.canSecondPass) redirect("/review");
 
-  const rows = await listRobertReviews();
+  const viewer = access.session.slackId;
+  const [live, hideReviewers] = await Promise.all([getLiveMode(), getHideReviewers()]);
+  // A reviewer restricted to one queue only sees that queue's projects.
+  const kind = access.reviewQueues === "both" ? undefined : access.reviewQueues;
+  // Live mode hides the "Awaiting Robert" list: it's read-only and names the
+  // fraud pipeline, nothing to show on stream.
+  const [rows, awaitingAll, blackoutIds] = await Promise.all([
+    listRobertReviews(),
+    live ? Promise.resolve([]) : listSecondReviewProjects(viewer, kind, { includeClaimed: true }),
+    listBlackoutQueueProjectIds(),
+  ]);
+  // While reviewer names are hidden, other reviewers' names never leave the
+  // server: claims aren't resolved to a handle and first_pass_by is masked.
+  const awaiting = hideReviewers
+    ? awaitingAll.map((p) =>
+        p.first_pass_by && reviewerName(p.first_pass_by, viewer, true) === "Reviewer"
+          ? { ...p, first_pass_by: "Reviewer" }
+          : p,
+      )
+    : awaitingAll;
+  const handles = await slackHandles(
+    awaitingAll.flatMap((p) => [p.users?.slack_id, hideReviewers && p.claimedBy !== viewer ? null : p.claimedBy]),
+  );
   const days = new Map<string, RobertReviewRow[]>();
   for (const r of rows) {
     const key = dayKey(r.robert_reviewed_at);
@@ -58,73 +74,73 @@ export default async function FraudReviewsPage() {
   }
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-3">Fraud reviews</h1>
-      <p className="text-sm text-muted-foreground mb-4 max-w-2xl">
-        Every score Robert&apos;s fraud reviewer has given, newest first. A score of{" "}
-        {FRAUD_SCORE_THRESHOLD} or below is Robert&apos;s &quot;Fraud&quot; range; those still go to Spot check
-        for a decision here, nothing is banned automatically.
+    <div className="flex flex-col gap-6">
+      <p className="hc-caption max-w-2xl text-sm">
+        Every score Robert&apos;s fraud reviewer has given, newest first. A score of {FRAUD_SCORE_THRESHOLD} or
+        below is Robert&apos;s &quot;Fraud&quot; range. Those still go to Spot check for a decision, nothing is
+        banned automatically.
       </p>
+      {awaiting.length > 0 && (
+        <Card padding="flush">
+          <CardHeader title="Awaiting Robert" icon="clock" count={awaiting.length} />
+          <p className="hc-caption px-4 py-3 text-sm">
+            These passed a first review and are parked until Robert&apos;s fraud review lands. Read-only, nothing
+            to action: they move on to Spot check automatically once his score is in.
+          </p>
+          <TelescreenReviewTable makerLinks={access.isOwner}
+            rows={awaiting}
+            handles={handles}
+            blackoutIds={blackoutIds}
+            emptyLabel="Nothing waiting on Robert right now."
+          />
+        </Card>
+      )}
       {rows.length === 0 && (
-        <Card className="p-5 text-sm text-muted-foreground">No fraud reviews yet.</Card>
+        <Card>
+          <EmptyState title="No fraud reviews yet" icon="private" />
+        </Card>
       )}
       {[...days.entries()].map(([key, dayRows]) => {
         const fraud = dayRows.filter((r) => r.robert_trust_score <= FRAUD_SCORE_THRESHOLD).length;
         return (
-          <div key={key} className="mb-8">
-            <div className="flex items-baseline gap-3 mb-2">
-              <h2 className="text-lg font-semibold text-foreground">{dayLabel(key)}</h2>
-              <span className="text-sm text-muted-foreground">
-                {dayRows.length} reviewed, {fraud} in the fraud range
-              </span>
-            </div>
-            <Card className="overflow-hidden p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="px-5">Project</TableHead>
-                    <TableHead className="px-5">Score</TableHead>
-                    <TableHead className="px-5">Robert&apos;s note</TableHead>
-                    <TableHead className="px-5">In Pixl</TableHead>
-                    <TableHead className="px-5 text-right">Credited</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {dayRows.map((p) => {
-                    const isFraud = p.robert_trust_score <= FRAUD_SCORE_THRESHOLD;
-                    return (
-                      <TableRow key={p.id}>
-                        <TableCell className="px-5 py-3.5 align-top">
-                          <Link href={`/review/${p.id}`} className="font-medium text-foreground hover:underline">
-                            {p.name}
-                          </Link>
-                          <div className="text-xs text-muted-foreground">
-                            #{p.id} , {maker(p)}
-                          </div>
-                          <div className="text-xs text-muted-foreground">{timeLabel(p.robert_reviewed_at)}</div>
-                        </TableCell>
-                        <TableCell className="px-5 py-3.5 align-top">
-                          <Badge variant={isFraud ? "destructive" : "secondary"}>{p.robert_trust_score}/10</Badge>
-                        </TableCell>
-                        <TableCell className="px-5 py-3.5 align-top whitespace-normal max-w-md text-sm text-foreground/80">
-                          {p.robert_note || <span className="text-muted-foreground">No note given.</span>}
-                        </TableCell>
-                        <TableCell className="px-5 py-3.5 align-top">
-                          {p.banned_at ? <Badge variant="destructive">Banned</Badge> : <StatusBadge status={p.status} />}
-                        </TableCell>
-                        <TableCell className="px-5 py-3.5 align-top text-right text-sm text-foreground/70">
-                          <div>{fmtHours(p.approved_hours)}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {fmtHours(p.hackatime_seconds == null ? null : p.hackatime_seconds / 3600)} tracked
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </Card>
-          </div>
+          <Card key={key} padding="flush">
+            <CardHeader
+              title={dayLabel(key)}
+              icon="clock"
+              count={dayRows.length}
+              action={<Muted className="text-sm">{fraud} in the fraud range</Muted>}
+            />
+            <Table headers={["Project", "Score", "Robert's note", "In Pixl", "Credited"]}>
+              {dayRows.map((p) => (
+                <tr key={p.id} className="align-top">
+                  <td>
+                    <TextLink href={`/review/${p.id}`} className="font-bold">
+                      {p.name}
+                    </TextLink>
+                    <div className="hc-caption mt-1 text-xs">
+                      <Mono>#{p.id}</Mono> by {maker(p)}
+                    </div>
+                    <div className="hc-caption text-xs">{timeLabel(p.robert_reviewed_at)}</div>
+                  </td>
+                  <td>
+                    <Badge tone={p.robert_trust_score <= FRAUD_SCORE_THRESHOLD ? "danger" : "neutral"}>
+                      {p.robert_trust_score}/10
+                    </Badge>
+                  </td>
+                  <td className="max-w-md whitespace-normal">
+                    {p.robert_note || <Muted>No note given.</Muted>}
+                  </td>
+                  <td>{p.banned_at ? <Badge tone="danger">Banned</Badge> : <StatusBadge status={p.status} />}</td>
+                  <td className="whitespace-nowrap">
+                    <div>{fmtHours(p.approved_hours)}</div>
+                    <Muted className="text-xs">
+                      {fmtHours(p.hackatime_seconds == null ? null : p.hackatime_seconds / 3600)} tracked
+                    </Muted>
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          </Card>
         );
       })}
     </div>

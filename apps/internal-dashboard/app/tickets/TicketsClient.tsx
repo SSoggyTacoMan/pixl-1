@@ -1,11 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Avatar, Badge, Button, Callout, Card, EmptyState, Icon, Input, Muted, Textarea } from "@/app/_ui/ui";
 
 interface Ticket {
   msg_ts: string;
@@ -44,13 +40,28 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+// Escapes first, then adds a small set of Slack mrkdwn tags, so the HTML is safe.
 function fmtSlack(t: string): string {
   return esc(t ?? "")
     .replace(/\*(.+?)\*/g, "<strong>$1</strong>")
     .replace(/_(.+?)_/g, "<em>$1</em>")
-    .replace(/`(.+?)`/g, '<code class="rounded bg-muted px-1 py-0.5 text-[0.85em]">$1</code>')
-    .replace(/&lt;@([A-Z0-9]+)(?:\|[^&]+)?&gt;/g, '<span class="font-semibold text-muted-foreground">@$1</span>')
+    .replace(/`(.+?)`/g, '<code class="hc-code">$1</code>')
+    .replace(/&lt;@([A-Z0-9]+)(?:\|[^&]+)?&gt;/g, '<span class="hc-muted font-bold">@$1</span>')
     .replace(/\n/g, "<br>");
+}
+
+// Error pages (a proxy 502, a crashed route) aren't JSON. Never let a parse
+// error leak into the UI as "Unexpected token <".
+async function readJson(res: Response): Promise<Record<string, unknown>> {
+  try {
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function errorText(data: Record<string, unknown>, fallback: string): string {
+  return typeof data.error === "string" && data.error ? data.error : fallback;
 }
 
 const THREAD_POLL_MS = 5000;
@@ -66,6 +77,7 @@ export function TicketsClient() {
   const [status, setStatus] = useState<Status>("open");
   const [search, setSearch] = useState("");
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  const [listError, setListError] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [thread, setThread] = useState<ThreadMsg[] | null>(null);
   const [threadIssue, setThreadIssue] = useState<"gone" | "error" | null>(null);
@@ -86,10 +98,13 @@ export function TicketsClient() {
         location.href = "/login";
         return;
       }
-      const data = await res.json();
-      setTickets(data.tickets ?? []);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await readJson(res);
+      setTickets(Array.isArray(data.tickets) ? (data.tickets as Ticket[]) : []);
+      setListError(false);
     } catch {
-      setTickets([]);
+      setTickets((prev) => prev ?? []);
+      setListError(true);
     }
   }, [status, search]);
 
@@ -129,8 +144,8 @@ export function TicketsClient() {
         }
         return res.status;
       }
-      const data = await res.json();
-      setThread(data.messages ?? []);
+      const data = await readJson(res);
+      setThread(Array.isArray(data.messages) ? (data.messages as ThreadMsg[]) : []);
       setThreadIssue(null);
       return res.status;
     } catch {
@@ -198,16 +213,17 @@ export function TicketsClient() {
     setBusy(true);
     try {
       const res = await fetch(`/api/tickets/${ts}/resolve`, { method: "POST" });
-      const data = await res.json();
+      const data = await readJson(res);
       if (res.ok && data.ok) {
-        setRowStatus({ msg: data.notice || (data.alreadyClosed ? "Already resolved" : "Resolved"), kind: "ok" });
+        const notice = typeof data.notice === "string" && data.notice ? data.notice : null;
+        setRowStatus({ msg: notice ?? (data.alreadyClosed ? "Already resolved" : "Resolved"), kind: "ok" });
         loadTickets();
         loadThread(ts, true);
       } else {
-        setRowStatus({ msg: data.error || "Failed", kind: "err" });
+        setRowStatus({ msg: errorText(data, "Couldn't resolve the ticket. Try again in a moment."), kind: "err" });
       }
-    } catch (e) {
-      setRowStatus({ msg: (e as Error).message, kind: "err" });
+    } catch {
+      setRowStatus({ msg: "Couldn't reach the dashboard. Check your connection and try again.", kind: "err" });
     } finally {
       setBusy(false);
     }
@@ -223,189 +239,177 @@ export function TicketsClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      const data = await res.json();
+      const data = await readJson(res);
       if (res.ok && data.ok) {
         setDraft("");
         setRowStatus({ msg: "Sent", kind: "ok" });
         loadThread(ts, true);
       } else {
-        setRowStatus({ msg: data.error || "Failed", kind: "err" });
+        setRowStatus({ msg: errorText(data, "Couldn't send the reply. Try again in a moment."), kind: "err" });
       }
-    } catch (e) {
-      setRowStatus({ msg: (e as Error).message, kind: "err" });
+    } catch {
+      setRowStatus({ msg: "Couldn't reach the dashboard. Check your connection and try again.", kind: "err" });
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div>
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <div className="flex gap-1 rounded-md border border-border p-1">
+    <Card padding="flush">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div className="hc-segmented w-fit" role="tablist">
           {TABS.map((t) => (
             <button
               key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={status === t.key}
+              className="hc-segmented-item px-3"
               onClick={() => setStatus(t.key)}
-              className={`px-3 py-1 text-sm rounded transition-colors ${
-                status === t.key
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
             >
               {t.label}
             </button>
           ))}
         </div>
-        <Input
-          value={search}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (searchTimer.current) clearTimeout(searchTimer.current);
-            searchTimer.current = setTimeout(() => setSearch(v), 300);
-          }}
-          placeholder="Search tickets…"
-          className="max-w-xs"
-        />
+        <div className="relative w-full max-w-xs">
+          <Icon
+            glyph="search"
+            size={20}
+            className="hc-muted pointer-events-none absolute top-1/2 left-2 -translate-y-1/2"
+          />
+          <Input
+            type="search"
+            className="hc-input-search"
+            onChange={(e) => {
+              const v = e.target.value;
+              if (searchTimer.current) clearTimeout(searchTimer.current);
+              searchTimer.current = setTimeout(() => setSearch(v), 300);
+            }}
+            placeholder="Search tickets"
+          />
+        </div>
       </div>
 
+      {listError && (
+        <div className="p-4 pb-0">
+          <Callout tone="danger" icon="important">
+            Couldn&apos;t load tickets right now. This retries every 30 seconds.
+          </Callout>
+        </div>
+      )}
+
       {tickets === null ? (
-        <div className="space-y-2">
-          <Skeleton className="h-14 w-full" />
-          <Skeleton className="h-14 w-full" />
-          <Skeleton className="h-14 w-full" />
-        </div>
+        <EmptyState title="Loading tickets..." icon="message-simple" />
       ) : tickets.length === 0 ? (
-        <div className="rounded-lg border border-border p-8 text-center text-sm text-muted-foreground">
-          No tickets found.
-        </div>
+        listError ? null : <EmptyState title="No tickets found" icon="checkmark-all" />
       ) : (
-        <div className="space-y-2">
-          {tickets.map((t) => {
+        <ul>
+          {tickets.map((t, i) => {
             const open = expanded === t.msg_ts;
             return (
-              <div key={t.msg_ts} className="rounded-lg border border-border overflow-hidden">
+              <li key={t.msg_ts} style={i > 0 ? { borderTop: "1px solid var(--border)" } : undefined}>
                 <button
+                  type="button"
                   onClick={() => toggle(t.msg_ts)}
-                  className="w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors"
+                  aria-expanded={open}
+                  className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left"
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="flex-1 min-w-0 truncate text-sm font-medium">
-                      {t.description || "[no text]"}
-                    </span>
-                    <Badge variant={t.status === "open" ? "warning" : "success"}>
-                      {t.status === "open" ? "Open" : "Resolved"}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {relTime(t.msg_ts)}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    opened by @{t.opened_by_slack_id}
-                  </div>
+                  <Icon glyph={open ? "down-caret" : "right-caret"} size={18} className="hc-muted shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-bold">{t.description || "[no text]"}</span>
+                    <Muted className="text-xs">Opened by @{t.opened_by_slack_id}</Muted>
+                  </span>
+                  <Badge tone={t.status === "open" ? "warning" : "success"}>
+                    {t.status === "open" ? "Open" : "Resolved"}
+                  </Badge>
+                  <Muted className="hc-mono w-10 shrink-0 text-right text-xs">{relTime(t.msg_ts)}</Muted>
                 </button>
 
                 {open && (
-                  <div className="border-t border-border px-4 py-3 bg-muted/20">
-                    <div className="flex flex-wrap items-center gap-2 mb-3">
+                  <div className="flex flex-col gap-3 px-4 pt-1 pb-4">
+                    <div className="flex flex-wrap items-center gap-2">
                       {t.permalink && (
-                        <Button asChild size="sm" variant="outline">
-                          <a href={t.permalink} target="_blank" rel="noreferrer">
-                            Open in Slack ↗
-                          </a>
-                        </Button>
+                        <a href={t.permalink} target="_blank" rel="noreferrer" className="hc-btn hc-btn-outline hc-btn-sm">
+                          <Icon glyph="slack-fill" size={18} />
+                          Open in Slack
+                        </a>
                       )}
                       {t.status === "open" && (
                         <Button
+                          variant="success"
                           size="sm"
-                          variant="secondary"
+                          icon="checkmark"
                           onClick={() => resolve(t.msg_ts)}
                           disabled={busy}
-                          className="bg-emerald-600 text-white hover:bg-emerald-700"
                         >
                           Resolve from here
                         </Button>
                       )}
                     </div>
-                    <div className="max-h-72 overflow-y-auto space-y-3 mb-3">
-                      {thread === null ? (
-                        <div className="text-xs text-muted-foreground">Loading…</div>
-                      ) : threadIssue === "gone" ? (
-                        <div className="text-xs text-muted-foreground">
-                          This ticket&apos;s Slack thread was deleted.
-                        </div>
-                      ) : threadIssue === "error" && thread.length === 0 ? (
-                        <div className="text-xs text-destructive">Couldn&apos;t load the thread.</div>
-                      ) : thread.length === 0 ? (
-                        <div className="text-xs text-muted-foreground">No messages yet.</div>
-                      ) : (
-                        thread.map((m) => (
-                          <div key={m.ts} className="flex gap-2">
-                            {m.avatar ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={m.avatar}
-                                alt=""
-                                className="h-7 w-7 rounded shrink-0"
-                              />
-                            ) : (
-                              <div className="h-7 w-7 rounded bg-muted shrink-0" />
-                            )}
-                            <div className="min-w-0">
-                              <div className="text-xs font-semibold">
-                                {m.name}
-                                <span className="ml-2 font-normal text-muted-foreground">
-                                  {relTime(m.ts)}
-                                </span>
+
+                    <Card sunken padding="compact">
+                      <div className="flex max-h-72 flex-col gap-3 overflow-y-auto">
+                        {thread === null ? (
+                          <Muted className="text-xs">Loading thread...</Muted>
+                        ) : threadIssue === "gone" ? (
+                          <Muted className="text-xs">This ticket&apos;s Slack thread was deleted.</Muted>
+                        ) : threadIssue === "error" && thread.length === 0 ? (
+                          <Muted className="text-xs">
+                            Couldn&apos;t load the Slack thread right now. Slack may be unreachable.
+                          </Muted>
+                        ) : thread.length === 0 ? (
+                          <Muted className="text-xs">No messages yet.</Muted>
+                        ) : (
+                          thread.map((m) => (
+                            <div key={m.ts} className="flex gap-2">
+                              <Avatar src={m.avatar} size={28} />
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold">
+                                  {m.name}
+                                  <Muted className="ml-2 font-normal">{relTime(m.ts)}</Muted>
+                                </div>
+                                <div
+                                  className="text-sm break-words"
+                                  dangerouslySetInnerHTML={{ __html: fmtSlack(m.text) }}
+                                />
                               </div>
-                              <div
-                                className="text-sm break-words"
-                                dangerouslySetInnerHTML={{ __html: fmtSlack(m.text) }}
-                              />
                             </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
+                          ))
+                        )}
+                      </div>
+                    </Card>
 
                     {t.status === "open" && (
                       <div className="flex flex-col gap-2">
                         <Textarea
                           value={draft}
                           onChange={(e) => setDraft(e.target.value)}
-                          placeholder="Reply in thread as you…"
+                          placeholder="Reply in thread as you"
                           rows={2}
                         />
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Button
                             size="sm"
+                            icon="send-fill"
                             onClick={() => sendReply(t.msg_ts)}
                             disabled={busy || !draft.trim()}
                           >
                             Send reply
                           </Button>
-                          {rowStatus.msg && (
-                            <span
-                              className={`text-xs ${
-                                rowStatus.kind === "ok"
-                                  ? "text-emerald-500"
-                                  : rowStatus.kind === "err"
-                                    ? "text-destructive"
-                                    : "text-muted-foreground"
-                              }`}
-                            >
-                              {rowStatus.msg}
-                            </span>
-                          )}
                         </div>
                       </div>
                     )}
+
+                    {rowStatus.msg && (
+                      <Callout tone={rowStatus.kind === "err" ? "danger" : "success"}>{rowStatus.msg}</Callout>
+                    )}
                   </div>
                 )}
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
-    </div>
+    </Card>
   );
 }

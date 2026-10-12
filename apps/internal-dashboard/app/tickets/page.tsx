@@ -1,156 +1,143 @@
+import { Suspense } from "react";
 import { requirePage } from "@/lib/guard";
 import { ticketStats, ticketActivity, resolverLeaderboard } from "@/lib/tickets";
 import { listHelpers } from "@/lib/db";
-import { slackHandles } from "@/lib/slack";
 import { addHelperAction, removeHelperAction } from "@/app/actions";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { TicketsClient } from "./TicketsClient";
 import { pixorpheusUrl } from "@/lib/pixo";
 import { PIXO_OFFLINE_MESSAGE, pixoStatus } from "@/lib/pixoCall";
+import SlackName from "@/app/_ui/SlackName";
+import {
+  ActionButton,
+  Callout,
+  Card,
+  CardHeader,
+  Code,
+  EmptyRow,
+  Input,
+  Mono,
+  Muted,
+  PageHeader,
+  Stat,
+  StatGrid,
+  Table,
+} from "@/app/_ui/ui";
+import { TicketsClient } from "./TicketsClient";
 import { TicketsActivityChart } from "./TicketsActivityChart";
 
 export const dynamic = "force-dynamic";
 
-function StatCard({ label, value }: { label: string; value: string | number }) {
+// Streams in after the page: the health probe can take up to its 2s timeout
+// when Pixo is down, and that must not delay the ticket list.
+async function PixoBanner() {
+  if ((await pixoStatus(pixorpheusUrl())) !== "offline") return null;
   return (
-    <Card className="p-4 gap-1">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="text-2xl font-semibold tabular-nums">{value}</div>
-    </Card>
+    <Callout tone="warning" icon="important">
+      {PIXO_OFFLINE_MESSAGE} Tickets still load and can be resolved here, but resolves are saved by
+      the dashboard and the Slack thread may not show them until Pixo is back.
+    </Callout>
   );
 }
 
 async function HelperManager() {
   const helpers = await listHelpers();
-  const handles = await slackHandles(helpers.map((h) => h.slack_user_id));
   return (
-    <Card className="p-5 mb-6">
-      <div className="text-sm font-semibold mb-1">Helpers</div>
-      <p className="text-xs text-muted-foreground mb-3">
-        Only helpers (and owners) can see and work tickets. This is the same list the
-        Pixorpheus bot manages with <code>/pixl-addhelper</code>.
-      </p>
-      <form action={addHelperAction} className="flex flex-wrap gap-2 mb-3">
-        <Input
-          name="slackId"
-          placeholder="Slack user ID (U0…)"
-          className="max-w-56 text-sm font-mono"
-          required
-        />
-        <PendingButton pendingText="Adding…">Add helper</PendingButton>
-      </form>
-      {helpers.length === 0 ? (
-        <div className="text-xs text-muted-foreground">No helpers yet.</div>
-      ) : (
-        <ul className="flex flex-wrap gap-2">
-          {helpers.map((h) => (
-            <li
-              key={h.slack_user_id}
-              className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1 text-sm"
-            >
-              <span className="font-medium">
-                {handles.get(h.slack_user_id) ?? `@${h.slack_user_id}`}
-              </span>
-              <span className="font-mono text-xs text-muted-foreground">{h.slack_user_id}</span>
+    <Card padding="flush">
+      <CardHeader title="Helpers" icon="support-fill" count={helpers.length} />
+      <div className="flex flex-col gap-3 p-4">
+        <p className="hc-caption text-sm">
+          Only helpers (and owners) can see and work tickets. This is the same list the Pixorpheus
+          bot manages with <Code>/pixl-addhelper</Code>.
+        </p>
+        <form action={addHelperAction} className="flex flex-wrap gap-2">
+          <Input name="slackId" placeholder="Slack user ID (U0...)" className="hc-mono max-w-56" required />
+          <ActionButton icon="member-add" pendingLabel="Adding...">
+            Add helper
+          </ActionButton>
+        </form>
+      </div>
+      <Table headers={["Helper", "Slack ID", ""]}>
+        {helpers.map((h) => (
+          <tr key={h.slack_user_id}>
+            <td className="font-bold">
+              <SlackName id={h.slack_user_id} fallback={`@${h.slack_user_id}`} />
+            </td>
+            <td>
+              <Mono>{h.slack_user_id}</Mono>
+            </td>
+            <td className="text-right">
               <form action={removeHelperAction}>
                 <input type="hidden" name="slackId" value={h.slack_user_id} />
-                <button
-                  type="submit"
-                  className="text-xs text-destructive hover:underline"
-                  title="Remove helper"
-                >
-                  remove
-                </button>
+                <ActionButton variant="ghost" size="sm" pendingLabel="Removing...">
+                  Remove
+                </ActionButton>
               </form>
-            </li>
-          ))}
-        </ul>
-      )}
+            </td>
+          </tr>
+        ))}
+        {helpers.length === 0 && <EmptyRow colSpan={3} title="No helpers yet" icon="support-fill" />}
+      </Table>
     </Card>
   );
 }
 
 async function ResolverLeaderboard() {
   const rows = (await resolverLeaderboard()).slice(0, 15);
-  const handles = await slackHandles(rows.map((r) => r.slackId));
   return (
-    <Card className="p-5 mb-6 gap-3">
-      <div className="text-sm font-semibold">Top resolvers</div>
-      {rows.length === 0 ? (
-        <div className="text-sm text-muted-foreground">No resolved tickets yet.</div>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-10">#</TableHead>
-              <TableHead>Helper</TableHead>
-              <TableHead className="text-right">Last 7 days</TableHead>
-              <TableHead className="text-right">Last 30 days</TableHead>
-              <TableHead className="text-right">All time</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((r, i) => (
-              <TableRow key={r.slackId}>
-                <TableCell className="tabular-nums text-muted-foreground">{i + 1}</TableCell>
-                <TableCell className="font-medium">
-                  {handles.get(r.slackId) ?? `@${r.slackId}`}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">{r.last7d}</TableCell>
-                <TableCell className="text-right tabular-nums">{r.last30d}</TableCell>
-                <TableCell className="text-right tabular-nums font-semibold">{r.total}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
+    <Card padding="flush">
+      <CardHeader title="Top resolvers" icon="trophy-fill" />
+      <Table headers={["#", "Helper", "Last 7 days", "Last 30 days", "All time"]}>
+        {rows.map((r, i) => (
+          <tr key={r.slackId}>
+            <td>
+              <Muted>{i + 1}</Muted>
+            </td>
+            <td className="font-bold">
+              <SlackName id={r.slackId} fallback={`@${r.slackId}`} />
+            </td>
+            <td className="tabular-nums">{r.last7d}</td>
+            <td className="tabular-nums">{r.last30d}</td>
+            <td className="font-bold tabular-nums">{r.total}</td>
+          </tr>
+        ))}
+        {rows.length === 0 && <EmptyRow colSpan={5} title="No resolved tickets yet" icon="trophy-fill" />}
+      </Table>
     </Card>
   );
 }
 
 export default async function TicketsPage() {
   const access = await requirePage("helper");
-  const [stats, activity, pixo] = await Promise.all([ticketStats(), ticketActivity(), pixoStatus(pixorpheusUrl())]);
+  const [stats, activity] = await Promise.all([ticketStats(), ticketActivity()]);
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-1">Tickets</h1>
-      <p className="text-sm text-muted-foreground mb-6">
-        Support requests from the Slack help channel. Reply in-thread or resolve from here.
-      </p>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Tickets"
+        count={stats.open}
+        description="Support requests from the Slack help channel. Reply in-thread or resolve from here."
+      />
 
-      {pixo === "offline" && (
-        <div role="status" className="mb-6 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-foreground">
-          {PIXO_OFFLINE_MESSAGE} Tickets still load and can be resolved here, but resolves are saved by the dashboard
-          and the Slack thread may not show them until Pixo is back.
-        </div>
-      )}
+      <Suspense fallback={null}>
+        <PixoBanner />
+      </Suspense>
 
-      <div className="grid grid-cols-3 gap-3 mb-6 max-w-lg">
-        <StatCard label="Total" value={stats.total} />
-        <StatCard label="Open" value={stats.open} />
-        <StatCard label="Resolved" value={stats.resolved} />
-      </div>
+      <StatGrid>
+        <Stat label="Total" value={stats.total} icon="list-bulleted" />
+        <Stat label="Open" value={stats.open} icon="message-exclamation" tone="warning" />
+        <Stat label="Resolved" value={stats.resolved} icon="checkmark" tone="success" />
+      </StatGrid>
 
-      {access.isOwner && <HelperManager />}
-
-      <Card className="p-5 mb-6">
+      <Card>
+        <CardHeader title="Tickets, last 30 days" icon="easel-analytics" action={<Muted className="text-xs">Created vs resolved per day</Muted>} />
         <TicketsActivityChart points={activity} />
       </Card>
 
-      <ResolverLeaderboard />
-
       <TicketsClient />
+
+      <div className={`grid gap-6 ${access.isOwner ? "lg:grid-cols-2" : ""}`}>
+        <ResolverLeaderboard />
+        {access.isOwner && <HelperManager />}
+      </div>
     </div>
   );
 }

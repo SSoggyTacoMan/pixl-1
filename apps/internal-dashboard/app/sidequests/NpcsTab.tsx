@@ -3,10 +3,7 @@ import { join } from "node:path";
 import { listNpcs, type NpcRow, type SidequestRow } from "@/lib/db";
 import { addNpc, updateNpc, toggleNpc, deleteNpc } from "@/app/actions";
 import { NpcForm, type NpcDraft } from "@/app/_components/NpcForm";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
+import { ActionButton, Badge, Callout, Card, CardHeader, Code, Details, EmptyState, Muted } from "@/app/_ui/ui";
 
 const WORLD_LABEL: Record<string, string> = {
   village: "The Hub village",
@@ -66,10 +63,7 @@ interface Bounds {
 // disk rather than fetched, so the picker renders on the first server pass.
 async function loadBounds(): Promise<Record<string, Bounds>> {
   try {
-    const raw = await readFile(
-      join(process.cwd(), "public", "map", "bounds.json"),
-      "utf8",
-    );
+    const raw = await readFile(join(process.cwd(), "public", "map", "bounds.json"), "utf8");
     return (JSON.parse(raw).worlds ?? {}) as Record<string, Bounds>;
   } catch {
     return {};
@@ -98,9 +92,7 @@ export async function NpcsTab({ quests }: { quests: SidequestRow[] }) {
       active: n.active,
     };
   });
-  const worlds = Object.keys(WORLD_LABEL).filter((w) =>
-    npcs.some((n) => n.world === w),
-  );
+  const worlds = Object.keys(WORLD_LABEL).filter((w) => npcs.some((n) => n.world === w));
 
   const broken = npcs.filter((n) => {
     if (kindOf(n) !== "trial") return false;
@@ -109,111 +101,104 @@ export async function NpcsTab({ quests }: { quests: SidequestRow[] }) {
   });
 
   return (
-    <div className="space-y-8">
-      <p className="text-sm text-muted-foreground max-w-2xl">
-        Everyone standing around in the game world. The client spawns these on load, so
-        adding or moving one takes effect without shipping a new build. Click the map to
-        place them.
+    <div className="flex flex-col gap-6">
+      <p className="hc-caption max-w-2xl text-sm">
+        Everyone standing around in the game world. The client spawns these on load, so adding or moving one takes
+        effect without shipping a new build. Click the map to place them.
       </p>
 
       {Object.keys(bounds).length === 0 && (
-        <Alert variant="destructive">
-          <AlertDescription className="font-medium text-destructive">
-            No world maps found. Run <code>bun run map:sync</code> to copy them out of the
-            game project, otherwise the spot-picker has nothing to draw.
-          </AlertDescription>
-        </Alert>
+        <Callout tone="danger" icon="important">
+          No world maps found. Run <Code>bun run map:sync</Code> to copy them out of the game project, otherwise the
+          spot picker has nothing to draw.
+        </Callout>
       )}
 
       {broken.length > 0 && (
-        <Alert variant="destructive">
-          <AlertDescription className="font-medium text-destructive">
-            {broken.length === 1 ? "1 Trial-giver has" : `${broken.length} Trial-givers have`}{" "}
-            no usable Trial ({broken.map((n) => n.npc_name).join(", ")}). The game only
-            offers Trials that are active, so these fall back to plain dialogue in-game.
-          </AlertDescription>
-        </Alert>
+        <Callout tone="danger" icon="important">
+          {broken.length === 1 ? "1 Trial-giver has" : `${broken.length} Trial-givers have`} no usable Trial (
+          {broken.map((n) => n.npc_name).join(", ")}). The game only offers Trials that are active, so these fall back
+          to plain dialogue in-game.
+        </Callout>
       )}
 
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-4">Add an NPC</div>
+      <Card>
+        <CardHeader title="Add an NPC" icon="plus" />
         <NpcForm
           action={addNpc}
           bounds={bounds}
           trials={trials}
           others={markers}
           submitLabel="Add NPC"
-          pendingLabel="Adding…"
+          pendingLabel="Adding..."
         />
       </Card>
 
-      {worlds.map((world) => (
-        <div key={world} className="space-y-3">
-          <div className="text-base font-semibold">{WORLD_LABEL[world]}</div>
-          {npcs
-            .filter((n) => n.world === world)
-            .map((n) => {
+      {worlds.map((world) => {
+        const inWorld = npcs.filter((n) => n.world === world);
+        return (
+          <section key={world} className="flex flex-col gap-3">
+            <h2 className="hc-heading flex items-center gap-2 text-base">
+              {WORLD_LABEL[world]} <Muted className="text-sm">({inWorld.length})</Muted>
+            </h2>
+            {inWorld.map((n) => {
               const kind = kindOf(n);
               const trial = n.sidequest_id ? trialById.get(n.sidequest_id) : null;
               const brokenTrial = kind === "trial" && (!trial || !trial.active);
               return (
-                <Card key={n.id} className={`p-4 gap-0 ${n.active ? "" : "opacity-60"}`}>
-                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                <Card key={n.id} padding="compact" className={n.active ? "" : "opacity-60"}>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="font-bold flex items-center gap-2 flex-wrap">
-                        {n.npc_name}
-                        <Badge variant="secondary">{KIND_LABEL[kind]}</Badge>
-                        {n.trial_checkin && <Badge variant="secondary">check-in</Badge>}
-                        {!n.active && <Badge variant="secondary">hidden</Badge>}
-                        {brokenTrial && (
-                          <Badge variant="destructive">
-                            {trial ? "Trial is hidden" : "no Trial linked"}
-                          </Badge>
-                        )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold">{n.npc_name}</span>
+                        <Badge tone="info">{KIND_LABEL[kind]}</Badge>
+                        {n.trial_checkin && <Badge tone="neutral">check-in</Badge>}
+                        {!n.active && <Badge tone="neutral">hidden</Badge>}
+                        {brokenTrial && <Badge tone="danger">{trial ? "Trial is hidden" : "no Trial linked"}</Badge>}
                       </div>
-                      <div className="text-xs text-muted-foreground mt-1 tabular-nums">
-                        ({Math.round(n.pos_x)}, {Math.round(n.pos_y)}) · {n.skin}
-                        {trial ? ` · ${trial.name}` : ""}
-                        {n.wanders ? " · wanders" : ""}
+                      <div className="mt-1 text-xs tabular-nums">
+                        <Muted>
+                          ({Math.round(n.pos_x)}, {Math.round(n.pos_y)}) · {n.skin}
+                          {trial ? ` · ${trial.name}` : ""}
+                          {n.wanders ? " · wanders" : ""}
+                        </Muted>
                       </div>
                       {n.dialogue && (
-                        <div className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                          {n.dialogue}
+                        <div className="mt-1 line-clamp-2 text-sm">
+                          <Muted>{n.dialogue}</Muted>
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex shrink-0 items-center gap-2">
                       <form action={toggleNpc}>
                         <input type="hidden" name="id" value={n.id} />
                         <input type="hidden" name="active" value={n.active ? "0" : "1"} />
-                        <PendingButton
+                        <ActionButton
                           variant="outline"
                           size="sm"
-                          pendingText={n.active ? "Hiding…" : "Showing…"}
+                          icon={n.active ? "view-hide" : "view"}
+                          pendingLabel={n.active ? "Hiding..." : "Showing..."}
                         >
                           {n.active ? "Hide" : "Show"}
-                        </PendingButton>
+                        </ActionButton>
                       </form>
                       <form action={deleteNpc}>
                         <input type="hidden" name="id" value={n.id} />
-                        <PendingButton
-                          variant="outline"
+                        <ActionButton
+                          variant="danger"
                           size="sm"
-                          pendingText="Deleting…"
+                          icon="delete"
+                          pendingLabel="Deleting..."
                           confirm={`Delete ${n.npc_name}? They'll vanish from the world on the next load.`}
-                          className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
                         >
                           Delete
-                        </PendingButton>
+                        </ActionButton>
                       </form>
                     </div>
                   </div>
 
-                  <details className="w-full mt-3 border-t pt-3">
-                    <summary className="text-sm cursor-pointer select-none text-muted-foreground hover:text-foreground">
-                      Edit
-                    </summary>
-                    <div className="mt-3">
+                  <div className="mt-3">
+                    <Details summary="Edit">
                       <NpcForm
                         action={updateNpc}
                         bounds={bounds}
@@ -221,19 +206,22 @@ export async function NpcsTab({ quests }: { quests: SidequestRow[] }) {
                         others={markers}
                         initial={toDraft(n)}
                         submitLabel="Save changes"
-                        pendingLabel="Saving…"
+                        pendingLabel="Saving..."
                       />
-                    </div>
-                  </details>
+                    </Details>
+                  </div>
                 </Card>
               );
             })}
-        </div>
-      ))}
+          </section>
+        );
+      })}
 
       {npcs.length === 0 && (
-        <Card className="p-8 text-center text-muted-foreground text-sm">
-          No NPCs yet. The world will be empty until you add one.
+        <Card>
+          <EmptyState title="No NPCs yet" icon="person">
+            The world will be empty until you add one.
+          </EmptyState>
         </Card>
       )}
     </div>

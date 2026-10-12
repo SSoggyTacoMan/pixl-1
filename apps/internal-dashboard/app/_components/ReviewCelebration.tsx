@@ -6,16 +6,18 @@ import { REVIEW_REWARD_COOKIE, parseReviewReward, rewardLabel } from "@/lib/revi
 
 // The little party after a verdict: confetti, a short celebratory sound and a
 // "+6 pixels" card. reviewProject sets a one-shot cookie with the pixels the
-// reviewer was paid just before it redirects (see lib/reviewReward.ts), this
+// reviewer was paid just before it redirects (see lib/reviewReward.ts). This
 // component sits in the root layout, which survives client navigations, so it
 // checks for that cookie every time the path changes.
 //
 // No dependencies on purpose: the confetti is a small canvas loop and the
 // sound is synthesised with the Web Audio API, so there's no asset to host.
-// Honours prefers-reduced-motion (no confetti, the card still shows) and a
-// localStorage switch: localStorage.setItem("pixl-review-celebrate", "off").
+// The confetti and sound only play when the reviewer has turned Confetti on in
+// the settings menu (the card always shows), and prefers-reduced-motion skips
+// the confetti either way.
 
-const COLORS = ["#f5c542", "#ff6b6b", "#4ecdc4", "#a78bfa", "#60a5fa", "#fb923c", "#34d399"];
+// The Hack Club palette (admin.css --hc-*). Canvas can't read CSS vars.
+const COLORS = ["#f1c40f", "#ec3750", "#5bc0de", "#a633d6", "#338eda", "#ff8c37", "#33d6a6"];
 const CARD_MS = 2400;
 const CONFETTI_MS = 3600;
 
@@ -24,14 +26,6 @@ function readAndClearCookie(): number | null {
   if (!match) return null;
   document.cookie = `${REVIEW_REWARD_COOKIE}=; path=/; max-age=0`;
   return parseReviewReward(match.slice(REVIEW_REWARD_COOKIE.length + 1));
-}
-
-function celebrationEnabled(): boolean {
-  try {
-    return window.localStorage.getItem("pixl-review-celebrate") !== "off";
-  } catch {
-    return true;
-  }
 }
 
 // A pop, then a quick rising C-major arpeggio with a sparkle on top. Browsers
@@ -190,20 +184,24 @@ function launchConfetti(): void {
   requestAnimationFrame(frame);
 }
 
-export function ReviewCelebration() {
+export function ReviewCelebration({ confetti }: { confetti: boolean }) {
   const pathname = usePathname();
   const [reward, setReward] = useState<{ px: number; key: number } | null>(null);
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
     const px = readAndClearCookie();
-    if (px === null || !celebrationEnabled()) return;
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!reduceMotion) launchConfetti();
-    playSound();
+    if (px === null) return;
+    if (confetti) {
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (!reduceMotion) launchConfetti();
+      playSound();
+    }
     setReward({ px, key: Date.now() });
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setReward(null), CARD_MS);
+    // Only a navigation should trigger this, not flipping the setting.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
   useEffect(
@@ -229,11 +227,11 @@ export function ReviewCelebration() {
         transform: "translate(-50%, -50%)",
         padding: "18px 34px",
         borderRadius: 18,
-        background: "rgba(20, 20, 28, 0.88)",
-        border: "2px solid #f5c542",
+        background: "color-mix(in srgb, var(--hc-darker) 90%, transparent)",
+        border: "2px solid var(--hc-yellow)",
         boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
-        color: "#f5c542",
-        fontFamily: "var(--font-heading), monospace",
+        color: "var(--hc-yellow)",
+        fontFamily: "var(--font-monospace)",
         fontSize: reward.px > 0 ? 44 : 26,
         fontWeight: 800,
         letterSpacing: 1,

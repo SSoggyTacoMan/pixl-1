@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { Button, Input, Muted, NativeSelect } from "@/app/_ui/ui";
 
 export interface EditableChoice {
   label: string;
@@ -33,31 +32,27 @@ function ChoicePriceInput({
   pixelValueUsd: number;
 }) {
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1.5">
       <Input
         type="number"
         min={0}
         value={price}
         onChange={(e) => onChange(Math.max(0, Math.round(Number(e.target.value) || 0)))}
-        className="w-20 text-sm"
+        className="w-24"
       />
-      <span className="text-[11px] text-muted-foreground shrink-0">px</span>
-      <span className="text-muted-foreground text-xs">or</span>
-      <div className="flex items-center gap-0.5">
-        <span className="text-[11px] text-muted-foreground">$</span>
-        <Input
-          type="number"
-          min={0}
-          step="0.01"
-          placeholder="USD"
-          defaultValue={price > 0 ? (price * pixelValueUsd).toFixed(2) : ""}
-          onChange={(e) => {
-            const usd = Number(e.target.value) || 0;
-            onChange(Math.max(0, Math.round(usd / pixelValueUsd)));
-          }}
-          className="w-20 text-sm"
-        />
-      </div>
+      <Muted className="shrink-0 text-xs">px or $</Muted>
+      <Input
+        type="number"
+        min={0}
+        step="0.01"
+        placeholder="USD"
+        defaultValue={price > 0 ? (price * pixelValueUsd).toFixed(2) : ""}
+        onChange={(e) => {
+          const usd = Number(e.target.value) || 0;
+          onChange(Math.max(0, Math.round(usd / pixelValueUsd)));
+        }}
+        className="w-24"
+      />
     </div>
   );
 }
@@ -146,54 +141,49 @@ export function ShopConfigEditor({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       {groups.map((g, gi) => (
-        <div key={gi} className="rounded-md border border-border p-2 space-y-1.5 bg-background">
-          <div className="flex items-center gap-1.5 flex-wrap">
+        <div key={gi} className="hc-panel flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Input
               placeholder="Group name (e.g. Version)"
               value={g.name}
               onChange={(e) => updateGroup(gi, { name: e.target.value })}
-              className="w-40 text-xs"
+              className="w-48"
             />
-            <select
+            <NativeSelect
               value={g.type}
               onChange={(e) => updateGroup(gi, { type: e.target.value as "single" | "multi" })}
-              className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
             >
               <option value="single">Pick one</option>
               <option value="multi">Pick any (add-ons)</option>
-            </select>
-            {onApplyToAllRegions && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="ml-auto"
-                title="Copy this group (name, type, choices, prices) into every other region's configurator, replacing a same-named group there if one exists"
-                onClick={() => onApplyToAllRegions(g)}
-              >
-                Apply to all regions
+            </NativeSelect>
+            <div className="ml-auto flex gap-1">
+              {onApplyToAllRegions && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  icon="copy"
+                  title="Copy this group (name, type, choices, prices) into every other region's configurator, replacing a same-named group there if one exists"
+                  onClick={() => onApplyToAllRegions(g)}
+                >
+                  Apply to all regions
+                </Button>
+              )}
+              <Button type="button" variant="danger" size="sm" onClick={() => removeGroup(gi)}>
+                Remove group
               </Button>
-            )}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className={`text-destructive hover:text-destructive ${onApplyToAllRegions ? "" : "ml-auto"}`}
-              onClick={() => removeGroup(gi)}
-            >
-              Remove group
-            </Button>
+            </div>
           </div>
           {g.choices.map((c, ci) => (
             <div key={ci} className="pl-2">
-              <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex flex-wrap items-center gap-2">
                 <Input
                   placeholder="Choice label"
                   value={c.label}
                   onChange={(e) => updateChoice(gi, ci, { label: e.target.value })}
-                  className="w-48 text-xs"
+                  className="w-52"
                 />
                 <ChoicePriceInput
                   price={c.price}
@@ -204,16 +194,15 @@ export function ShopConfigEditor({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="text-destructive hover:text-destructive"
+                  icon="delete"
+                  aria-label="Remove choice"
                   onClick={() => removeChoice(gi, ci)}
-                >
-                  ✕
-                </Button>
+                />
               </div>
               {regions && regions.length > 0 && (
-                <div className="flex flex-wrap gap-x-3 gap-y-1 pl-1 mt-1">
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 pl-1">
                   {regions.map((r) => (
-                    <label key={r} className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <label key={r} className="hc-muted flex items-center gap-1 text-xs">
                       {regionLabels?.[r] ?? r}
                       <Input
                         type="number"
@@ -227,7 +216,7 @@ export function ShopConfigEditor({
                           else next[r] = Math.max(0, Math.round(Number(raw) || 0));
                           updateChoice(gi, ci, { regionPrices: next });
                         }}
-                        className="w-16 h-6 text-[11px] px-1.5"
+                        className="h-7 w-20 text-xs"
                       />
                     </label>
                   ))}
@@ -235,14 +224,18 @@ export function ShopConfigEditor({
               )}
             </div>
           ))}
-          <Button type="button" variant="outline" size="sm" onClick={() => addChoice(gi)}>
-            + Add choice
-          </Button>
+          <div>
+            <Button type="button" variant="outline" size="sm" icon="plus" onClick={() => addChoice(gi)}>
+              Add choice
+            </Button>
+          </div>
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={addGroup}>
-        + Add option group
-      </Button>
+      <div>
+        <Button type="button" variant="outline" size="sm" icon="plus" onClick={addGroup}>
+          Add option group
+        </Button>
+      </div>
       {/* Blank labels/all-zero-only groups are dropped server-side, so an
          empty in-progress group left on the page is harmless either way. */}
       <input type="hidden" name={name} value={JSON.stringify(groups)} />

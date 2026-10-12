@@ -1,24 +1,47 @@
-import Link from "next/link";
+import { Suspense } from "react";
 import { requirePage, can } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { listProjects, collaboratorsByProject } from "@/lib/db";
 import { builderNameFor, redactBuilderUser } from "@/lib/reviewAccess";
-import { StatusBadge, BeaconBadge } from "@/app/_components/ProjectBadges";
-import { Badge } from "@/components/ui/badge";
 import { slackHandles } from "@/lib/slack";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { isSafeUrl } from "@/lib/safeUrl";
+import { BeaconBadge } from "@/app/_components/ProjectBadges";
 import {
+  Badge,
+  ButtonLink,
+  Card,
+  EmptyRow,
+  FilterBar,
+  Icon,
+  Mono,
+  Muted,
+  PageHeader,
+  StatusBadge,
   Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  TextLink,
+  buttonClass,
+  formatDate,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
+
+type Access = Parameters<typeof builderNameFor>[0];
+type Owner = Parameters<typeof builderNameFor>[1];
+
+// Slack handles stream in after the table renders, so a slow Slack never
+// holds the page. Until then the name falls back to the in-game one.
+async function OwnerName({
+  access,
+  user,
+  handles,
+}: {
+  access: Access;
+  user: Owner & { slack_id?: string | null };
+  handles: Promise<Map<string, string>>;
+}) {
+  const map = await handles;
+  return <>{builderNameFor(access, user, { handle: user?.slack_id ? map.get(user.slack_id) : null })}</>;
+}
 
 export default async function ProjectsPage({
   searchParams,
@@ -27,8 +50,8 @@ export default async function ProjectsPage({
 }) {
   const access = await requirePage("reviewer");
   const live = await getLiveMode();
-  // Admins (ban perm) see archived projects mixed into the main list; plain
-  // reviewers only see active ones.
+  // Admins see archived projects mixed into the main list; plain reviewers
+  // only see active ones.
   const isAdmin = can(access, "owner");
   const { q, view } = await searchParams;
   const archived = view === "archived";
@@ -43,134 +66,113 @@ export default async function ProjectsPage({
   // Live mode shows no player names at all here (not even in-game ones) and
   // no Hackatime projects, so the Slack handle lookup is skipped too.
   const handles = live
-    ? new Map<string, string>()
-    : await slackHandles(projects.map((p) => p.users?.slack_id));
+    ? Promise.resolve(new Map<string, string>())
+    : slackHandles(projects.map((p) => p.users?.slack_id));
   const collaborators = await collaboratorsByProject(projects.map((p) => p.id));
+
+  const headers = ["Project", "Status", "Owner", "Links", ...(live ? [] : ["Hackatime"]), "Created"];
 
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-3 flex-wrap mb-6">
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">
-          {archived ? "Archived projects" : "Projects"}
-        </h1>
-        <div className="flex gap-2">
-          {access.isOwner && (
-            <Button asChild variant="outline">
-              <a href="/api/projects/export">Export approved (CSV)</a>
-            </Button>
-          )}
-          <Button asChild variant="outline">
-            <Link href={archived ? "/projects" : "/projects?view=archived"}>
-              {archived ? "← Active projects" : "View archive"}
-            </Link>
-          </Button>
-        </div>
-      </div>
-      <form className="mb-5 flex gap-2">
+      <PageHeader
+        title={archived ? "Archived projects" : "Projects"}
+        count={projects.length}
+        actions={
+          <>
+            {access.isOwner && (
+              <a href="/api/projects/export" className={buttonClass("outline", "sm")}>
+                <Icon glyph="download" size={18} />
+                Export approved (CSV)
+              </a>
+            )}
+            <ButtonLink
+              href={archived ? "/projects" : "/projects?view=archived"}
+              variant="outline"
+              size="sm"
+              icon={archived ? "view-back" : "archive"}
+            >
+              {archived ? "Active projects" : "View archive"}
+            </ButtonLink>
+          </>
+        }
+      />
+
+      <FilterBar q={q} placeholder="Search project names">
         {archived && <input type="hidden" name="view" value="archived" />}
-        <Input
-          name="q"
-          defaultValue={q ?? ""}
-          placeholder="Search project names…"
-          className="flex-1 min-w-0 max-w-72"
-        />
-        <Button type="submit">Search</Button>
-      </form>
-      <Card className="overflow-hidden py-0">
-        <Table>
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <TableHead className="p-3">Project</TableHead>
-              <TableHead className="p-3">Status</TableHead>
-              <TableHead className="p-3">Owner</TableHead>
-              <TableHead className="p-3">Links</TableHead>
-              {!live && <TableHead className="p-3">Hackatime</TableHead>}
-              <TableHead className="p-3">Created</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {projects.map((p) => (
-              <TableRow key={p.id}>
-                <TableCell className="p-3 max-w-72">
-                  <Link
-                    href={`/projects/${p.id}`}
-                    className="font-bold hover:text-brand"
-                  >
+      </FilterBar>
+
+      <Card padding="flush">
+        <Table headers={headers}>
+          {projects.map((p) => {
+            const collabCount = collaborators.get(p.id)?.length ?? 0;
+            return (
+              <tr key={p.id}>
+                <td className="max-w-72">
+                  <TextLink href={`/projects/${p.id}`} className="font-bold">
                     {p.name}
-                  </Link>
-                  {p.description && (
-                    <div className="text-xs text-muted-foreground truncate">{p.description}</div>
-                  )}
-                </TableCell>
-                <TableCell className="p-3">
-                  <div className="flex items-center gap-1.5">
+                  </TextLink>
+                  {p.description && <div className="truncate text-xs hc-muted">{p.description}</div>}
+                </td>
+                <td>
+                  <div className="flex flex-wrap items-center gap-1">
                     <StatusBadge status={p.status} />
                     {p.is_peak && <BeaconBadge />}
-                    {p.archived_at && <Badge variant="secondary">Archived</Badge>}
+                    {p.archived_at && <Badge>Archived</Badge>}
                   </div>
-                </TableCell>
-                <TableCell className="p-3">
+                </td>
+                <td>
                   {p.users ? (
-                    <Link href={`/players/${p.user_id}`} className="font-bold hover:text-brand">
-                      {live
-                        ? "Builder"
-                        : builderNameFor(access, p.users, {
-                            handle: p.users.slack_id ? handles.get(p.users.slack_id) : null,
-                          })}
-                    </Link>
+                    <TextLink href={`/players/${p.user_id}`} className="font-bold">
+                      {live ? (
+                        "Builder"
+                      ) : (
+                        <Suspense fallback={builderNameFor(access, p.users)}>
+                          <OwnerName access={access} user={p.users} handles={handles} />
+                        </Suspense>
+                      )}
+                    </TextLink>
                   ) : (
-                    <span className="text-muted-foreground">{live ? "Builder" : p.user_id}</span>
+                    <Muted>{live ? "Builder" : p.user_id}</Muted>
                   )}
-                  {(collaborators.get(p.id)?.length ?? 0) > 0 && (
-                    <div className="text-xs text-muted-foreground">
-                      +{collaborators.get(p.id)!.length} collaborator
-                      {collaborators.get(p.id)!.length === 1 ? "" : "s"}
+                  {collabCount > 0 && (
+                    <div className="text-xs hc-muted">
+                      +{collabCount} collaborator{collabCount === 1 ? "" : "s"}
                     </div>
                   )}
-                </TableCell>
-                <TableCell className="p-3">
-                  <div className="flex gap-2">
-                    {p.repo_url && (
-                      <a
-                        href={p.repo_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-brand font-bold underline"
-                      >
-                        repo
-                      </a>
+                </td>
+                <td>
+                  <div className="flex gap-3">
+                    {isSafeUrl(p.repo_url) && (
+                      <TextLink href={p.repo_url} external>
+                        Repo
+                      </TextLink>
                     )}
-                    {p.demo_url && (
-                      <a
-                        href={p.demo_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-brand font-bold underline"
-                      >
-                        demo
-                      </a>
+                    {isSafeUrl(p.demo_url) && (
+                      <TextLink href={p.demo_url} external>
+                        Demo
+                      </TextLink>
                     )}
-                    {!p.repo_url && !p.demo_url && <span className="text-muted-foreground">-</span>}
+                    {!isSafeUrl(p.repo_url) && !isSafeUrl(p.demo_url) && <Muted>-</Muted>}
                   </div>
-                </TableCell>
+                </td>
                 {!live && (
-                  <TableCell className="p-3 text-foreground/70">
-                    {p.hackatime_projects?.length ? p.hackatime_projects.join(", ") : "-"}
-                  </TableCell>
+                  <td className="text-sm">
+                    {p.hackatime_projects?.length ? p.hackatime_projects.join(", ") : <Muted>-</Muted>}
+                  </td>
                 )}
-                <TableCell className="p-3 text-muted-foreground">
-                  {new Date(p.created_at).toLocaleDateString()}
-                </TableCell>
-              </TableRow>
-            ))}
-            {projects.length === 0 && (
-              <TableRow className="hover:bg-transparent">
-                <TableCell className="p-5 text-muted-foreground" colSpan={live ? 5 : 6}>
-                  No projects found.
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
+                <td>
+                  <Muted>
+                    <Mono>{formatDate(p.created_at)}</Mono>
+                  </Muted>
+                </td>
+              </tr>
+            );
+          })}
+          {projects.length === 0 && (
+            <EmptyRow colSpan={headers.length} title="No projects found" icon="search">
+              Try a different search.
+            </EmptyRow>
+          )}
         </Table>
       </Card>
     </div>

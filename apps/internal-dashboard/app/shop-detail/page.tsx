@@ -1,19 +1,28 @@
+/* eslint-disable @next/next/no-img-element */
 import { requirePage } from "@/lib/guard";
 import { listShopItems, SHOP_REGIONS, SHOP_REGION_LABELS, SHOP_CATEGORY_LABELS, type ShopItemRow } from "@/lib/db";
 import { updateShopItemRegionDetails } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
 import { ShopItemConfigurators } from "@/app/_components/ShopItemConfigurators";
 import { parseOptionGroups } from "@/lib/shopOptions";
 import { config } from "@/app/_generated/config";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import {
+  ActionButton,
+  Badge,
+  ButtonLink,
+  Card,
+  Checkbox,
+  EmptyState,
+  FilterBar,
+  Icon,
+  Muted,
+  PageHeader,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
-// One page, every region's price + price source side by side, per item - built
-// so an admin auditing regional pricing (Europe was the trigger) doesn't have
-// to hop between /shop's per-region tabs to see what's off. See
+// One page, every region's price and price source side by side, per item, so
+// an admin auditing regional pricing (Europe was the trigger) doesn't have to
+// hop between /shop's per-region tabs to see what's off. See
 // updateShopItemRegionDetails in app/actions.ts for the save side.
 export default async function ShopDetailPage({
   searchParams,
@@ -37,66 +46,60 @@ export default async function ShopDetailPage({
   if (query) names = names.filter((n) => n.toLowerCase().includes(query));
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Shop Detail</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Every shop item, one at a time, with every region&apos;s price and where that price came
-          from - for auditing pricing (Europe and otherwise) against the real listing.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Regional pricing"
+        count={names.length}
+        description="Every shop item with each region's price and where that price came from, for auditing pricing against the real listing."
+        actions={
+          <ButtonLink href="/shop" variant="outline" size="sm" icon="view-back">
+            Shop
+          </ButtonLink>
+        }
+      />
 
-      <form className="flex gap-2">
-        <Input
-          name="q"
-          defaultValue={q ?? ""}
-          placeholder="Search item names…"
-          className="w-full min-w-0 max-w-72 text-sm"
-        />
-      </form>
+      <FilterBar q={q} placeholder="Search item names..." />
 
-      <div className="text-sm text-muted-foreground">
-        {names.length} item{names.length === 1 ? "" : "s"}
-      </div>
+      {names.length === 0 && (
+        <Card>
+          <EmptyState title="No items" icon="bag">
+            {query ? "Nothing matches that search." : "There are no region-priced items yet."}
+          </EmptyState>
+        </Card>
+      )}
 
-      <div className="grid gap-4">
-        {names.map((name) => {
-          const rows = byName.get(name)!;
-          const byRegion = new Map(rows.map((r) => [r.region, r]));
-          const anyRow = rows[0];
-          const options = parseOptionGroups(anyRow.options);
-          return (
-            <Card key={name} className="p-4 md:p-5 gap-4 flex-row">
+      {names.map((name) => {
+        const rows = byName.get(name)!;
+        const byRegion = new Map(rows.map((r) => [r.region, r]));
+        const anyRow = rows[0];
+        const options = parseOptionGroups(anyRow.options);
+        return (
+          <Card key={name}>
+            <div className="flex gap-4">
               {anyRow.image_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={anyRow.image_url}
                   alt=""
-                  className="w-20 h-20 rounded-lg object-cover border border-border shrink-0 [image-rendering:pixelated]"
+                  className="h-16 w-16 shrink-0 rounded-md border border-[var(--border)] object-cover [image-rendering:pixelated]"
                 />
               ) : (
-                <span className="grid place-items-center w-20 h-20 rounded-lg bg-muted border border-border shrink-0 text-2xl">
-                  🛍️
+                <span className="hc-muted grid h-16 w-16 shrink-0 place-items-center rounded-md border border-[var(--border)] bg-[var(--sunken)]">
+                  <Icon glyph="bag" size={28} />
                 </span>
               )}
-              <div className="min-w-0 flex-1 space-y-3">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-semibold">{name}</span>
-                  <Badge variant="secondary">
-                    {SHOP_CATEGORY_LABELS[anyRow.category] ?? SHOP_CATEGORY_LABELS.other}
-                  </Badge>
-                  {!rows.some((r) => r.active) && <Badge variant="secondary">hidden everywhere</Badge>}
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="hc-heading text-lg">{name}</span>
+                  <Badge>{SHOP_CATEGORY_LABELS[anyRow.category] ?? SHOP_CATEGORY_LABELS.other}</Badge>
+                  {!rows.some((r) => r.active) && <Badge tone="warning">Hidden everywhere</Badge>}
                 </div>
-
                 {options.length > 0 && (
-                  <div className="space-y-1">
+                  <div className="mt-2 flex flex-col gap-1">
                     {options.map((g, gi) => (
-                      <div key={gi} className="flex items-center gap-1.5 flex-wrap">
-                        {g.name && (
-                          <span className="text-xs font-medium text-muted-foreground">{g.name}:</span>
-                        )}
+                      <div key={gi} className="flex flex-wrap items-center gap-1.5">
+                        {g.name && <Muted className="text-xs font-bold">{g.name}:</Muted>}
                         {g.choices.map((c) => (
-                          <Badge key={c} variant="secondary">
+                          <Badge key={c} outline>
                             {c}
                           </Badge>
                         ))}
@@ -104,65 +107,54 @@ export default async function ShopDetailPage({
                     ))}
                   </div>
                 )}
-
-                <form action={updateShopItemRegionDetails} className="space-y-3">
-                  <input type="hidden" name="item_name" value={name} />
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm border-separate border-spacing-y-2">
-                      <thead>
-                        <tr className="text-xs text-muted-foreground text-left">
-                          <th className="font-medium pr-2">Region</th>
-                          <th className="font-medium pr-2">Price (px)</th>
-                          <th className="font-medium pr-2">≈ USD</th>
-                          <th className="font-medium">Price source link</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <ShopItemConfigurators
-                          pixelValueUsd={config.economy.pixelValueUsd}
-                          regions={SHOP_REGIONS.map((r) => {
-                            const row = byRegion.get(r);
-                            return {
-                              region: r,
-                              label: SHOP_REGION_LABELS[r],
-                              hasRow: !!row,
-                              price: row?.price ?? 0,
-                              priceSourceUrl: row?.price_source_url ?? "",
-                              hasConfig: !!row?.config_options,
-                              basePrice: row?.config_options?.base_price ?? row?.price ?? 0,
-                              referenceUrl: row?.config_options?.reference_url ?? "",
-                              groups: (row?.config_options?.groups ?? []).map((g) => ({
-                                name: g.name,
-                                type: g.type === "multi" ? ("multi" as const) : ("single" as const),
-                                choices: g.choices,
-                              })),
-                            };
-                          })}
-                        />
-                      </tbody>
-                    </table>
-                  </div>
-                  <label className="flex items-start gap-2 text-sm text-muted-foreground cursor-pointer">
-                    <input
-                      type="checkbox"
-                      name="silent"
-                      value="1"
-                      className="mt-0.5 h-4 w-4 rounded border-border accent-brand"
-                    />
-                    <span>Save silently , don&apos;t notify Pixo/Slack about this change</span>
-                  </label>
-                  <PendingButton
-                    className="bg-brand text-white border-transparent"
-                    pendingText="Saving…"
-                  >
-                    Save all regions
-                  </PendingButton>
-                </form>
               </div>
-            </Card>
-          );
-        })}
-      </div>
+            </div>
+
+            <form action={updateShopItemRegionDetails} className="mt-4 flex flex-col gap-3">
+              <input type="hidden" name="item_name" value={name} />
+              <div className="hc-table-wrap rounded-[var(--radius-lg)] border border-[var(--border)]">
+                <table className="hc-table">
+                  <thead>
+                    <tr>
+                      <th>Region</th>
+                      <th>Price</th>
+                      <th>USD</th>
+                      <th>Price source link</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <ShopItemConfigurators
+                      pixelValueUsd={config.economy.pixelValueUsd}
+                      regions={SHOP_REGIONS.map((r) => {
+                        const row = byRegion.get(r);
+                        return {
+                          region: r,
+                          label: SHOP_REGION_LABELS[r],
+                          hasRow: !!row,
+                          price: row?.price ?? 0,
+                          priceSourceUrl: row?.price_source_url ?? "",
+                          hasConfig: !!row?.config_options,
+                          basePrice: row?.config_options?.base_price ?? row?.price ?? 0,
+                          referenceUrl: row?.config_options?.reference_url ?? "",
+                          groups: (row?.config_options?.groups ?? []).map((g) => ({
+                            name: g.name,
+                            type: g.type === "multi" ? ("multi" as const) : ("single" as const),
+                            choices: g.choices,
+                          })),
+                        };
+                      })}
+                    />
+                  </tbody>
+                </table>
+              </div>
+              <Checkbox name="silent" value="1" label="Save silently (don't notify Pixo/Slack about this change)" />
+              <div>
+                <ActionButton pendingLabel="Saving...">Save all regions</ActionButton>
+              </div>
+            </form>
+          </Card>
+        );
+      })}
     </div>
   );
 }

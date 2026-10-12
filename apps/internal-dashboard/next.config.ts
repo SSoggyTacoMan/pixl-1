@@ -1,6 +1,14 @@
+import { existsSync, readFileSync } from "node:fs";
 import type { NextConfig } from "next";
 
+// Written by the Dockerfile once per build. With a deploymentId set, a tab
+// left open across a deploy does a full reload on its next navigation instead
+// of calling Server Actions that no longer exist ("Failed to find Server
+// Action"). Absent locally, which turns the check off in dev.
+const deploymentId = existsSync(".deployment-id") ? readFileSync(".deployment-id", "utf8").trim() : undefined;
+
 const nextConfig: NextConfig = {
+  deploymentId,
   devIndicators: false,
   poweredByHeader: false,
   // Server Actions cap request bodies at 1MB by default, which is well under

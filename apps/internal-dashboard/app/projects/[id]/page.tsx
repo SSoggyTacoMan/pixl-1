@@ -1,4 +1,5 @@
-import Link from "next/link";
+/* eslint-disable @next/next/no-img-element */
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { requirePage, can } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
@@ -6,7 +7,7 @@ import { liveName } from "@/lib/liveMode";
 import { db, getProject, listCollaboratorsForProject, listProjectNotes } from "@/lib/db";
 import { FRAUD_SCORE_THRESHOLD } from "@/lib/robertOutcome";
 import { builderNameFor } from "@/lib/reviewAccess";
-import { fetchCommits } from "@/lib/commits";
+import { fetchCommits, type CommitResult } from "@/lib/commits";
 import {
   reReviewProject,
   archiveProject,
@@ -17,28 +18,39 @@ import {
   toggleProjectPeak,
   sendProjectToAirtable,
   deflateProjectHours,
-  extendHoursCutoff,
 } from "@/app/actions";
 import { hackatimeCutoffUnix, hackatimeCutoffLabel } from "@/app/_generated/config";
 import { fetchAirtableRecord, JUSTIFICATION_DISPLAY_FIELDS } from "@/lib/airtable";
-import {
-  LevelBadge,
-  BeaconBadge,
-  ShipBadges,
-  StatusBadge,
-} from "@/app/_components/ProjectBadges";
+import { LevelBadge, BeaconBadge, ShipBadges } from "@/app/_components/ProjectBadges";
 import { CommitList } from "@/app/_components/CommitList";
 import { ProjectNotes } from "@/app/_components/ProjectNotes";
-import { PendingButton } from "@/app/_components/PendingButton";
 import { renderMarkdown } from "@/lib/markdown";
 import { isSafeUrl } from "@/lib/safeUrl";
 import { slackHandle } from "@/lib/slack";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  ActionButton,
+  Badge,
+  ButtonLink,
+  Callout,
+  Card,
+  CardHeader,
+  Details,
+  EmptyState,
+  Field,
+  Flash,
+  Input,
+  Muted,
+  PageHeader,
+  Stat,
+  StatGrid,
+  StatusBadge,
+  TextLink,
+  Textarea,
+  Timeline,
+  formatDate,
+  formatDateTime,
+  type Tone,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -54,22 +66,24 @@ interface ReviewAuditRow {
   created_at: string;
 }
 
-const AUDIT_VERDICT_LABEL: Record<string, string> = {
-  first_pass_approved: "first pass approved",
-  first_pass_banned: "first pass proposed ban",
-  approved: "approved",
-  needs_changes: "changes requested",
-  banned: "banned",
-  sent_to_first_pass: "sent to first pass",
-  reverted: "reverted",
+const AUDIT_VERDICT: Record<string, { label: string; tone: Tone }> = {
+  first_pass_approved: { label: "First pass approved", tone: "neutral" },
+  first_pass_banned: { label: "First pass proposed ban", tone: "danger" },
+  approved: { label: "Approved", tone: "success" },
+  needs_changes: { label: "Changes requested", tone: "danger" },
+  banned: { label: "Banned", tone: "danger" },
+  sent_to_first_pass: { label: "Sent to first pass", tone: "info" },
+  reverted: { label: "Reverted", tone: "info" },
 };
 
-function auditVerdictVariant(v: string): "success" | "secondary" | "destructive" | "info" {
-  if (v === "approved") return "success";
-  if (v === "first_pass_approved") return "secondary";
-  if (v === "sent_to_first_pass" || v === "reverted") return "info";
-  return "destructive";
-}
+const HISTORY_ACTION: Record<string, { label: string; tone: Tone }> = {
+  project_approved: { label: "Approved", tone: "success" },
+  review_reverted: { label: "Reverted", tone: "info" },
+  project_first_pass: { label: "First pass", tone: "neutral" },
+  project_hours_deflated: { label: "Hours deflated", tone: "warning" },
+};
+
+const DIVIDER = "mt-4 border-t border-[var(--border)] pt-4";
 
 // Notes saved from some forms carry a literal backslash-r (a pasted CRLF that
 // was escaped), which would show up as noise in the text.
@@ -77,21 +91,77 @@ function cleanNote(s: string | null): string {
   return (s ?? "").replace(/\\r\\n|\\r|\\n/g, "\n").replace(/\r/g, "").trim();
 }
 
-// The internal audit note is "SECTION HEADER:\ntext" blocks; bold the headers
-// (TECHNICAL FEATURES, DEFLATION REASON, NOTES, ...) and keep the text as-is.
+// The internal audit note is "SECTION HEADER:\ntext" blocks; set the headers
+// (TECHNICAL FEATURES, DEFLATION REASON, NOTES, ...) apart, keep the text as-is.
 function AuditNoteText({ text }: { text: string }) {
   const lines = cleanNote(text).split("\n");
   return (
-    <div className="text-sm text-foreground/80 break-words whitespace-pre-wrap">
+    <div className="whitespace-pre-wrap break-words text-sm">
       {lines.map((line, i) =>
         /^[A-Z][A-Z ]+:$/.test(line.trim()) ? (
-          <div key={i} className="mt-2 first:mt-0 text-xs font-semibold tracking-wide text-muted-foreground">
+          <div key={i} className="hc-eyebrow mt-2 first:mt-0">
             {line.trim()}
           </div>
         ) : (
-          <div key={i}>{line || " "}</div>
+          <div key={i}>{line || " "}</div>
         ),
       )}
+    </div>
+  );
+}
+
+// GitHub, Slack and Airtable all stream in behind Suspense so a slow
+// external service never holds the page.
+
+async function OwnerHandleName({
+  slackId,
+  render,
+}: {
+  slackId: string | null | undefined;
+  render: (handle: string | null) => string;
+}) {
+  return <>{render(await slackHandle(slackId))}</>;
+}
+
+async function CommitCount({ commits }: { commits: Promise<CommitResult> }) {
+  return <>{(await commits).commits.length}</>;
+}
+
+async function Commits({ commits, projectId }: { commits: Promise<CommitResult>; projectId: number }) {
+  return <CommitList result={await commits} projectId={projectId} />;
+}
+
+async function AirtableRecord({
+  recordId,
+  approvedHours,
+}: {
+  recordId: string;
+  approvedHours: number | null;
+}) {
+  const airtable = await fetchAirtableRecord(recordId);
+  if (!airtable.ok) return <Muted className="text-sm">Couldn&apos;t load: {airtable.error}</Muted>;
+  const hoursOnAirtable = airtable.fields["Optional - Override Hours Spent"];
+  const mismatch = typeof hoursOnAirtable === "number" && approvedHours !== null && hoursOnAirtable !== approvedHours;
+  return (
+    <div className="flex flex-col gap-3 text-sm">
+      {typeof hoursOnAirtable === "number" &&
+        (mismatch ? (
+          <Callout tone="warning" icon="important">
+            Hours on Airtable: {hoursOnAirtable}h. Pixl has {approvedHours}h, so they don&apos;t match.
+          </Callout>
+        ) : (
+          <div className="font-bold">Hours on Airtable: {hoursOnAirtable}h</div>
+        ))}
+      {JUSTIFICATION_DISPLAY_FIELDS.filter((f) => f !== "Optional - Override Hours Spent").map((field) => {
+        const value = airtable.fields[field];
+        if (value === undefined || value === null || value === "") return null;
+        return (
+          <div key={field}>
+            <div className="hc-eyebrow">{field}</div>
+            <div className="whitespace-pre-wrap break-words">{String(value)}</div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -112,803 +182,583 @@ export default async function ProjectPage({
   const data = await getProject(projectId);
   if (!data) notFound();
   const { project, journals, verdicts } = data;
-  const notes = await listProjectNotes(projectId);
   // Reviewers' internal justifications and Robert's fraud review are staff
   // context, same audience as the review page, so they need review access.
   const canSeeReviews = can(access, "reviewer");
-  const audits: ReviewAuditRow[] = canSeeReviews
-    ? (((
-        await db
+  const [notes, collaborators, audits] = await Promise.all([
+    listProjectNotes(projectId),
+    listCollaboratorsForProject(projectId),
+    canSeeReviews
+      ? db
           .from("review_audits")
           .select("id, reviewer, verdict, note, audit_note, claimed_hours, approved_hours, total_seconds, created_at")
           .eq("project_id", projectId)
           .order("created_at", { ascending: false })
-      ).data ?? []) as ReviewAuditRow[])
-    : [];
+          .then((r) => (r.data ?? []) as ReviewAuditRow[])
+      : Promise.resolve([] as ReviewAuditRow[]),
+  ]);
+  // Started now, awaited inside Suspense boundaries below.
+  const commits = fetchCommits(project.repo_url);
+
   // The Trial this project was shipped for, if the player flagged one at ship
   // time (joined in getProject). null = they built their own idea.
   const trial = (
     project as {
-      sidequests?: {
-        name?: string;
-        region?: string;
-        reward?: string;
-        min_hours?: number | null;
-      } | null;
+      sidequests?: { name?: string; region?: string; reward?: string; min_hours?: number | null } | null;
     }
   ).sidequests;
-  const journalHours =
-    Math.round(journals.reduce((s, j) => s + (Number(j.hours) || 0), 0) * 10) /
-    10;
-  const hackatimeHours =
-    Math.round(((project.hackatime_seconds ?? 0) / 3600) * 10) / 10;
+  const journalHours = Math.round(journals.reduce((s, j) => s + (Number(j.hours) || 0), 0) * 10) / 10;
+  const hackatimeHours = Math.round(((project.hackatime_seconds ?? 0) / 3600) * 10) / 10;
   const totalHours = hackatimeHours > 0 ? hackatimeHours : journalHours;
-  const commits = await fetchCommits(project.repo_url);
-  const ownerHandle = await slackHandle(project.users?.slack_id);
-  const collaborators = await listCollaboratorsForProject(projectId);
-  // Banning / archiving / rejecting / sending back is an admin action ,
+
+  // Banning, archiving, rejecting and sending back are admin actions;
   // reviewers only grade. Owner-only.
   const canModerate = can(access, "owner");
-  // Marking a project Peak is a grading call, not moderation , any reviewer
-  // can do it, same as the initial verdict.
+  // Marking a project Beacon is a grading call, not moderation, so any
+  // reviewer can do it, same as the initial verdict.
   const canPeak = can(access, "reviewer");
-  // Send back to review is a staff action , admins only (not plain reviewers).
-  const canReReview =
-    canModerate &&
-    (project.status === "approved" || project.status === "needs_changes");
+  const canReReview = canModerate && (project.status === "approved" || project.status === "needs_changes");
   // Deflating hours moves real pixels, can cancel a player's orders, and DMs
-  // them , owners/super-admins only (see deflateProjectHours in app/actions.ts).
-  const canDeflate =
-    access.isOwner &&
-    project.status === "approved" &&
-    !project.banned_at &&
-    !project.rejected_at;
-  // What's actually sitting on the Airtable record this project was pushed
-  // to (see pushProjectToAirtable) - a staffer's context for whether/how much
-  // to deflate, never auto-applied. Only fetched when there's a record to
-  // read, and never blocks the page on a slow/failed Airtable call.
-  const airtable = project.airtable_record_id
-    ? await fetchAirtableRecord(project.airtable_record_id)
-    : null;
-  // Mirrors the guard in extendHoursCutoff (app/actions.ts): allowed any time
-  // before the project is finalized (approved/rejected/banned), and only
-  // once a Hackatime project is actually linked - otherwise there's nothing
-  // to recount hours from.
-  const canExtendCutoff =
-    canPeak &&
-    project.status !== "approved" &&
-    project.status !== "rejected" &&
-    !project.banned_at &&
-    (project.hackatime_projects?.length ?? 0) > 0;
-  // One day before the global cutoff, for the extend-hours date input's max.
-  const maxExtendDateStr = new Date((hackatimeCutoffUnix - 86_400) * 1000)
-    .toISOString()
-    .slice(0, 10);
+  // them, so owners only (see deflateProjectHours in app/actions.ts).
+  const canDeflate = access.isOwner && project.status === "approved" && !project.banned_at && !project.rejected_at;
+
+  const ownerName = (handle: string | null) =>
+    project.users
+      ? liveName(
+          live,
+          project.users,
+          // Legal name for owners/final reviewers only.
+          builderNameFor(access, project.users, { handle }),
+        )
+      : project.user_id;
 
   return (
-    <div>
-      <Link href="/projects" className="text-sm text-brand font-bold underline">
-        ← all projects
-      </Link>
-      <div className="flex items-start gap-4 mt-2 mb-1">
-        {project.image_url && (
+    <div className="flex flex-col gap-6">
+      <div>
+        <ButtonLink href="/projects" variant="ghost" size="sm" icon="view-back">
+          Projects
+        </ButtonLink>
+      </div>
+
+      <div className="flex items-start gap-4">
+        {project.image_url && isSafeUrl(project.image_url) && (
           <img
             src={project.image_url}
             alt=""
-            className="w-20 h-20 md:w-24 md:h-24 object-cover border border-border rounded-xl shrink-0"
+            className="hc-card h-20 w-20 shrink-0 object-cover md:h-24 md:w-24"
+            data-density="flush"
           />
         )}
-        <div className="min-w-0">
-          <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-semibold text-foreground tracking-tight break-words">
-              {project.name}
-            </h1>
-            <StatusBadge status={project.status} />
-            {project.is_peak && <BeaconBadge />}
-            <LevelBadge level={project.level} />
-            <ShipBadges project={project} />
-            {project.archived_at && (
-              <Badge variant="secondary" className="whitespace-nowrap">
-                archived
-              </Badge>
-            )}
-            {project.rejected_at && (
-              <Badge className="bg-red-700 text-white whitespace-nowrap">
-                rejected
-              </Badge>
-            )}
-            {project.banned_at && (
-              <Badge className="bg-rose-900 text-white whitespace-nowrap">
-                banned
-              </Badge>
-            )}
-          </div>
-          <div className="text-sm text-muted-foreground mt-1 flex gap-x-3 gap-y-1 flex-wrap">
-            <span>
-              by{" "}
-              {project.users ? (
-                <Link
-                  href={`/players/${project.user_id}`}
-                  className="font-bold hover:text-brand"
-                >
-                  {liveName(
-                    live,
-                    project.users,
-                    // Legal name for owners/final reviewers only.
-                    builderNameFor(access, project.users, { handle: ownerHandle }),
-                  )}
-                </Link>
-              ) : (
-                project.user_id
-              )}
-            </span>
-            {collaborators.length > 0 && (
-              <span>
-                with{" "}
-                {collaborators.map((c, i) => (
-                  <span key={c.id}>
-                    {i > 0 && ", "}
-                    {c.users ? (
-                      <Link
-                        href={`/players/${c.user_id}`}
-                        className="font-bold hover:text-brand"
-                      >
-                        {liveName(live, c.users, builderNameFor(access, c.users))}
-                      </Link>
-                    ) : (
-                      c.user_id
-                    )}
-                    {c.status === "pending" && (
-                      <span className="text-muted-foreground"> (invited)</span>
-                    )}
-                  </span>
-                ))}
-              </span>
-            )}
-            <span>created {new Date(project.created_at).toLocaleString()}</span>
-            {project.shipped_at && (
-              <span>
-                shipped {new Date(project.shipped_at).toLocaleString()}
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {error && (
-        <Alert variant="destructive" className="my-4">
-          <AlertDescription className="font-bold text-destructive">{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {project.rejected_at && (
-        <Alert variant="destructive" className="mt-4 border-rose-300 dark:border-rose-500/40 bg-rose-500/10">
-          <AlertTitle className="font-pixel text-rose-600">
-            Rejected{project.reject_by ? ` by ${project.reject_by}` : ""}
-          </AlertTitle>
-          {project.reject_reason && (
-            <AlertDescription className="mt-1 break-words text-foreground">{project.reject_reason}</AlertDescription>
-          )}
-          <AlertDescription className="mt-2 text-muted-foreground text-xs">
-            The owner was told who rejected it, the reason, and to contact the
-            Pixl team if it’s a mistake.
-          </AlertDescription>
-        </Alert>
-      )}
-      {project.banned_at && (
-        <Alert variant="destructive" className="mt-4 border-rose-400 dark:border-rose-500/50 bg-rose-600/10">
-          <AlertTitle className="font-pixel text-rose-700 dark:text-rose-400">
-            Banned{project.ban_by ? ` by ${project.ban_by}` : ""} , permanent
-          </AlertTitle>
-          {project.ban_reason && (
-            <AlertDescription className="mt-1 break-words text-foreground">{project.ban_reason}</AlertDescription>
-          )}
-          <AlertDescription className="mt-2 text-muted-foreground text-xs">
-            This project can never be shipped again. The owner was told who
-            banned it, the reason, and to contact the Pixl team.
-          </AlertDescription>
-        </Alert>
-      )}
-      {project.system_note && (
-        <Alert className="mt-4 border-brand/30 bg-brand/10 dark:bg-brand/20">
-          <AlertDescription className="font-bold text-brand">{project.system_note}</AlertDescription>
-        </Alert>
-      )}
-
-      <Card className="p-5 my-6 gap-0">
-        {project.description ? (
-          <p className="text-sm break-words">{project.description}</p>
-        ) : (
-          <p className="text-sm text-muted-foreground">No description.</p>
-        )}
-        {project.is_update && project.update_notes && (
-          <div className="mt-3 border border-border rounded-lg bg-muted p-3 text-sm">
-            <span className="font-pixel">what changed since last approval</span>
-            <div className="mt-1 whitespace-pre-wrap break-words">
-              {project.update_notes}
-            </div>
-          </div>
-        )}
-        <div className="flex gap-2 flex-wrap mt-4 text-sm font-bold">
-          {project.repo_url && isSafeUrl(project.repo_url) && (
-            <Button asChild variant="secondary">
-              <a href={project.repo_url} target="_blank" rel="noreferrer">
-                Repo
-              </a>
-            </Button>
-          )}
-          {project.demo_url && isSafeUrl(project.demo_url) && (
-            <Button asChild variant="secondary">
-              <a href={project.demo_url} target="_blank" rel="noreferrer">
-                Demo
-              </a>
-            </Button>
-          )}
-          {!isSafeUrl(project.repo_url) && !isSafeUrl(project.demo_url) && (
-            <span className="text-muted-foreground font-normal">No links yet.</span>
-          )}
-        </div>
-        {trial?.name && (
-          <div className="mt-3">
-            <Badge variant="secondary" className="font-bold">
-              Trial: {trial.name}
-              {trial.region ? ` · ${trial.region}` : ""}
-              {trial.reward ? ` · reward: ${trial.reward}` : ""}
-              {trial.min_hours != null ? ` · min ${trial.min_hours}h` : ""}
-            </Badge>
-          </div>
-        )}
-        {project.hackatime_projects?.length > 0 && (
-          <div className="text-xs text-muted-foreground mt-3">
-            hackatime: {project.hackatime_projects.join(", ")}
-          </div>
-        )}
-        {project.review_note && (
-          <div className="mt-4 border border-border rounded-lg bg-muted p-3 text-sm">
-            <span className="font-pixel">
-              reviewer note{project.review_note_by ? ` , by ${project.review_note_by}` : ""}
-            </span>
-            <div className="mt-1 break-words">{project.review_note}</div>
-          </div>
-        )}
-      </Card>
-
-      {canPeak && (
-        <Card className="p-4 mb-8 gap-0">
-          <div className="font-pixel text-xl mb-1">Beacon</div>
-          <p className="text-sm text-muted-foreground mb-3">
-            Nominate a standout project. Purely cosmetic , shown wherever this
-            project is displayed publicly, never a payout change.
-          </p>
-          <form action={toggleProjectPeak}>
-            <input type="hidden" name="projectId" value={project.id} />
-            {!project.is_peak && <input type="hidden" name="isPeak" value="1" />}
-            <PendingButton
-              variant={project.is_peak ? "outline" : undefined}
-              className={project.is_peak ? "" : "bg-amber-500 text-black hover:bg-amber-600 border-transparent"}
-              pendingText={project.is_peak ? "Removing…" : "Marking…"}
-            >
-              {project.is_peak ? "Remove Beacon" : "★ Mark as Beacon"}
-            </PendingButton>
-          </form>
-        </Card>
-      )}
-
-      {(project.hours_extended_since || canExtendCutoff) && (
-        <Card className="p-4 mb-8 gap-0">
-          <div className="font-pixel text-xl mb-1">Hours cutoff</div>
-          {project.hours_extended_since && (
-            <div className="text-sm text-muted-foreground mb-3">
-              Counting hours from{" "}
-              <span className="font-medium text-foreground">
-                {new Date(project.hours_extended_since).toLocaleDateString()}
-              </span>{" "}
-              (before the {hackatimeCutoffLabel} cutoff) , set by{" "}
-              <span className="font-medium text-foreground">{project.hours_extended_by}</span>:{" "}
-              {project.hours_extended_note}
-            </div>
-          )}
-          {canExtendCutoff && (
-            <details className="rounded-xl bg-muted p-4">
-              <summary className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-foreground select-none list-none">
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground" />
-                Extend hours cutoff
-              </summary>
-              <p className="text-xs text-muted-foreground mt-2">
-                Normally only hours from {hackatimeCutoffLabel} onward count. If this project
-                genuinely started earlier and paused, pick how far back to count from , this
-                re-pulls their Hackatime spans and raises the credited total, it never lowers it.
-              </p>
-              <form action={extendHoursCutoff} className="mt-3 flex flex-col gap-2">
-                <input type="hidden" name="projectId" value={project.id} />
-                <input type="hidden" name="returnTo" value={`/projects/${project.id}`} />
-                <Input
-                  type="date"
-                  name="since"
-                  required
-                  max={maxExtendDateStr}
-                  defaultValue={
-                    project.hours_extended_since
-                      ? new Date(project.hours_extended_since).toISOString().slice(0, 10)
-                      : undefined
-                  }
-                />
-                <Textarea
-                  name="note"
-                  required
-                  rows={2}
-                  placeholder="Why count from this date (the player will see this in a DM)…"
-                  className="text-sm resize-y"
-                />
-                <PendingButton
-                  variant="secondary"
-                  pendingText="Extending…"
-                  confirm="Recount this project's hours from that date? This only ever raises the credited total, and the owner is notified."
-                >
-                  Extend cutoff
-                </PendingButton>
-              </form>
-            </details>
-          )}
-        </Card>
-      )}
-
-      {canModerate && (
-        <Card className="p-4 mb-8 gap-0">
-          <div className="font-pixel text-xl mb-1">Staff actions</div>
-          <p className="text-sm text-muted-foreground mb-3">
-            Everything here is reversible and kept in history , nothing is
-            erased.
-          </p>
-          <div className="flex flex-wrap gap-2 items-center">
-            {canReReview && (
-              <form action={reReviewProject}>
-                <input type="hidden" name="projectId" value={project.id} />
-                <PendingButton
-                  className="bg-blue-600 text-white hover:bg-blue-700"
-                  pendingText="Sending…"
-                >
-                  Send back to review
-                </PendingButton>
-              </form>
-            )}
-            {canModerate && (
-              <form action={archiveProject}>
-                <input type="hidden" name="projectId" value={project.id} />
-                {project.archived_at && (
-                  <input type="hidden" name="unarchive" value="1" />
-                )}
-                <PendingButton
-                  variant="outline"
-                  pendingText={project.archived_at ? "Unarchiving…" : "Archiving…"}
-                >
-                  {project.archived_at ? "Unarchive" : "Archive"}
-                </PendingButton>
-              </form>
-            )}
-            {canModerate && project.rejected_at && (
-              <form action={unrejectProject}>
-                <input type="hidden" name="projectId" value={project.id} />
-                <PendingButton
-                  className="bg-mint text-ink hover:bg-mint/90"
-                  pendingText="Restoring…"
-                >
-                  Restore (un-reject)
-                </PendingButton>
-              </form>
-            )}
-            {canModerate && project.banned_at && (
-              <form action={unbanProject}>
-                <input type="hidden" name="projectId" value={project.id} />
-                <PendingButton
-                  className="bg-mint text-ink hover:bg-mint/90"
-                  pendingText="Lifting…"
-                >
-                  Lift ban
-                </PendingButton>
-              </form>
-            )}
-            {canModerate && project.status === "approved" && !project.banned_at && !project.rejected_at && (
-              <form action={sendProjectToAirtable}>
-                <input type="hidden" name="projectId" value={project.id} />
-                <PendingButton
-                  variant="outline"
-                  pendingText="Sending…"
-                >
-                  {project.airtable_record_id ? "Re-send to Airtable" : "Send to Airtable"}
-                </PendingButton>
-              </form>
-            )}
-          </div>
-          {canModerate && !project.rejected_at && (
-            <div className="mt-4 pt-4 border-t border-border">
-              <div className="text-sm font-medium text-rose-600 mb-1">
-                Reject project
-              </div>
-              <p className="text-xs text-muted-foreground mb-2">
-                Removes this project from Pixl and tells the owner who rejected
-                it and why. Reversible. This is not a player ban , ban the
-                player from their{" "}
-                <Link
-                  href={`/players/${project.user_id}`}
-                  className="text-brand hover:underline"
-                >
-                  player page
-                </Link>
-                .
-              </p>
-              <form
-                action={rejectProject}
-                className="flex flex-wrap gap-2 items-start"
-              >
-                <input type="hidden" name="projectId" value={project.id} />
-                <Input
-                  name="reason"
-                  required
-                  placeholder="Reason (shown to the owner)…"
-                  className="flex-1 min-w-64 text-sm"
-                />
-                <PendingButton
-                  className="bg-rose-600 text-white border-transparent hover:bg-rose-700"
-                  pendingText="Rejecting…"
-                  confirm="Reject this project? The owner is told who rejected it and why."
-                >
-                  Reject project
-                </PendingButton>
-              </form>
-            </div>
-          )}
-          {canModerate && !project.banned_at && (
-            <div className="mt-4 pt-4 border-t border-border">
-              <div className="text-sm font-medium text-rose-700 dark:text-rose-400 mb-1">
-                Ban project (permanent)
-              </div>
-              <p className="text-xs text-muted-foreground mb-2">
-                Permanently bans this project , it can never be shipped again
-                and is hidden everywhere. Different from a reject. Reversible by
-                staff.
-              </p>
-              <form
-                action={banProject}
-                className="flex flex-wrap gap-2 items-start"
-              >
-                <input type="hidden" name="projectId" value={project.id} />
-                <Input
-                  name="reason"
-                  required
-                  placeholder="Reason for the ban (shown to the owner)…"
-                  className="flex-1 min-w-64 text-sm"
-                />
-                <PendingButton
-                  className="bg-rose-800 text-white border-transparent hover:bg-rose-900"
-                  pendingText="Banning…"
-                  confirm="Permanently ban this project? It can never be shipped again."
-                >
-                  Ban project
-                </PendingButton>
-              </form>
-            </div>
-          )}
-          {canDeflate && (
-            <div className="mt-4 pt-4 border-t border-border">
-              <div className="text-sm font-medium text-amber-700 dark:text-amber-400 mb-1">
-                Deflate approved hours
-              </div>
-              <p className="text-xs text-muted-foreground mb-2">
-                Lowers this project's credited hours after approval , e.g.
-                Hack Club HQ flagged an over-claim in Airtable. Automatically
-                claws back pixels for the owner (and, proportionally, any
-                accepted collaborators) down to what the new hours are worth,
-                DMs everyone affected with your reason, and auto-cancels any
-                pending order that can no longer be covered. Deflate only ,
-                never raises hours back up. Current: {project.approved_hours ?? totalHours}h.
-              </p>
-              <form
-                action={deflateProjectHours}
-                className="flex flex-wrap gap-2 items-start"
-              >
-                <input type="hidden" name="projectId" value={project.id} />
-                <Input
-                  name="newHours"
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  required
-                  placeholder="New hours…"
-                  className="w-32 text-sm"
-                />
-                <Textarea
-                  name="reason"
-                  required
-                  placeholder="Reason (shown to the owner, and any affected collaborators)…"
-                  className="flex-1 min-w-64 text-sm"
-                  rows={2}
-                />
-                <PendingButton
-                  className="bg-amber-600 text-white border-transparent hover:bg-amber-700"
-                  pendingText="Deflating…"
-                  confirm="Deflate this project's hours? This immediately claws back pixels (and may cancel pending orders) for the owner and any collaborators, and DMs them why."
-                >
-                  Deflate hours
-                </PendingButton>
-              </form>
-            </div>
-          )}
-        </Card>
-      )}
-
-      {project.hours_deflated_at && (
-        <Alert className="mt-4 border-amber-400 dark:border-amber-500/40 bg-amber-500/10">
-          <AlertTitle className="font-pixel text-amber-700 dark:text-amber-400">
-            Hours deflated{project.hours_deflated_by ? ` by ${project.hours_deflated_by}` : ""} on{" "}
-            {new Date(project.hours_deflated_at).toLocaleString()}
-          </AlertTitle>
-          {project.deflation_reason && (
-            <AlertDescription className="mt-1 break-words text-foreground">
-              {project.deflation_reason}
-            </AlertDescription>
-          )}
-        </Alert>
-      )}
-
-      {project.airtable_record_id && (
-        <Card className="p-5 my-6 gap-0">
-          <div className="font-pixel text-xl mb-1">Airtable record</div>
-          {!airtable || !airtable.ok ? (
-            <p className="text-sm text-muted-foreground">
-              {airtable ? `Couldn't load: ${airtable.error}` : "Not sent to Airtable yet."}
-            </p>
-          ) : (
-            <div className="space-y-3 text-sm">
-              {(() => {
-                const hoursOnAirtable = airtable.fields["Optional - Override Hours Spent"];
-                return typeof hoursOnAirtable === "number" ? (
-                  <div
-                    className={
-                      project.approved_hours !== null && hoursOnAirtable !== project.approved_hours
-                        ? "font-bold text-amber-700 dark:text-amber-400"
-                        : "font-bold"
-                    }
-                  >
-                    Hours on Airtable: {hoursOnAirtable}h
-                    {project.approved_hours !== null &&
-                      hoursOnAirtable !== project.approved_hours &&
-                      ` (Pixl has ${project.approved_hours}h , mismatch)`}
-                  </div>
-                ) : null;
-              })()}
-              {JUSTIFICATION_DISPLAY_FIELDS.filter((f) => f !== "Optional - Override Hours Spent").map(
-                (field) => {
-                  const value = airtable.fields[field];
-                  if (value === undefined || value === null || value === "") return null;
-                  return (
-                    <div key={field}>
-                      <div className="font-pixel text-muted-foreground text-xs">{field}</div>
-                      <div className="whitespace-pre-wrap break-words">{String(value)}</div>
-                    </div>
-                  );
-                },
-              )}
-            </div>
-          )}
-        </Card>
-      )}
-
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
-        <Card className="p-4 gap-0">
-          <div className="text-3xl md:text-4xl font-bold text-brand">
-            {totalHours}h
-          </div>
-          <div className="font-pixel text-muted-foreground text-sm">
-            {hackatimeHours > 0 ? "Hackatime" : "logged"}
-            {project.approved_hours !== null &&
-              ` · ${project.approved_hours}h credited`}
-          </div>
-        </Card>
-        <Card className="p-4 gap-0">
-          <div className="text-3xl md:text-4xl font-bold text-brand">
-            {journals.length}
-          </div>
-          <div className="font-pixel text-muted-foreground text-sm">journal entries</div>
-        </Card>
-        <Card className="p-4 gap-0 col-span-2 sm:col-span-1">
-          <div className="text-3xl md:text-4xl font-bold text-brand">
-            {commits.commits.length}
-          </div>
-          <div className="font-pixel text-muted-foreground text-sm">recent commits</div>
-        </Card>
-      </div>
-
-      <h2 className="text-lg font-semibold text-foreground tracking-tight mb-3">
-        Commits
-      </h2>
-      <Card className="mb-8 py-0 overflow-hidden">
-        <CommitList result={commits} />
-      </Card>
-
-      <h2 className="text-lg font-semibold text-foreground tracking-tight mb-3">
-        Journal
-      </h2>
-      <Card className="divide-y divide-border mb-8 py-0">
-        {journals.length === 0 && (
-          <div className="p-5 text-muted-foreground text-sm">No journal entries yet.</div>
-        )}
-        {journals.map((j) => (
-          <div key={j.id} className="p-4">
-            <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
-              <Badge variant="secondary">
-                {Math.round((Number(j.hours) || 0) * 10) / 10}h
-              </Badge>
-              {j.edited_at && (
-                <span className="text-xs text-muted-foreground">
-                  edited {new Date(j.edited_at).toLocaleString()}
-                </span>
-              )}
-              <span className="text-xs text-muted-foreground">
-                {new Date(j.created_at).toLocaleString()}
-              </span>
-            </div>
-            {j.title && (
-              <div className="text-sm font-semibold mb-1">{j.title}</div>
-            )}
-            <div
-              className="md text-sm break-words text-foreground/80"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(j.content) }}
-            />
-          </div>
-        ))}
-      </Card>
-
-      <ProjectNotes projectId={project.id} notes={notes} className="mb-8" />
-
-      {canSeeReviews && (project.robert_project_id || project.robert_trust_score != null) && (
-        <>
-          <h2 className="text-lg font-semibold text-foreground tracking-tight mb-3">
-            Robert fraud review
-          </h2>
-          <Card className="p-5 gap-3 mb-8">
-            {project.robert_trust_score != null ? (
+        <div className="min-w-0 flex-1">
+          <PageHeader
+            title={
               <>
-                <div className="flex flex-wrap items-center gap-3">
-                  <Badge
-                    variant={project.robert_trust_score <= FRAUD_SCORE_THRESHOLD ? "destructive" : "secondary"}
-                  >
-                    {project.robert_trust_score}/10
-                  </Badge>
-                  {project.robert_trust_score <= FRAUD_SCORE_THRESHOLD && (
-                    <span className="text-sm text-rose-600 dark:text-rose-400">Robert&apos;s &quot;Fraud&quot; range</span>
-                  )}
-                  {project.robert_state && (
-                    <span className="text-xs text-muted-foreground">Robert state: {project.robert_state}</span>
-                  )}
-                  {project.robert_reviewed_at && (
-                    <span className="text-xs text-muted-foreground">
-                      reviewed {new Date(project.robert_reviewed_at).toLocaleString()}
-                    </span>
-                  )}
-                </div>
-                <div className="text-sm whitespace-pre-wrap break-words text-foreground/80">
-                  {project.robert_note || "No note given."}
-                </div>
-                {project.robert_outcome && (
-                  <div className="text-xs text-muted-foreground">
-                    Pixl&apos;s final verdict was sent back to Robert: {project.robert_outcome}
-                    {project.robert_outcome_at ? ` (${new Date(project.robert_outcome_at).toLocaleString()})` : ""}
-                  </div>
-                )}
+                <span className="break-words">{project.name}</span>
+                <span className="flex flex-wrap items-center gap-1">
+                  <StatusBadge status={project.status} />
+                  {project.is_peak && <BeaconBadge />}
+                  <LevelBadge level={project.level} />
+                  <ShipBadges project={project} />
+                  {project.archived_at && <Badge>Archived</Badge>}
+                  {project.rejected_at && <Badge tone="danger">Rejected</Badge>}
+                  {project.banned_at && <Badge tone="danger">Banned</Badge>}
+                </span>
               </>
+            }
+            description={
+              <span className="flex flex-wrap gap-x-3 gap-y-1">
+                <span>
+                  by{" "}
+                  {project.users ? (
+                    <TextLink href={`/players/${project.user_id}`} className="font-bold">
+                      {live ? (
+                        ownerName(null)
+                      ) : (
+                        <Suspense fallback={ownerName(null)}>
+                          <OwnerHandleName slackId={project.users.slack_id} render={ownerName} />
+                        </Suspense>
+                      )}
+                    </TextLink>
+                  ) : (
+                    project.user_id
+                  )}
+                </span>
+                {collaborators.length > 0 && (
+                  <span>
+                    with{" "}
+                    {collaborators.map((c, i) => (
+                      <span key={c.id}>
+                        {i > 0 && ", "}
+                        {c.users ? (
+                          <TextLink href={`/players/${c.user_id}`} className="font-bold">
+                            {liveName(live, c.users, builderNameFor(access, c.users))}
+                          </TextLink>
+                        ) : (
+                          c.user_id
+                        )}
+                        {c.status === "pending" && " (invited)"}
+                      </span>
+                    ))}
+                  </span>
+                )}
+                <span>created {formatDateTime(project.created_at)}</span>
+                {project.shipped_at && <span>shipped {formatDateTime(project.shipped_at)}</span>}
+              </span>
+            }
+          />
+        </div>
+      </div>
+
+      {(error || project.rejected_at || project.banned_at || project.system_note || project.hours_deflated_at) && (
+        <div className="flex flex-col gap-2">
+          <Flash error={error} />
+          {project.rejected_at && (
+            <Callout tone="danger" icon="view-close">
+              <div className="font-bold">Rejected{project.reject_by ? ` by ${project.reject_by}` : ""}</div>
+              {project.reject_reason && <div className="mt-1 break-words">{project.reject_reason}</div>}
+              <div className="mt-2 text-xs">
+                The owner was told who rejected it, the reason, and to contact the Pixl team if it&apos;s a
+                mistake.
+              </div>
+            </Callout>
+          )}
+          {project.banned_at && (
+            <Callout tone="danger" icon="private">
+              <div className="font-bold">Banned permanently{project.ban_by ? ` by ${project.ban_by}` : ""}</div>
+              {project.ban_reason && <div className="mt-1 break-words">{project.ban_reason}</div>}
+              <div className="mt-2 text-xs">
+                This project can never be shipped again. The owner was told who banned it, the reason, and to
+                contact the Pixl team.
+              </div>
+            </Callout>
+          )}
+          {project.system_note && (
+            <Callout tone="info" icon="info">
+              <span className="font-bold">{project.system_note}</span>
+            </Callout>
+          )}
+          {project.hours_deflated_at && (
+            <Callout tone="warning" icon="important">
+              <div className="font-bold">
+                Hours deflated{project.hours_deflated_by ? ` by ${project.hours_deflated_by}` : ""} on{" "}
+                {formatDateTime(project.hours_deflated_at)}
+              </div>
+              {project.deflation_reason && <div className="mt-1 break-words">{project.deflation_reason}</div>}
+            </Callout>
+          )}
+        </div>
+      )}
+
+      <StatGrid>
+        <Stat
+          label={hackatimeHours > 0 ? "Hackatime hours" : "Logged hours"}
+          value={`${totalHours}h`}
+          icon="clock"
+          hint={project.approved_hours !== null ? `${project.approved_hours}h credited` : undefined}
+        />
+        <Stat label="Journal entries" value={journals.length} icon="docs" />
+        <Stat
+          label="Recent commits"
+          value={
+            <Suspense fallback={<Muted>...</Muted>}>
+              <CommitCount commits={commits} />
+            </Suspense>
+          }
+          icon="github"
+        />
+      </StatGrid>
+
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="flex min-w-0 flex-col gap-6">
+          <Card>
+            <CardHeader title="About" icon="info" />
+            {project.description ? (
+              <p className="break-words text-sm">{project.description}</p>
             ) : (
-              <div className="text-sm text-muted-foreground">
-                {project.robert_submitted_at
-                  ? `Submitted to Robert ${new Date(project.robert_submitted_at).toLocaleString()}, no review yet.`
-                  : "Not submitted to Robert yet."}
-                {project.robert_error && (
-                  <span className="mt-1 block text-rose-600 dark:text-rose-400">
-                    Last submission failed: {project.robert_error}
-                  </span>
-                )}
+              <Muted className="text-sm">No description.</Muted>
+            )}
+            {project.is_update && project.update_notes && (
+              <div className="hc-panel mt-3 text-sm">
+                <div className="hc-eyebrow">What changed since last approval</div>
+                <div className="mt-1 whitespace-pre-wrap break-words">{project.update_notes}</div>
               </div>
             )}
-          </Card>
-        </>
-      )}
-
-      {canSeeReviews && (
-        <>
-          <h2 className="text-lg font-semibold text-foreground tracking-tight mb-3">
-            Review justifications
-          </h2>
-          <Card className="divide-y divide-border py-0 mb-8">
-            {audits.length === 0 && (
-              <div className="p-5 text-muted-foreground text-sm">No review justifications recorded yet.</div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {isSafeUrl(project.repo_url) && (
+                <ButtonLink href={project.repo_url} external variant="outline" size="sm" icon="github">
+                  Repo
+                </ButtonLink>
+              )}
+              {isSafeUrl(project.demo_url) && (
+                <ButtonLink href={project.demo_url} external variant="outline" size="sm" icon="external">
+                  Demo
+                </ButtonLink>
+              )}
+              {!isSafeUrl(project.repo_url) && !isSafeUrl(project.demo_url) && (
+                <Muted className="text-sm">No links yet.</Muted>
+              )}
+            </div>
+            {trial?.name && (
+              <div className="mt-3">
+                <Badge tone="purple">
+                  Trial: {trial.name}
+                  {trial.region ? `, ${trial.region}` : ""}
+                  {trial.reward ? `, reward: ${trial.reward}` : ""}
+                  {trial.min_hours != null ? `, min ${trial.min_hours}h` : ""}
+                </Badge>
+              </div>
             )}
-            {audits.map((a) => (
-              <div key={a.id} className="p-4 flex flex-col gap-2">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-                  <Badge variant={auditVerdictVariant(a.verdict)} className="shrink-0">
-                    {AUDIT_VERDICT_LABEL[a.verdict] ?? a.verdict.replace(/_/g, " ")}
-                  </Badge>
-                  <span className="font-bold">{a.reviewer}</span>
-                  {a.claimed_hours != null && (
-                    <span className="text-xs text-muted-foreground">
-                      {a.claimed_hours}h claimed
-                      {a.approved_hours != null && a.approved_hours !== a.claimed_hours
-                        ? ` → ${a.approved_hours}h credited`
-                        : a.approved_hours != null
-                          ? ", credited in full"
-                          : ""}
-                    </span>
-                  )}
-                  {a.total_seconds != null && a.total_seconds > 0 && (
-                    <span className="text-xs text-muted-foreground">
-                      {Math.floor(a.total_seconds / 60)}m {a.total_seconds % 60}s on the review
-                    </span>
-                  )}
-                  <span className="text-xs text-muted-foreground ml-auto">
-                    {new Date(a.created_at).toLocaleString()}
-                  </span>
+            {project.hackatime_projects?.length > 0 && (
+              <p className="mt-3 text-xs hc-muted">Hackatime: {project.hackatime_projects.join(", ")}</p>
+            )}
+            {project.review_note && (
+              <div className="hc-panel mt-4 text-sm">
+                <div className="hc-eyebrow">
+                  Reviewer note{project.review_note_by ? `, by ${project.review_note_by}` : ""}
                 </div>
-                {a.audit_note && cleanNote(a.audit_note) && <AuditNoteText text={a.audit_note} />}
-                {a.note && cleanNote(a.note) && (
-                  <div className="text-sm border-l-2 border-border pl-3 text-foreground/70 whitespace-pre-wrap break-words">
-                    <span className="block text-xs font-semibold tracking-wide text-muted-foreground">
-                      NOTE TO PLAYER
-                    </span>
-                    {cleanNote(a.note)}
+                <div className="mt-1 break-words">{project.review_note}</div>
+              </div>
+            )}
+          </Card>
+
+          <Card padding="flush">
+            <CardHeader title="Commits" icon="github" />
+            <Suspense fallback={<EmptyState title="Loading commits..." icon="github" />}>
+              <Commits commits={commits} projectId={project.id} />
+            </Suspense>
+          </Card>
+
+          <Card padding="flush">
+            <CardHeader title="Journal" icon="docs" count={journals.length} />
+            {journals.length === 0 ? (
+              <EmptyState title="No journal entries yet" icon="docs" />
+            ) : (
+              <ul>
+                {journals.map((j) => (
+                  <li key={j.id} className="border-b border-[var(--border)] px-4 py-3 last:border-b-0">
+                    <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge tone="info">{Math.round((Number(j.hours) || 0) * 10) / 10}h</Badge>
+                        {j.title && <span className="font-bold">{j.title}</span>}
+                      </div>
+                      <Muted className="text-xs">
+                        {formatDateTime(j.created_at)}
+                        {j.edited_at && `, edited ${formatDateTime(j.edited_at)}`}
+                      </Muted>
+                    </div>
+                    <div
+                      className="hc-markdown break-words text-sm"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(j.content) }}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
+          <ProjectNotes projectId={project.id} notes={notes} />
+
+          {canSeeReviews && (project.robert_project_id || project.robert_trust_score != null) && (
+            <Card>
+              <CardHeader title="Robert fraud review" icon="search-magic" />
+              {project.robert_trust_score != null ? (
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center gap-3 text-sm">
+                    <Badge tone={project.robert_trust_score <= FRAUD_SCORE_THRESHOLD ? "danger" : "neutral"}>
+                      {project.robert_trust_score}/10
+                    </Badge>
+                    {project.robert_trust_score <= FRAUD_SCORE_THRESHOLD && (
+                      <span className="font-bold" style={{ color: "var(--hc-red)" }}>
+                        Robert&apos;s &quot;Fraud&quot; range
+                      </span>
+                    )}
+                    {project.robert_state && <Muted className="text-xs">Robert state: {project.robert_state}</Muted>}
+                    {project.robert_reviewed_at && (
+                      <Muted className="text-xs">reviewed {formatDateTime(project.robert_reviewed_at)}</Muted>
+                    )}
                   </div>
+                  <div className="whitespace-pre-wrap break-words text-sm">
+                    {project.robert_note || "No note given."}
+                  </div>
+                  {project.robert_outcome && (
+                    <Muted className="text-xs">
+                      Pixl&apos;s final verdict was sent back to Robert: {project.robert_outcome}
+                      {project.robert_outcome_at ? ` (${formatDateTime(project.robert_outcome_at)})` : ""}
+                    </Muted>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm">
+                  <Muted>
+                    {project.robert_submitted_at
+                      ? `Submitted to Robert ${formatDateTime(project.robert_submitted_at)}, no review yet.`
+                      : "Not submitted to Robert yet."}
+                  </Muted>
+                  {project.robert_error && (
+                    <div className="mt-2">
+                      <Callout tone="danger">Last submission failed: {project.robert_error}</Callout>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+          )}
+
+          {canSeeReviews && (
+            <Card padding="flush">
+              <CardHeader title="Review justifications" icon="clipboard-text" count={audits.length} />
+              {audits.length === 0 ? (
+                <EmptyState title="No review justifications recorded yet" icon="clipboard-text" />
+              ) : (
+                <ul>
+                  {audits.map((a) => {
+                    const verdict = AUDIT_VERDICT[a.verdict] ?? {
+                      label: a.verdict.replace(/_/g, " "),
+                      tone: "danger" as Tone,
+                    };
+                    return (
+                      <li
+                        key={a.id}
+                        className="flex flex-col gap-2 border-b border-[var(--border)] px-4 py-3 last:border-b-0"
+                      >
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                          <Badge tone={verdict.tone}>{verdict.label}</Badge>
+                          <span className="font-bold">{a.reviewer}</span>
+                          {a.claimed_hours != null && (
+                            <Muted className="text-xs">
+                              {a.claimed_hours}h claimed
+                              {a.approved_hours != null && a.approved_hours !== a.claimed_hours
+                                ? `, ${a.approved_hours}h credited`
+                                : a.approved_hours != null
+                                  ? ", credited in full"
+                                  : ""}
+                            </Muted>
+                          )}
+                          {a.total_seconds != null && a.total_seconds > 0 && (
+                            <Muted className="text-xs">
+                              {Math.floor(a.total_seconds / 60)}m {a.total_seconds % 60}s on the review
+                            </Muted>
+                          )}
+                          <Muted className="ml-auto text-xs">{formatDateTime(a.created_at)}</Muted>
+                        </div>
+                        {a.audit_note && cleanNote(a.audit_note) && <AuditNoteText text={a.audit_note} />}
+                        {a.note && cleanNote(a.note) && (
+                          <div className="hc-panel whitespace-pre-wrap break-words text-sm">
+                            <div className="hc-eyebrow">Note to player</div>
+                            {cleanNote(a.note)}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader title="Review history" icon="history" count={verdicts.length} />
+            <Timeline
+              empty="Not reviewed yet"
+              entries={verdicts.map((v) => {
+                const action = HISTORY_ACTION[v.action] ?? { label: "Sent back", tone: "danger" as Tone };
+                return {
+                  key: v.id,
+                  title: (
+                    <>
+                      <Badge tone={action.tone}>{action.label}</Badge>
+                      <span className="font-bold">{v.actor}</span>
+                    </>
+                  ),
+                  meta: formatDateTime(v.created_at),
+                  body: v.detail ? <div className="break-words text-sm">{v.detail}</div> : undefined,
+                };
+              })}
+            />
+          </Card>
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-6">
+          {canPeak && (
+            <Card>
+              <CardHeader title="Beacon" icon="rep" />
+              <p className="hc-caption mb-3 text-sm">
+                Nominate a standout project. Purely cosmetic: shown wherever this project is displayed publicly,
+                never a payout change.
+              </p>
+              <form action={toggleProjectPeak}>
+                <input type="hidden" name="projectId" value={project.id} />
+                {!project.is_peak && <input type="hidden" name="isPeak" value="1" />}
+                <ActionButton
+                  variant={project.is_peak ? "outline" : "cream"}
+                  size="sm"
+                  icon={project.is_peak ? undefined : "rep"}
+                  pendingLabel={project.is_peak ? "Removing..." : "Marking..."}
+                >
+                  {project.is_peak ? "Remove Beacon" : "Mark as Beacon"}
+                </ActionButton>
+              </form>
+            </Card>
+          )}
+
+          {project.hours_extended_since && (
+            <Card>
+              <CardHeader title="Hours cutoff" icon="clock" />
+              <p className="text-sm">
+                Counting hours from <span className="font-bold">{formatDate(project.hours_extended_since)}</span>{" "}
+                (before the {hackatimeCutoffLabel} cutoff), set by{" "}
+                <span className="font-bold">{project.hours_extended_by}</span>: {project.hours_extended_note}
+              </p>
+            </Card>
+          )}
+
+          {canModerate && (
+            <Card>
+              <CardHeader title="Staff actions" icon="admin-badge" />
+              <p className="hc-caption mb-3 text-sm">
+                Everything here is reversible and kept in history. Nothing is erased.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                {canReReview && (
+                  <form action={reReviewProject}>
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <ActionButton size="sm" icon="view-reload" pendingLabel="Sending...">
+                      Send back to review
+                    </ActionButton>
+                  </form>
+                )}
+                <form action={archiveProject}>
+                  <input type="hidden" name="projectId" value={project.id} />
+                  {project.archived_at && <input type="hidden" name="unarchive" value="1" />}
+                  <ActionButton
+                    variant="outline"
+                    size="sm"
+                    pendingLabel={project.archived_at ? "Unarchiving..." : "Archiving..."}
+                  >
+                    {project.archived_at ? "Unarchive" : "Archive"}
+                  </ActionButton>
+                </form>
+                {project.rejected_at && (
+                  <form action={unrejectProject}>
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <ActionButton variant="success" size="sm" pendingLabel="Restoring...">
+                      Restore (un-reject)
+                    </ActionButton>
+                  </form>
+                )}
+                {project.banned_at && (
+                  <form action={unbanProject}>
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <ActionButton variant="success" size="sm" pendingLabel="Lifting...">
+                      Lift ban
+                    </ActionButton>
+                  </form>
+                )}
+                {project.status === "approved" && !project.banned_at && !project.rejected_at && (
+                  <form action={sendProjectToAirtable}>
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <ActionButton variant="outline" size="sm" pendingLabel="Sending...">
+                      {project.airtable_record_id ? "Re-send to Airtable" : "Send to Airtable"}
+                    </ActionButton>
+                  </form>
                 )}
               </div>
-            ))}
-          </Card>
-        </>
-      )}
 
-      <h2 className="text-lg font-semibold text-foreground tracking-tight mb-3">
-        Review history
-      </h2>
-      <Card className="divide-y divide-border py-0">
-        {verdicts.length === 0 && (
-          <div className="p-5 text-muted-foreground text-sm">Not reviewed yet.</div>
-        )}
-        {verdicts.map((v) => (
-          <div
-            key={v.id}
-            className="p-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"
-          >
-            <Badge
-              variant={
-                v.action === "project_approved"
-                  ? "success"
-                  : v.action === "review_reverted"
-                    ? "info"
-                    : v.action === "project_first_pass"
-                      ? "secondary"
-                      : v.action === "project_hours_deflated"
-                        ? "warning"
-                        : "destructive"
-              }
-              className="shrink-0"
-            >
-              {v.action === "project_approved"
-                ? "approved"
-                : v.action === "review_reverted"
-                  ? "reverted"
-                  : v.action === "project_first_pass"
-                    ? "first pass"
-                    : v.action === "project_hours_deflated"
-                      ? "hours deflated"
-                      : "sent back"}
-            </Badge>
-            <div className="flex-1 min-w-48">
-              <span className="font-bold">{v.actor}</span>
-              <div className="text-foreground/70 break-words">{v.detail}</div>
-            </div>
-            <div className="text-xs text-muted-foreground shrink-0">
-              {new Date(v.created_at).toLocaleString()}
-            </div>
-          </div>
-        ))}
-      </Card>
+              {!project.rejected_at && (
+                <div className={DIVIDER}>
+                  <h3 className="hc-heading text-sm">Reject project</h3>
+                  <p className="hc-caption mb-2 mt-1 text-xs">
+                    Removes this project from Pixl and tells the owner who rejected it and why. Reversible. This is
+                    not a player ban, ban the player from their{" "}
+                    <TextLink href={`/players/${project.user_id}`}>player page</TextLink>.
+                  </p>
+                  <form action={rejectProject} className="flex flex-col gap-2">
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <Input name="reason" required placeholder="Reason (shown to the owner)" />
+                    <div>
+                      <ActionButton
+                        variant="danger"
+                        size="sm"
+                        pendingLabel="Rejecting..."
+                        confirm="Reject this project? The owner is told who rejected it and why."
+                      >
+                        Reject project
+                      </ActionButton>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {!project.banned_at && (
+                <div className={DIVIDER}>
+                  <h3 className="hc-heading text-sm">Ban project (permanent)</h3>
+                  <p className="hc-caption mb-2 mt-1 text-xs">
+                    Permanently bans this project: it can never be shipped again and is hidden everywhere.
+                    Different from a reject. Reversible by staff.
+                  </p>
+                  <form action={banProject} className="flex flex-col gap-2">
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <Input name="reason" required placeholder="Reason for the ban (shown to the owner)" />
+                    <div>
+                      <ActionButton
+                        variant="danger"
+                        size="sm"
+                        icon="private"
+                        pendingLabel="Banning..."
+                        confirm="Permanently ban this project? It can never be shipped again."
+                      >
+                        Ban project
+                      </ActionButton>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {canDeflate && (
+                <div className={DIVIDER}>
+                  <h3 className="hc-heading text-sm">Deflate approved hours</h3>
+                  <p className="hc-caption mb-2 mt-1 text-xs">
+                    Lowers this project&apos;s credited hours after approval, e.g. when Hack Club HQ flagged an
+                    over-claim in Airtable. Claws back pixels for the owner (and, proportionally, any accepted
+                    collaborators) down to what the new hours are worth, DMs everyone affected with your reason, and
+                    cancels any pending order that can no longer be covered. Only ever lowers hours. Current:{" "}
+                    {project.approved_hours ?? totalHours}h.
+                  </p>
+                  <form action={deflateProjectHours} className="flex flex-col gap-2">
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <Input name="newHours" type="number" step="0.1" min="0" required placeholder="New hours" className="w-32" />
+                    <Textarea
+                      name="reason"
+                      required
+                      rows={2}
+                      placeholder="Reason (shown to the owner, and any affected collaborators)"
+                    />
+                    <div>
+                      <ActionButton
+                        variant="danger"
+                        size="sm"
+                        pendingLabel="Deflating..."
+                        confirm="Deflate this project's hours? This immediately claws back pixels (and may cancel pending orders) for the owner and any collaborators, and DMs them why."
+                      >
+                        Deflate hours
+                      </ActionButton>
+                    </div>
+                  </form>
+                </div>
+              )}
+            </Card>
+          )}
+
+          {project.airtable_record_id && (
+            <Card>
+              <CardHeader title="Airtable record" icon="grid" />
+              <Suspense fallback={<Muted className="text-sm">Loading from Airtable...</Muted>}>
+                <AirtableRecord recordId={project.airtable_record_id} approvedHours={project.approved_hours} />
+              </Suspense>
+            </Card>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

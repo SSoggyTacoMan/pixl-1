@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+  type ComponentPropsWithRef,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { REVIEW_MACROS, expandMacro } from "@/lib/reviewMacros";
-import { useFormStatus } from "react-dom";
 import {
   reviewProject,
   applySubmissionEdits,
@@ -22,76 +29,9 @@ import {
 } from "@/app/_generated/config";
 import { TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { isSafeUrl } from "@/lib/safeUrl";
-import { PendingButton } from "@/app/_components/PendingButton";
 import { BlackoutReviewSection, type BlackoutReviewData } from "@/app/_components/BlackoutReviewSection";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Badge } from "@/components/ui/badge";
-
-function VerdictButtons({
-  secondPass,
-  onVerdictSelect,
-}: {
-  secondPass: boolean;
-  /** Fires on click, before the browser's native required-field validation
-   * runs - lets the parent relax technicalFeatures/notes for this specific
-   * submission (needs_changes doesn't need them), validate the (now hidden,
-   * since they live in an earlier step) audit-note fields itself, and block
-   * the submit by returning false if something's missing. */
-  onVerdictSelect: (verdict: string) => boolean;
-}) {
-  const { pending } = useFormStatus();
-  const [clicked, setClicked] = useState("");
-  const approveLabel = secondPass ? "Approve & credit pixels" : "Approve";
-  const select = (verdict: string, e: React.MouseEvent) => {
-    if (!onVerdictSelect(verdict)) {
-      e.preventDefault();
-      return;
-    }
-    setClicked(verdict);
-  };
-  return (
-    <>
-      <Button
-        name="verdict"
-        value="approved"
-        disabled={pending}
-        onClick={(e) => select("approved", e)}
-        className="bg-emerald-600 text-white hover:bg-emerald-700"
-      >
-        {pending && clicked === "approved" ? "Approving…" : approveLabel}
-      </Button>
-      <Button
-        name="verdict"
-        value="needs_changes"
-        disabled={pending}
-        onClick={(e) => select("needs_changes", e)}
-        className="bg-red-600 text-white hover:bg-red-700"
-      >
-        {pending && clicked === "needs_changes" ? "Sending back…" : "Request changes"}
-      </Button>
-      <Button
-        name="verdict"
-        value="ban"
-        disabled={pending}
-        onClick={(e) => select("ban", e)}
-        variant="outline"
-        className="border-red-700 text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
-      >
-        {pending && clicked === "ban"
-          ? secondPass
-            ? "Banning…"
-            : "Perm rejecting…"
-          : secondPass
-            ? "Ban project"
-            : "Perm reject project"}
-      </Button>
-    </>
-  );
-}
+import { Badge, Button, Callout, Checkbox, Details, Field, formatDateTime, Input, NativeSelect, Textarea } from "@/app/_ui/ui";
+import { actionErrorMessage } from "@/app/_ui/actionError";
 
 export interface BountyOption {
   id: number;
@@ -111,12 +51,66 @@ export interface CollaboratorHours {
   claimedHours: number;
 }
 
+type Step = 1 | 2 | 3;
+type Draft = Record<string, string | number>;
+
 const TIERS = [
   { value: 1, label: "T1 Spark", blurb: "A simple site, script, or tiny tool" },
   { value: 2, label: "T2 Signal", blurb: "A focused app, CLI, or game with clean polish" },
   { value: 3, label: "T3 Grid", blurb: "Multiple systems together: backend, state, infra" },
   { value: 4, label: "T4 Nexus", blurb: "Deep systems work, serious scope" },
 ];
+
+const STEPS: { n: Step; label: string }[] = [
+  { n: 1, label: "Submission" },
+  { n: 2, label: "Audit notes" },
+  { n: 3, label: "Verdict" },
+];
+
+// Friendly names for the browser's own validation messages, see onVerdictSelect.
+const FIELD_LABEL: Record<string, string> = {
+  approvedHours: "Hours to credit",
+  technicalFeatures: "Technical features",
+  deflationReason: "Why lower the hours?",
+  ageJustification: "Age justification",
+  notes: "Additional notes",
+  note: "Note to the player",
+};
+
+function fieldLabel(name: string): string {
+  if (name.startsWith("collabHours_")) return "Collaborator hours";
+  if (name.startsWith("blackoutHours_")) return "Approved Blackout hours";
+  return FIELD_LABEL[name] ?? name;
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+// The kit's Textarea drops refs; the audit fields need them for the draft restore.
+function AuditTextarea(props: ComponentPropsWithRef<"textarea">) {
+  return <textarea className="hc-textarea" {...props} />;
+}
+
+// The ?error= message of a redirect() an action threw, or null for any other
+// error (including a redirect onward to the next project).
+function bouncedError(err: unknown): string | null {
+  const digest = err && typeof err === "object" && "digest" in err ? err.digest : null;
+  if (typeof digest !== "string" || !digest.startsWith("NEXT_REDIRECT")) return null;
+  const target = digest.split(";").slice(2, -2).join(";");
+  try {
+    return new URL(target, window.location.href).searchParams.get("error");
+  } catch {
+    return null;
+  }
+}
+
+function PayoutRow({ label, value, strong = false }: { label: ReactNode; value: ReactNode; strong?: boolean }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span className={strong ? "font-bold" : "hc-muted"}>{label}</span>
+      <span className={strong ? "font-bold" : ""}>{value}</span>
+    </div>
+  );
+}
 
 /**
  * The tier picker plus every conversion it implies, worked out live so a
@@ -143,27 +137,22 @@ function TierAndPayout({
   hours: number;
   tier: number;
   onTier: (t: number) => void;
-  /** The tier actually persisted on the project right now - lets the "Set"
-   * button below know whether there's an unsaved pick to re-grade to. */
+  /** The tier persisted on the project right now, so "Set" only shows for an unsaved pick. */
   savedTier: number;
   projectId: number;
   playerReBefore: number;
   forTrial: boolean;
-  /** The Trial's min-hours gate, for the prize/beyond-hours split below. */
   trialMinHours?: number | null;
   trialName?: string;
-  /** Hardware funding grant requested on this project, if any - deducted from
-   * the payout below, mirroring creditBeneficiary's fundingPx exactly. */
+  /** Hardware funding grant, deducted from the payout like creditBeneficiary's fundingPx. */
   fundingUsd?: number;
 }) {
   const [regrading, startRegrade] = useTransition();
+  const [regradeError, setRegradeError] = useState("");
   const perHour = rePerHour(tier);
   const hoursRe = reForHours(hours, tier);
   const trialBonusRe = forTrial ? config.economy.trialBonusRe : 0;
-  const projectRe = hoursRe + trialBonusRe;
-  const reAfter = playerReBefore + projectRe;
-  // Averaged across the RE this ship earns on top of the player's existing
-  // lifetime RE, matching creditBeneficiary exactly.
+  const reAfter = playerReBefore + hoursRe + trialBonusRe;
   // Hours-based RE only: the flat Trial bonus counts toward level and the vault
   // but deliberately never moves the payout rate, same as creditBeneficiary.
   const rate = pxPerHourOver(playerReBefore, playerReBefore + hoursRe);
@@ -174,186 +163,154 @@ function TierAndPayout({
   const levelAfter = levelForRe(reAfter);
   // Same split reviewProject computes server-side: the prize "buys" the first
   // min_hours, everything past that is paid in pixels either way. Estimated
-  // here without any community-goal multiplier (not known client-side) - see
-  // the disclaimer below, same as the rest of this panel.
+  // without any community-goal multiplier (not known client-side).
   const trialPrizePx =
     forTrial && trialMinHours != null && trialMinHours > 0
       ? Math.min(Math.max(Math.round(projectPayoutPx(trialMinHours, tier, 0)), 0), px)
       : 0;
   const trialBeyondPx = Math.max(px - trialPrizePx, 0);
-  // Mirrors creditBeneficiary's fundingPx exactly: the hardware grant comes
-  // out of this payout, converted at today's rate, capped so it can't go
-  // negative.
-  const fundingPx =
-    fundingUsd > 0 ? Math.min(Math.round(fundingUsd / config.economy.pixelValueUsd), px) : 0;
+  // Mirrors creditBeneficiary's fundingPx: the grant comes out of this payout
+  // at today's rate, capped so it can't go negative.
+  const fundingPx = fundingUsd > 0 ? Math.min(Math.round(fundingUsd / config.economy.pixelValueUsd), px) : 0;
   const netPx = px - fundingPx;
   const netUsd = netPx * config.economy.pixelValueUsd;
 
+  const regrade = () => {
+    const fd = new FormData();
+    fd.set("projectId", String(projectId));
+    fd.set("level", String(tier));
+    setRegradeError("");
+    startRegrade(async () => {
+      try {
+        await setProjectLevel(fd);
+        // A saved tier always redirects back to this page; landing here means it bailed out.
+        setRegradeError("The tier wasn't saved. Reload the page and try again.");
+      } catch (e) {
+        setRegradeError(actionErrorMessage(e, "save the tier"));
+      }
+    });
+  };
+
   return (
-    <div className="rounded-md border border-border bg-muted/30 p-3 space-y-2">
-      <Label className="flex items-center justify-between gap-2 font-normal text-muted-foreground">
-        Tier
+    <div className="hc-panel flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="hc-label">Tier</span>
         <span className="flex items-center gap-2">
-          <select
-            value={tier}
-            onChange={(e) => onTier(Number(e.target.value))}
-            className="rounded-md border border-border bg-background px-2 py-1 text-sm"
-          >
+          <NativeSelect value={tier} onChange={(e) => onTier(Number(e.target.value))} aria-label="Tier">
             {TIERS.map((t) => (
               <option key={t.value} value={t.value}>
                 {t.label} · {rePerHour(t.value)} RE/h
               </option>
             ))}
-          </select>
+          </NativeSelect>
           {tier !== savedTier && (
-            <button
-              type="button"
-              disabled={regrading}
-              onClick={() => {
-                const fd = new FormData();
-                fd.set("projectId", String(projectId));
-                fd.set("level", String(tier));
-                startRegrade(() => {
-                  setProjectLevel(fd);
-                });
-              }}
-              className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-            >
+            <Button type="button" variant="outline" size="sm" disabled={regrading} onClick={regrade}>
               {regrading ? "Saving…" : "Set"}
-            </button>
+            </Button>
           )}
         </span>
-      </Label>
-      <div className="text-xs text-muted-foreground">
-        {TIERS[Math.min(Math.max(tier, 1), 4) - 1].blurb}
       </div>
+      <p className="hc-caption text-xs">{TIERS[Math.min(Math.max(tier, 1), 4) - 1].blurb}</p>
+      {regradeError && <Callout tone="danger" icon="important">{regradeError}</Callout>}
 
-      <div className="border-t border-border pt-2 space-y-1 text-sm tabular-nums">
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">
-            This project · {hours}h × {perHour} RE/h
-          </span>
-          <span className="font-medium">{round1(hoursRe).toLocaleString()} RE</span>
-        </div>
+      <div className="flex flex-col gap-1 border-t border-[var(--border)] pt-2 text-sm tabular-nums">
+        <PayoutRow
+          label={`This project · ${hours}h × ${perHour} RE/h`}
+          value={`${round1(hoursRe).toLocaleString()} RE`}
+        />
         {trialBonusRe > 0 && (
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">Trial bonus (flat, every Trial)</span>
-            <span className="font-medium">+{trialBonusRe.toLocaleString()} RE</span>
-          </div>
+          <PayoutRow label="Trial bonus (flat, every Trial)" value={`+${trialBonusRe.toLocaleString()} RE`} />
         )}
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">Their RE before → after</span>
-          <span className="font-medium">
-            {round1(playerReBefore).toLocaleString()} → {round1(reAfter).toLocaleString()}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">Their level before → after</span>
-          <span className="font-medium">
-            {levelBefore} → {levelAfter}
-            {levelAfter > levelBefore && (
-              <span className="text-[color:var(--color-hc-green,green)]"> ▲</span>
-            )}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-muted-foreground">Rate (averaged over this ship)</span>
-          <span className="font-medium">
-            {Math.round(rate)} px/h · ${usdRate.toFixed(2)}/h
-          </span>
-        </div>
-        <div className="flex justify-between border-t border-border pt-1">
-          <span className="font-medium">Payout</span>
-          <span className="font-bold">
-            {px.toLocaleString()} px · ${usd.toFixed(2)}
-          </span>
+        <PayoutRow
+          label="Their RE before → after"
+          value={`${round1(playerReBefore).toLocaleString()} → ${round1(reAfter).toLocaleString()}`}
+        />
+        <PayoutRow
+          label="Their level before → after"
+          value={
+            <>
+              {levelBefore} → {levelAfter}
+              {levelAfter > levelBefore && <span className="text-[var(--hc-green)]"> ▲</span>}
+            </>
+          }
+        />
+        <PayoutRow
+          label="Rate (averaged over this ship)"
+          value={`${Math.round(rate)} px/h · $${usdRate.toFixed(2)}/h`}
+        />
+        <div className="border-t border-[var(--border)] pt-1">
+          <PayoutRow strong label="Payout" value={`${px.toLocaleString()} px · $${usd.toFixed(2)}`} />
         </div>
         {forTrial && trialPrizePx > 0 && (
           <>
-            <div className="flex justify-between pt-1">
-              <span className="text-muted-foreground">
-                &quot;{trialName}&quot; prize · first {trialMinHours}h
-              </span>
-              <span className="font-medium">≈{trialPrizePx.toLocaleString()} px</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">+ pixels for hours beyond that</span>
-              <span className="font-medium">{trialBeyondPx.toLocaleString()} px</span>
-            </div>
+            <PayoutRow
+              label={`"${trialName}" prize · first ${trialMinHours}h`}
+              value={`≈${trialPrizePx.toLocaleString()} px`}
+            />
+            <PayoutRow label="+ pixels for hours beyond that" value={`${trialBeyondPx.toLocaleString()} px`} />
           </>
         )}
         {forTrial && (
-          <div className="text-[11px] text-muted-foreground leading-snug pt-1">
+          <p className="hc-caption pt-1 text-xs">
             Trial ship: this payout is held, not credited.{" "}
             {trialPrizePx > 0
               ? `Once you approve it, the maker keeps the prize (worth ≈${trialPrizePx.toLocaleString()} px) plus the ${trialBeyondPx.toLocaleString()} px for hours beyond the minimum by default, or can skip the prize for all ${px.toLocaleString()} px instead.`
               : "The maker picks the Trial reward or these pixels once you approve it, and only gets the one they pick."}
-          </div>
+          </p>
         )}
         {fundingPx > 0 && (
           <>
-            <div className="flex justify-between pt-1">
-              <span className="text-muted-foreground">Hardware funding grant (${fundingUsd.toFixed(2)})</span>
-              <span className="font-medium">-{fundingPx.toLocaleString()} px</span>
+            <PayoutRow
+              label={`Hardware funding grant ($${fundingUsd.toFixed(2)})`}
+              value={`-${fundingPx.toLocaleString()} px`}
+            />
+            <div className="border-t border-[var(--border)] pt-1">
+              <PayoutRow
+                strong
+                label="They actually get"
+                value={`${netPx.toLocaleString()} px · $${netUsd.toFixed(2)}`}
+              />
             </div>
-            <div className="flex justify-between border-t border-border pt-1">
-              <span className="font-medium">They actually get</span>
-              <span className="font-bold">
-                {netPx.toLocaleString()} px · ${netUsd.toFixed(2)}
-              </span>
-            </div>
-            <div className="text-[11px] text-muted-foreground leading-snug pt-1">
-              The ${fundingUsd.toFixed(2)} funding grant comes out of this payout instead of their
-              wallet, so approving credits {netPx.toLocaleString()} px, not {px.toLocaleString()}.
-            </div>
+            <p className="hc-caption pt-1 text-xs">
+              The ${fundingUsd.toFixed(2)} funding grant comes out of this payout instead of their wallet, so
+              approving credits {netPx.toLocaleString()} px, not {px.toLocaleString()}.
+            </p>
           </>
         )}
       </div>
-      <p className="text-[11px] text-muted-foreground leading-snug">
-        Changing the tier here re-grades it immediately (click Set), same as the Re-grade tier
-        control above - it doesn&apos;t wait for your verdict. Community-goal bonuses and any
-        referral boost apply on top and aren&apos;t shown.
+      <p className="hc-caption text-xs">
+        Changing the tier here re-grades it as soon as you click Set, same as the Re-grade tier control above. It
+        doesn&apos;t wait for your verdict. Community-goal bonuses and any referral boost apply on top and aren&apos;t
+        shown.
       </p>
     </div>
   );
 }
 
-const round1 = (n: number) => Math.round(n * 10) / 10;
-
-const STEPS = [
-  { n: 1 as const, label: "Submission" },
-  { n: 2 as const, label: "Audit notes" },
-  { n: 3 as const, label: "Verdict" },
-];
-
-function StepHeader({ step, onStep }: { step: 1 | 2 | 3; onStep: (n: 1 | 2 | 3) => void }) {
+function InlineNumber({
+  label,
+  hint,
+  children,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex items-center gap-1 text-xs font-medium">
-      {STEPS.map((s, i) => (
-        <div key={s.n} className="flex items-center gap-1">
-          {i > 0 && <span className="text-muted-foreground/40">→</span>}
-          <button
-            type="button"
-            onClick={() => onStep(s.n)}
-            className={`rounded-full px-2.5 py-1 transition-colors ${
-              step === s.n
-                ? "bg-brand text-white"
-                : "text-muted-foreground hover:text-foreground hover:bg-muted"
-            }`}
-          >
-            {s.n}. {s.label}
-          </button>
-        </div>
-      ))}
-    </div>
+    <label className="flex flex-wrap items-center justify-between gap-3">
+      <span className="hc-label">
+        {label}
+        {hint && <span className="hc-label-hint">{hint}</span>}
+      </span>
+      {children}
+    </label>
   );
 }
 
 function CollaboratorHoursInput({ c }: { c: CollaboratorHours }) {
   const [value, setValue] = useState(c.claimedHours);
   return (
-    <Label className="flex items-center justify-between gap-2 font-normal text-muted-foreground">
-      {c.name}&apos;s hours to credit (decrease only)
+    <InlineNumber label={`${c.name}'s hours to credit`} hint="Decrease only">
       <Input
         name={`collabHours_${c.id}`}
         type="number"
@@ -361,12 +318,147 @@ function CollaboratorHoursInput({ c }: { c: CollaboratorHours }) {
         min="0"
         max={c.claimedHours}
         value={value}
-        onChange={(e) =>
-          setValue(Math.min(c.claimedHours, Math.max(0, Number(e.target.value) || 0)))
-        }
-        className="w-28 text-sm"
+        onChange={(e) => setValue(Math.min(c.claimedHours, Math.max(0, Number(e.target.value) || 0)))}
+        className="w-28"
       />
-    </Label>
+    </InlineNumber>
+  );
+}
+
+function VerdictButtons({
+  secondPass,
+  pendingVerdict,
+  onVerdictSelect,
+  onBack,
+}: {
+  secondPass: boolean;
+  /** The verdict currently being submitted, or null when idle. */
+  pendingVerdict: string | null;
+  /** Runs on click, before the browser's own validation, and can cancel the submit. */
+  onVerdictSelect: (verdict: string) => boolean;
+  onBack: () => void;
+}) {
+  const busy = pendingVerdict !== null;
+  const select = (verdict: string, e: React.MouseEvent) => {
+    if (!onVerdictSelect(verdict)) e.preventDefault();
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button type="button" variant="outline" onClick={onBack} disabled={busy}>
+        ← Back
+      </Button>
+      <Button
+        type="submit"
+        name="verdict"
+        value="approved"
+        variant="success"
+        disabled={busy}
+        onClick={(e) => select("approved", e)}
+      >
+        {pendingVerdict === "approved" ? "Approving…" : secondPass ? "Approve & credit pixels" : "Approve"}
+      </Button>
+      <Button type="submit" name="verdict" value="needs_changes" disabled={busy} onClick={(e) => select("needs_changes", e)}>
+        {pendingVerdict === "needs_changes" ? "Sending back…" : "Request changes"}
+      </Button>
+      <Button type="submit" name="verdict" value="ban" variant="danger" disabled={busy} onClick={(e) => select("ban", e)}>
+        {pendingVerdict === "ban"
+          ? secondPass
+            ? "Banning…"
+            : "Perm rejecting…"
+          : secondPass
+            ? "Ban project"
+            : "Perm reject project"}
+      </Button>
+    </div>
+  );
+}
+
+// Title/image/links/description edits. Applies on its own, independent of the
+// verdict form below.
+function EditSubmission({
+  projectId,
+  repoUrl,
+  demoUrl,
+  currentName,
+  currentDescription,
+  currentImageUrl,
+}: {
+  projectId: number;
+  repoUrl: string | null;
+  demoUrl: string | null;
+  currentName?: string;
+  currentDescription?: string | null;
+  currentImageUrl?: string | null;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const onSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (pending) return;
+    const fd = new FormData(e.currentTarget);
+    setResult(null);
+    startTransition(async () => {
+      try {
+        await applySubmissionEdits(fd);
+        if (fileRef.current) fileRef.current.value = "";
+        setResult({ ok: true, text: "Saved. The project is updated everywhere." });
+      } catch (err) {
+        setResult({ ok: false, text: actionErrorMessage(err, "apply these edits") });
+      }
+    });
+  };
+
+  return (
+    <Details summary="Edit submission: title, image, repo and demo links, description">
+      <form onSubmit={onSubmit} className="flex flex-col gap-3">
+        <p className="hc-caption text-xs">
+          Applies immediately and updates the project everywhere: the player&apos;s own page, the next reviewer who
+          opens this, and the YSWS/Airtable export. Independent of your verdict below.
+        </p>
+        <input type="hidden" name="projectId" value={projectId} />
+        <Field label="Title">
+          <Input name="editedName" defaultValue={currentName ?? ""} maxLength={200} />
+        </Field>
+        <Field label="Replace image" hint="Optional. Leave empty to keep the current one.">
+          {currentImageUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={currentImageUrl}
+              alt=""
+              className="h-20 w-auto self-start rounded border border-[var(--border)] object-cover"
+            />
+          )}
+          <input
+            ref={fileRef}
+            name="editedImage"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hc-file"
+          />
+        </Field>
+        <Field label="Repo URL">
+          <Input name="editedRepoUrl" defaultValue={repoUrl ?? ""} placeholder="https://github.com/…" />
+        </Field>
+        <Field label="Demo URL">
+          <Input name="editedDemoUrl" defaultValue={demoUrl ?? ""} placeholder="https://…" />
+        </Field>
+        <Field label="Description">
+          <Textarea name="editedDescription" defaultValue={currentDescription ?? ""} maxLength={5000} rows={4} />
+        </Field>
+        {result && (
+          <Callout tone={result.ok ? "success" : "danger"} icon={result.ok ? "checkmark" : "important"}>
+            {result.text}
+          </Callout>
+        )}
+        <div>
+          <Button type="submit" variant="outline" disabled={pending}>
+            {pending ? "Applying…" : "Apply changes"}
+          </Button>
+        </div>
+      </form>
+    </Details>
   );
 }
 
@@ -399,9 +491,8 @@ export function ReviewForm({
   demoUrl: string | null;
   claimedHours: number;
   defaultHours?: number;
-  /** How many hours the overall credited total already lost to per-journal-entry
-   * deflation (Journals tab / setJournalHours), so the breakdown below can show
-   * it separately from whatever this reviewer additionally lowers below. */
+  /** Hours the credited total already lost to per-journal-entry deflation
+   * (Journals tab / setJournalHours), shown apart from what this form lowers. */
   journalDeflatedHours?: number;
   secondPass?: boolean;
   bounties?: BountyOption[];
@@ -410,7 +501,7 @@ export function ReviewForm({
   collaborators?: CollaboratorHours[];
   /** Operation Blackout entry awaiting a ruling, when this project has one. */
   blackout?: BlackoutReviewData | null;
-  /** The project's current tier (1-4). Submitted with the verdict. */
+  /** The project's current tier (1-4). */
   tier?: number;
   /** The player's lifetime RE excluding this project - what sets their rate. */
   playerReBefore?: number;
@@ -425,41 +516,32 @@ export function ReviewForm({
     notes: string;
     note: string;
   };
-  /** Current title/description/image, editable by a final (second-pass)
-   * reviewer only, see the "Edit submission" section below. */
   currentName?: string;
   currentDescription?: string | null;
   currentImageUrl?: string | null;
-  /** Whether the viewing reviewer is an owner - gates the "Generate AI
-   * draft" button below (visible to every reviewer, only clickable for admins). */
+  /** Owner: gates the "Generate AI draft" button (shown to everyone, clickable for owners). */
   isSuper?: boolean;
-  /** Whether the viewer may edit the submission's details (title, image, links,
-   * description) - shows the "Edit submission" panel at any review stage. */
+  /** Whether the viewer may edit the submission's details at any review stage. */
   canEditSubmission?: boolean;
-  /** The shared, server-side draft saved by saveReviewDraft (see review_draft
-   * on ProjectRow) - whoever last typed into this form, on any device, not
-   * just this browser's own localStorage copy. Used only when this browser
-   * has no local draft of its own to restore. */
+  /** The shared server-side draft (saveReviewDraft). Used only when this
+   * browser has no local draft of its own to restore. */
   serverDraft?: {
-    draft: Record<string, string | number> | null;
+    draft: Draft | null;
     by: string;
     at: string | null;
   };
 }) {
+  const formRef = useRef<HTMLFormElement>(null);
   const repoOpened = useRef<HTMLInputElement>(null);
   const demoOpened = useRef<HTMLInputElement>(null);
   const repoSeconds = useRef<HTMLInputElement>(null);
   const demoSeconds = useRef<HTMLInputElement>(null);
   const totalSeconds = useRef<HTMLInputElement>(null);
   const away = useRef<{ kind: "repo" | "demo"; at: number } | null>(null);
-  // Review time only counts while this tab is actually the one the reviewer
-  // is looking at - a reviewer who opens a project then tabs away for an
-  // hour (or leaves it open overnight) shouldn't have that time counted as
-  // review time. activeMs accumulates each visible-and-focused stretch as it
-  // ends; visibleSince holds when the current stretch started (null while
-  // away). "Away" means either the tab isn't the visible one or the window
-  // itself lost focus - both, since a reviewer can alt-tab to another app
-  // while this tab stays the visible one in its own window.
+  // Review time only counts while this tab is the one the reviewer is looking
+  // at: visible AND the window focused (alt-tabbing to another app keeps the
+  // tab "visible"). activeMs sums finished stretches; visibleSince is when the
+  // current one started (null while away).
   const activeMs = useRef(0);
   const visibleSince = useRef<number | null>(null);
   const isActiveNow = () =>
@@ -470,52 +552,46 @@ export function ReviewForm({
   const [hours, setHours] = useState(baseHours);
   const [tierState, setTierState] = useState(tier);
   const deflated = hours < claimedHours;
-  // claimedHours is already post-journal-deflation (see claimedHours/
-  // defaultHours wiring in review/[id]/page.tsx - both are payoutHours,
-  // which already folds in each journal entry's approved_hours override).
-  // So deflating a journal entry alone, with no further in-form lowering,
-  // left `deflated` false and the "Why lower the hours?" box never
-  // appeared - the journal-level deflation_reason it already required (see
-  // setJournalHours in app/actions.ts) never made it into this review's own
-  // submitted audit note. Treat journal-level deflation as deflation here
-  // too, and show the true pre-journal-deflation total in the label below.
+  // claimedHours is already post-journal-deflation (payoutHours on the page),
+  // so a journal-only deflation would leave `deflated` false and skip the
+  // required reason. Count journal-level deflation too, and show the true
+  // pre-journal total in the label.
   const needsDeflationReason = deflated || journalDeflatedHours > 0;
-  const rawClaimedHours = Math.round((claimedHours + journalDeflatedHours) * 10) / 10;
+  const rawClaimedHours = round1(claimedHours + journalDeflatedHours);
 
-  // Deflating a journal entry (Journals tab, setJournalHours) revalidates
-  // this same page without a full reload/remount - React keeps this
-  // component's state, so `hours` (a useState only seeded from baseHours at
-  // MOUNT) went stale, still holding the pre-deflation total. That left
-  // `deflated` computed against the wrong number, so the required "Why lower
-  // the hours?" box could silently fail to appear even though the credited
-  // total had genuinely dropped. Re-sync whenever baseHours changes, unless
-  // the reviewer has already typed their own value into the field below.
+  // Deflating a journal entry revalidates this page without remounting, so
+  // `hours` (seeded once from baseHours) would go stale. Re-sync whenever
+  // baseHours changes, unless the reviewer already typed their own value.
   const hoursEditedRef = useRef(false);
   useEffect(() => {
     if (!hoursEditedRef.current) setHours(baseHours);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseHours]);
 
-  // A rushed reviewer who closes the dashboard mid-review (or accidentally
-  // navigates away) loses everything they typed, deflation reason included -
-  // this is the one hard-to-redo part of a review. Draft autosaves to
-  // localStorage (per browser, not the account - closing the tab elsewhere
-  // won't recover it) and is cleared the moment the form is actually
-  // submitted, whether the verdict sticks or bounces back on a validation
-  // error, so a stale draft never resurrects itself on the next review.
+  // The audit note is the one hard-to-redo part of a review, so it autosaves
+  // to localStorage (this browser) and, debounced, to the project itself (any
+  // reviewer, any device). The local copy is only cleared once a submit
+  // actually navigated away, see the unmount effect below.
   const draftKey = `pixl-review-draft-${projectId}`;
   const technicalFeaturesRef = useRef<HTMLTextAreaElement>(null);
   const deflationReasonRef = useRef<HTMLTextAreaElement>(null);
   const ageJustificationRef = useRef<HTMLTextAreaElement>(null);
   const notesRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
-  const pendingDraft = useRef<Record<string, string | number> | null>(null);
-  const [draftRestored, setDraftRestored] = useState(false);
-  const [prefilledFromServerDraft, setPrefilledFromServerDraft] = useState(false);
-  const [prefilledFromFirstPass, setPrefilledFromFirstPass] = useState(false);
+  const pendingDraft = useRef<Draft | null>(null);
+  const [draftSource, setDraftSource] = useState<"local" | "server" | "firstPass" | null>(null);
+  const [featuresLen, setFeaturesLen] = useState(0);
+  const [serverSave, setServerSave] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  const pushServerDraft = (draft: Draft) => {
+    setServerSave("saving");
+    saveReviewDraft(projectId, draft)
+      .then(() => setServerSave("saved"))
+      // Best-effort: the localStorage copy is unaffected either way.
+      .catch(() => setServerSave("error"));
+  };
 
   useEffect(() => {
-    let draft: Record<string, string | number> | null = null;
+    let draft: Draft | null = null;
     try {
       const raw = localStorage.getItem(draftKey);
       if (raw) draft = JSON.parse(raw);
@@ -523,26 +599,18 @@ export function ReviewForm({
       draft = null;
     }
     if (draft) {
-      setDraftRestored(true);
-      // Push it to the server right away, not just on the next edit - a
-      // reviewer who restores an old local draft and never touches it again
-      // (e.g. they just wanted to confirm it was still there) still needs it
-      // to reach whoever does the real pass, not stay stuck in this browser.
-      saveReviewDraft(projectId, draft as Record<string, string | number>).catch(() => {
-        // Best-effort - the localStorage copy is unaffected either way.
-      });
+      setDraftSource("local");
+      // Push it to the server right away, so a restored draft the reviewer
+      // never edits again still reaches whoever does the real pass.
+      pushServerDraft(draft);
     } else if (serverDraft?.draft) {
-      // Nobody's typed anything in THIS browser yet, but someone else did
-      // (e.g. a super spot-checking this project) and it's saved on the
-      // project itself - start from that instead of a blank form or the
-      // original first-pass audit note.
+      // Someone else (or this reviewer on another device) already started.
       draft = { ...serverDraft.draft };
-      setPrefilledFromServerDraft(true);
+      setDraftSource("server");
     } else if (firstPass) {
-      // Nothing typed yet this session - start from what the first reviewer
-      // already wrote instead of a blank form. Still fully editable.
+      // Start from what the first reviewer wrote. Still fully editable.
       draft = { ...firstPass };
-      setPrefilledFromFirstPass(true);
+      setDraftSource("firstPass");
     }
     if (!draft) return;
     if (typeof draft.technicalFeatures === "string" && technicalFeaturesRef.current) {
@@ -553,17 +621,12 @@ export function ReviewForm({
       ageJustificationRef.current.value = draft.ageJustification;
     if (typeof draft.notes === "string" && notesRef.current) notesRef.current.value = draft.notes;
     if (typeof draft.note === "string" && noteRef.current) noteRef.current.value = draft.note;
-    // deflationReason's textarea only renders once `deflated` is true, which
-    // depends on the `hours` state this same draft is about to change - stash
-    // it and let the effect below fill it in once that field actually exists.
+    // The deflation reason box only renders once `deflated` is true, which
+    // depends on the hours this draft is about to set, so fill it in later.
     pendingDraft.current = draft;
-    // A saved draft's `hours` is only trustworthy if the server-computed
-    // baseline it was measured against hasn't moved since - a reviewer
-    // deflating a journal entry (Journals tab) recomputes baseHours on the
-    // next page load, but a stale draft.hours from before that edit would
-    // otherwise silently overwrite the fresh, lower number back to the old
-    // one. Only restore it when draft.baseHours still matches; otherwise drop
-    // the stale override and let the fresh baseHours stand.
+    // A saved `hours` is only trustworthy if the server baseline it was
+    // measured against hasn't moved (a journal deflation since then would be
+    // silently undone otherwise).
     if (typeof draft.hours === "number" && draft.baseHours === baseHours) {
       hoursEditedRef.current = true;
       setHours(draft.hours);
@@ -581,10 +644,8 @@ export function ReviewForm({
     }
   }, [needsDeflationReason]);
 
-  // hours/tier come from React state, which hasn't updated yet inside the same
-  // handler that just called setHours/setTierState (state updates apply on the
-  // next render) - callers changing one of those pass the new value directly
-  // rather than relying on the stale closure.
+  // Callers that just called setHours/setTierState pass the new value, since
+  // state hasn't updated yet inside the same handler.
   const serverDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveDraft = (overrides?: { hours?: number; tier?: number }) => {
     const snapshot = {
@@ -600,18 +661,11 @@ export function ReviewForm({
     try {
       localStorage.setItem(draftKey, JSON.stringify(snapshot));
     } catch {
-      // Storage full or unavailable (private browsing) - the review still
-      // works, it just can't be recovered if the tab closes.
+      // Storage full or blocked: the review still works, it just can't be recovered.
     }
-    // Debounced so a fast typist doesn't fire a server write per keystroke -
-    // localStorage above is instant either way, this is just the shared copy
-    // other reviewers (or the same reviewer on another device) can see.
+    // Debounced so a fast typist doesn't fire a server write per keystroke.
     if (serverDraftTimer.current) clearTimeout(serverDraftTimer.current);
-    serverDraftTimer.current = setTimeout(() => {
-      saveReviewDraft(projectId, snapshot).catch(() => {
-        // Best-effort - the localStorage copy above is still there either way.
-      });
-    }, 1000);
+    serverDraftTimer.current = setTimeout(() => pushServerDraft(snapshot), 1000);
   };
 
   const clearDraft = () => {
@@ -623,61 +677,46 @@ export function ReviewForm({
     }
   };
 
-  // AI-drafted review notes (admin-only, see generateAiReviewDraftAction in
-  // app/actions.ts) - a starting point the reviewer reads and edits, never
-  // submitted on its own. The button itself is visible to every reviewer so
-  // they know the feature exists, but only an admin's click actually calls
-  // the action (guardedAction re-checks the owner role server-side regardless).
+  // AI-drafted notes (owner-only, see generateAiReviewDraftAction): a starting
+  // point the reviewer reads and edits, never submitted on its own.
   const [aiPending, startAiTransition] = useTransition();
   const [aiDraft, setAiDraft] = useState<AiReviewDraft | null>(null);
-  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiError, setAiError] = useState("");
 
   const runAiDraft = () => {
-    setAiError(null);
+    setAiError("");
     startAiTransition(async () => {
       try {
-        // Pass the hours currently typed in the form, not just claimedHours -
-        // the deflationReason draft explains whatever the reviewer has
-        // already decided to credit, it never picks that number itself.
-        const draft = await generateAiReviewDraftAction(projectId, hours);
-        setAiDraft(draft);
+        // The hours typed in the form, so the deflation draft explains the
+        // number the reviewer already picked.
+        setAiDraft(await generateAiReviewDraftAction(projectId, hours));
       } catch (e) {
-        setAiError(e instanceof Error ? e.message : "Failed to generate a draft.");
+        setAiError(actionErrorMessage(e, "generate a draft"));
       }
     });
   };
 
   const insertAiText = (field: "technicalFeatures" | "deflationReason" | "notes", text: string) => {
     const ref =
-      field === "technicalFeatures"
-        ? technicalFeaturesRef
-        : field === "deflationReason"
-          ? deflationReasonRef
-          : notesRef;
+      field === "technicalFeatures" ? technicalFeaturesRef : field === "deflationReason" ? deflationReasonRef : notesRef;
     if (!ref.current || !text) return;
     ref.current.value = text;
     if (field === "technicalFeatures") setFeaturesLen(text.trim().length);
     saveDraft();
   };
 
-  const [featuresLen, setFeaturesLen] = useState(0);
-
-  // 3-step wizard over this one form: Submission -> Audit notes -> Verdict.
-  // Steps are hidden with CSS (never unmounted), so refs/localStorage-draft
-  // restore above keep working regardless of which step is visible, and
-  // hopping back a step to fix something doesn't lose anything typed ahead.
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  // 3-step wizard over this one form. Steps are hidden, never unmounted, so
+  // refs and the draft restore keep working whichever step is visible.
+  const [step, setStep] = useState<Step>(1);
   const [stepError, setStepError] = useState("");
-  const goToStep = (n: 1 | 2 | 3) => {
+  const goToStep = (n: Step) => {
     setStep(n);
     setStepError("");
   };
 
   useEffect(() => {
-    // Fresh accumulator for a freshly (re)mounted review - this component can
-    // remount without a full page load (e.g. the deflation revalidation
-    // above), and a stale activeMs from a previous mount would inflate this
-    // one's total.
+    // Fresh accumulator per mount: a remount without a page load would
+    // otherwise inherit a stale total.
     activeMs.current = 0;
     visibleSince.current = isActiveNow() ? Date.now() : null;
     const trackActiveTime = () => {
@@ -694,10 +733,7 @@ export function ReviewForm({
       if (!a || document.visibilityState !== "visible") return;
       away.current = null;
       const el = a.kind === "repo" ? repoSeconds.current : demoSeconds.current;
-      if (el)
-        el.value = String(
-          Math.round(Number(el.value || 0) + (Date.now() - a.at) / 1000),
-        );
+      if (el) el.value = String(Math.round(Number(el.value || 0) + (Date.now() - a.at) / 1000));
     };
     window.addEventListener("focus", settle);
     document.addEventListener("visibilitychange", settle);
@@ -713,25 +749,15 @@ export function ReviewForm({
     };
   }, []);
 
-  // Clearing on unmount was meant to fire "only once the submission actually
-  // succeeded and navigated away" (see the onSubmit handler below), but
-  // submittedRef flips to true the instant Submit is clicked - before we know
-  // whether the request even reached the server. A request that dies mid-flight
-  // (a redeploy killing the pod while the action is in-flight is exactly this)
-  // never redirects, but Next.js still detects the stale build and forces a
-  // reload to fetch the new one - which unmounts this component first, with
-  // submittedRef already true, wiping a draft that was never actually
-  // submitted. Comparing the pathname at mount vs. at unmount tells the two
-  // apart: a real success redirects to a different project (or back to the
-  // queue), changing the pathname; a forced reload after a dead request stays
-  // on this same URL, so the draft survives it.
+  // Clear the local draft only when a submit actually navigated somewhere
+  // else. A request that dies mid-flight (a redeploy) can still force a reload
+  // of this same URL, which unmounts with submittedRef set; comparing the
+  // pathname keeps the draft in that case.
   const mountedPathname = useRef<string | null>(null);
   useEffect(() => {
     mountedPathname.current = window.location.pathname;
     return () => {
-      if (submittedRef.current && window.location.pathname !== mountedPathname.current) {
-        clearDraft();
-      }
+      if (submittedRef.current && window.location.pathname !== mountedPathname.current) clearDraft();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -742,15 +768,12 @@ export function ReviewForm({
     away.current = { kind, at: Date.now() };
   };
 
-  // Technical features / additional notes only need to hold up as an audit
-  // trail for approve/ban - a needs_changes bounce-back has its own required
-  // player-facing note instead (see reviewProject's matching server-side
-  // relaxation in app/actions.ts). These fields live in Step 2, which is
-  // hidden (not unmounted) once the reviewer reaches Step 3's verdict
-  // buttons - a hidden required field is skipped by the browser's native
-  // validation instead of blocking submit, so this checks them itself and
-  // returns false (bouncing back to Step 2 with an error) rather than
-  // trusting a native validation that would silently pass over them.
+  // Technical features / additional notes are only required for approve and
+  // ban (reviewProject relaxes them for needs_changes too). Those fields live
+  // in Step 2, hidden by the time the verdict buttons are clicked, and the
+  // browser refuses to submit a form with an invalid hidden field without
+  // saying why. So this checks everything itself, jumps to the step that
+  // needs fixing and says what's wrong, instead of a click that does nothing.
   const onVerdictSelect = (verdict: string): boolean => {
     const required = verdict !== "needs_changes";
     if (technicalFeaturesRef.current) {
@@ -760,366 +783,327 @@ export function ReviewForm({
     }
     if (notesRef.current) notesRef.current.required = required;
 
-    // Hours are only ever actually credited on an approve - needs_changes
-    // sends it back with nothing paid out, and ban never pays out either, so
-    // neither should demand an explanation for a lowered-hours number that's
-    // about to go unused.
-    if (verdict === "approved" && needsDeflationReason && !deflationReasonRef.current?.value.trim()) {
-      setStep(2);
-      setStepError("Say why you're lowering the hours before deciding.");
+    const fail = (n: Step, message: string) => {
+      setStep(n);
+      setStepError(message);
       return false;
-    }
-    if (ageFlag && !ageJustificationRef.current?.value.trim()) {
-      setStep(2);
-      setStepError("Age justification is required before deciding.");
-      return false;
-    }
+    };
+    // Hours are only credited on an approve, so only an approve needs the reason.
+    if (verdict === "approved" && needsDeflationReason && !deflationReasonRef.current?.value.trim())
+      return fail(2, "Say why you're lowering the hours before deciding.");
+    if (ageFlag && !ageJustificationRef.current?.value.trim())
+      return fail(2, "Age justification is required before deciding.");
     if (required) {
-      if ((technicalFeaturesRef.current?.value.trim().length ?? 0) < TECHNICAL_FEATURES_MIN) {
-        setStep(2);
-        setStepError(`Technical features needs at least ${TECHNICAL_FEATURES_MIN} characters.`);
-        return false;
-      }
-      if (!notesRef.current?.value.trim()) {
-        setStep(2);
-        setStepError("Additional notes is required before approving or banning.");
-        return false;
-      }
+      if ((technicalFeaturesRef.current?.value.trim().length ?? 0) < TECHNICAL_FEATURES_MIN)
+        return fail(2, `Technical features needs at least ${TECHNICAL_FEATURES_MIN} characters.`);
+      if (!notesRef.current?.value.trim()) return fail(2, "Additional notes is required before approving or banning.");
     }
     if (blackout && verdict === "approved") {
-      const picked = document.querySelector<HTMLInputElement>('input[name="blackoutDecision"]:checked');
-      const reason = document.querySelector<HTMLTextAreaElement>('textarea[name="blackoutNote"]');
-      if (!picked) {
-        setStep(1);
-        setStepError("Rule on the Operation Blackout entry first: eligible or not eligible.");
-        return false;
-      }
-      if (picked.value === "ineligible" && !reason?.value.trim()) {
-        setStep(1);
-        setStepError("Say why this entry isn't eligible for Operation Blackout.");
-        return false;
-      }
+      const form = formRef.current;
+      const picked = form?.querySelector<HTMLInputElement>('input[name="blackoutDecision"]:checked');
+      const reason = form?.querySelector<HTMLTextAreaElement>('textarea[name="blackoutNote"]');
+      if (!picked) return fail(1, "Rule on the Operation Blackout entry first: eligible or not eligible.");
+      if (picked.value === "ineligible" && !reason?.value.trim())
+        return fail(1, "Say why this entry isn't eligible for Operation Blackout.");
+    }
+    // Anything else the browser would reject (an hours value off the 0.1 step,
+    // above the cap, ...). Fields on the visible step get the browser's own
+    // bubble; ones on a hidden step get named here.
+    const invalid = formRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+      "input:invalid, textarea:invalid, select:invalid",
+    );
+    if (invalid) {
+      const n = Number(invalid.closest<HTMLElement>("[data-step]")?.dataset.step) as Step;
+      if (n && n !== step) return fail(n, `${fieldLabel(invalid.name)}: ${invalid.validationMessage}`);
     }
     setStepError("");
     return true;
   };
 
-  return (
-    <>
-      {(secondPass || isSuper || canEditSubmission) && (
-        <details className="rounded-lg border p-4 mt-4">
-          <summary className="cursor-pointer text-xs font-bold uppercase tracking-wide text-muted-foreground select-none">
-            Edit submission , title, image, repo/demo links, description
-          </summary>
-          <form action={applySubmissionEdits} className="mt-3 flex flex-col gap-3">
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Applies immediately , updates the project everywhere: the player&apos;s own
-              page, the next reviewer who opens this, and the YSWS/Airtable export. Independent
-              of your verdict below.
-            </p>
-            <input type="hidden" name="projectId" value={projectId} />
-            <Label className="flex flex-col gap-1.5 font-normal">
-              <span className="text-xs text-muted-foreground">Title</span>
-              <Input
-                name="editedName"
-                defaultValue={currentName ?? ""}
-                maxLength={200}
-                className="text-sm"
-              />
-            </Label>
-            <Label className="flex flex-col gap-1.5 font-normal">
-              <span className="text-xs text-muted-foreground">
-                Replace image (optional , leave empty to keep the current one)
-              </span>
-              {currentImageUrl && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={currentImageUrl}
-                  alt=""
-                  className="h-20 w-auto rounded border border-border object-cover"
-                />
-              )}
-              <input
-                name="editedImage"
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
-              />
-            </Label>
-            <Label className="flex flex-col gap-1.5 font-normal">
-              <span className="text-xs text-muted-foreground">Repo URL</span>
-              <Input
-                name="editedRepoUrl"
-                defaultValue={repoUrl ?? ""}
-                placeholder="https://github.com/…"
-                className="text-sm"
-              />
-            </Label>
-            <Label className="flex flex-col gap-1.5 font-normal">
-              <span className="text-xs text-muted-foreground">Demo URL</span>
-              <Input
-                name="editedDemoUrl"
-                defaultValue={demoUrl ?? ""}
-                placeholder="https://…"
-                className="text-sm"
-              />
-            </Label>
-            <Label className="flex flex-col gap-1.5 font-normal">
-              <span className="text-xs text-muted-foreground">Description</span>
-              <Textarea
-                name="editedDescription"
-                defaultValue={currentDescription ?? ""}
-                maxLength={5000}
-                rows={4}
-                className="text-sm"
-              />
-            </Label>
-            <PendingButton
-              variant="secondary"
-              pendingText="Applying…"
-              className="self-start"
-            >
-              Apply changes
-            </PendingButton>
-          </form>
-        </details>
-      )}
-    <form
-      action={reviewProject}
-      onSubmit={() => {
-        if (totalSeconds.current) {
-          const finalMs =
-            activeMs.current + (visibleSince.current !== null ? Date.now() - visibleSince.current : 0);
-          totalSeconds.current.value = String(Math.round(finalMs / 1000));
+  // Submitting through a transition instead of <form action> keeps a failed
+  // verdict on this page with a real message (and every typed note intact),
+  // instead of the app-wide "Something broke" screen.
+  const [pendingVerdict, setPendingVerdict] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState("");
+  const [, startSubmit] = useTransition();
+
+  const onSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (pendingVerdict) return;
+    if (totalSeconds.current) {
+      const finalMs = activeMs.current + (visibleSince.current !== null ? Date.now() - visibleSince.current : 0);
+      totalSeconds.current.value = String(Math.round(finalMs / 1000));
+    }
+    const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
+    const fd = new FormData(e.currentTarget, submitter);
+    const verdict = String(fd.get("verdict") ?? "");
+    // Only flags the attempt; the unmount effect decides whether to clear the draft.
+    submittedRef.current = true;
+    if (serverDraftTimer.current) clearTimeout(serverDraftTimer.current);
+    setSubmitError("");
+    setPendingVerdict(verdict);
+    startSubmit(async () => {
+      try {
+        await reviewProject(fd);
+        // Every verdict that sticks redirects (to the next project, or back
+        // here with ?error=), so getting here means the action stopped early.
+        setSubmitError(
+          "The verdict didn't go through. The project probably changed while you had it open (someone else reviewed it, or it left the review queue). Reload to see where it stands. Your notes are kept in this browser.",
+        );
+      } catch (err) {
+        // A validation failure redirects back to this same page with ?error=,
+        // which doesn't remount the form: re-enable it and repeat the message
+        // next to the buttons, where the reviewer is looking.
+        const bounced = bouncedError(err);
+        if (bounced) {
+          submittedRef.current = false;
+          setPendingVerdict(null);
+          setSubmitError(bounced);
         }
-        // Don't clear the draft here - this fires the instant the button is
-        // clicked, before the request even reaches the network. If the
-        // server never responds (a redeploy killing the pod mid-request is
-        // exactly this), the draft would already be gone with nothing to
-        // recover, on top of whatever pixels/verdict were lost. Flag the
-        // attempt instead; the unmount effect below only clears once the
-        // submission actually succeeded and navigated away.
-        submittedRef.current = true;
-      }}
-      className="mt-4 flex flex-col gap-4"
-    >
-      {draftRestored && (
-        <div className="text-xs font-medium text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/[0.06] border border-amber-200 dark:border-amber-500/30 rounded-md px-3 py-1.5">
-          Restored your unsaved notes from last time you had this open.
-        </div>
-      )}
-      {prefilledFromServerDraft && (
-        <div className="text-xs font-medium text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/[0.06] border border-blue-200 dark:border-blue-500/30 rounded-md px-3 py-1.5">
-          Started from {serverDraft?.by || "another reviewer"}&apos;s in-progress notes
-          {serverDraft?.at ? ` (${new Date(serverDraft.at).toLocaleString()})` : ""} , edit anything
-          before you decide. Whatever you type here saves for anyone else who opens this project too.
-        </div>
-      )}
-      {prefilledFromFirstPass && (
-        <div className="text-xs font-medium text-violet-700 dark:text-violet-400 bg-violet-50 dark:bg-violet-500/[0.06] border border-violet-200 dark:border-violet-500/30 rounded-md px-3 py-1.5">
-          Started from the first reviewer&apos;s notes , edit anything before you decide.
-        </div>
-      )}
-      <input type="hidden" name="projectId" value={projectId} />
-      <input type="hidden" name="repoOpened" defaultValue="0" ref={repoOpened} />
-      <input type="hidden" name="demoOpened" defaultValue="0" ref={demoOpened} />
-      <input type="hidden" name="repoSeconds" defaultValue="0" ref={repoSeconds} />
-      <input type="hidden" name="demoSeconds" defaultValue="0" ref={demoSeconds} />
-      <input type="hidden" name="totalSeconds" defaultValue="0" ref={totalSeconds} />
+        setSubmitError(actionErrorMessage(err, "submit this verdict"));
+      }
+      submittedRef.current = false;
+      setPendingVerdict(null);
+    });
+  };
 
-      <StepHeader step={step} onStep={goToStep} />
-      {stepError && (
-        <div className="text-xs font-medium text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/[0.06] border border-rose-200 dark:border-rose-500/30 rounded-md px-3 py-1.5">
-          {stepError}
-        </div>
-      )}
-
-      <div className={step === 1 ? "flex flex-col gap-4" : "hidden"}>
-      <div className="flex flex-wrap gap-2 items-center text-sm font-bold">
-        {repoUrl && isSafeUrl(repoUrl) && (
-          <Button asChild variant="secondary">
-            <a
-              href={repoUrl}
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => markOpen("repo")}
-            >
-              Repo
-            </a>
-          </Button>
-        )}
-        {demoUrl && isSafeUrl(demoUrl) && (
-          <Button asChild variant="secondary">
-            <a
-              href={demoUrl}
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => markOpen("demo")}
-            >
-              Demo
-            </a>
-          </Button>
-        )}
-      </div>
-      <Label className="flex items-center justify-between gap-2 font-normal text-muted-foreground">
-        Hours to credit (decrease only)
-        <Input
-          name="approvedHours"
-          type="number"
-          step="0.1"
-          min="0"
-          max={claimedHours}
-          value={hours}
-          onChange={(e) => {
-            const v = Math.min(claimedHours, Math.max(0, Number(e.target.value) || 0));
-            hoursEditedRef.current = true;
-            setHours(v);
-            saveDraft({ hours: v });
-          }}
-          className="w-28 text-sm"
+  return (
+    <div className="flex flex-col gap-4">
+      {(secondPass || isSuper || canEditSubmission) && (
+        <EditSubmission
+          projectId={projectId}
+          repoUrl={repoUrl}
+          demoUrl={demoUrl}
+          currentName={currentName}
+          currentDescription={currentDescription}
+          currentImageUrl={currentImageUrl}
         />
-      </Label>
-      {(journalDeflatedHours > 0 || deflated) && (
-        <div className="text-xs text-muted-foreground -mt-2 flex flex-wrap gap-x-3">
-          {journalDeflatedHours > 0 && <span>{journalDeflatedHours}h deflated in journals</span>}
-          {deflated && (
-            <span>
-              {Math.round((claimedHours - hours) * 10) / 10}h deflated not in journals
-            </span>
-          )}
-        </div>
       )}
-      {collaborators.map((c) => (
-        <CollaboratorHoursInput key={c.id} c={c} />
-      ))}
-      {blackout && <BlackoutReviewSection data={blackout} />}
-      <TierAndPayout
-        hours={hours}
-        tier={tierState}
-        onTier={(t) => {
-          setTierState(t);
-          saveDraft({ tier: t });
-        }}
-        savedTier={tier}
-        projectId={projectId}
-        playerReBefore={playerReBefore}
-        forTrial={!!trial}
-        trialMinHours={trial?.minHours}
-        trialName={trial?.name}
-        fundingUsd={fundingUsd}
-      />
-      {trial?.minHours != null && (
-        <div
-          className={`text-xs font-medium ${
-            hours < trial.minHours
-              ? "text-red-600 dark:text-red-400"
-              : "text-muted-foreground"
-          }`}
-        >
-          Trial &quot;{trial.name}&quot; needs {trial.minHours}h minimum to approve
-          {hours < trial.minHours ? " , credited hours are below that, so Approve will be blocked." : "."}
-        </div>
-      )}
-      {bounties.length > 0 && (
-        <div className="rounded-lg border border-amber-200 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-500/[0.06] p-3">
-          <div className="text-xs font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-1.5">
-            Bounty board , tick what this project meets (paid on final approval)
-          </div>
-          {bounties.map((b) => (
-            <Label key={b.id} className="flex items-start gap-2 text-sm py-0.5 font-normal">
-              <Checkbox name="bountyIds" value={String(b.id)} className="mt-0.5" />
-              <span>
-                {b.name} <span className="font-semibold">+{b.reward} px</span>
-                {b.description && <span className="text-muted-foreground"> , {b.description}</span>}
-              </span>
-            </Label>
-          ))}
-        </div>
-      )}
-      <div className="flex justify-end">
-        <Button type="button" onClick={() => goToStep(2)}>
-          Next: Audit notes →
-        </Button>
-      </div>
-      </div>
 
-      <div className={step === 2 ? "flex flex-col gap-4" : "hidden"}>
-      <div className="rounded-lg border p-4 flex flex-col gap-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
-            AI draft (beta)
-          </span>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={!isSuper || aiPending}
-            onClick={runAiDraft}
-            title={isSuper ? undefined : "Only admins can generate this , ask one to run it for you"}
-          >
-            {aiPending ? "Generating…" : "Generate AI draft"}
-          </Button>
-          {!isSuper && (
-            <span className="text-xs text-muted-foreground">Only admins can click this</span>
-          )}
-        </div>
-        <p className="text-xs text-muted-foreground -mt-1">
-          Reads the repo, commits, journals and Hackatime data and drafts the fields below for
-          you to check and edit. It never picks a verdict or hours , that&apos;s still on you. If
-          you&apos;ve already lowered the hours above, it&apos;ll draft the explanation for that
-          number too , set hours first for the best deflation draft.
-        </p>
-        {aiError && (
-          <div className="text-xs text-rose-600 dark:text-rose-400">{aiError}</div>
+      <form ref={formRef} onSubmit={onSubmit} className="flex flex-col gap-4">
+        {draftSource === "local" && (
+          <Callout tone="warning" icon="history">
+            Restored your unsaved notes from last time you had this open.
+          </Callout>
         )}
-        {aiDraft && (
-          <div className="rounded-md border border-border bg-muted/30 p-3 space-y-2 text-sm">
-            <div className="text-muted-foreground">{aiDraft.summary}</div>
-            {aiDraft.redFlags.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {aiDraft.redFlags.map((f, i) => (
-                  <Badge key={i} variant="destructive">{f}</Badge>
-                ))}
-              </div>
-            )}
-            {aiDraft.strengths.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {aiDraft.strengths.map((s, i) => (
-                  <Badge key={i} variant="success">{s}</Badge>
-                ))}
-              </div>
-            )}
-            <div className="flex flex-wrap gap-2 pt-1">
-              <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("technicalFeatures", aiDraft.technicalFeatures)}>
-                Insert into Technical features
-              </Button>
-              {needsDeflationReason && aiDraft.deflationReason && (
-                <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("deflationReason", aiDraft.deflationReason)}>
-                  Insert into Why lower the hours?
-                </Button>
-              )}
-              <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("notes", aiDraft.notes)}>
-                Insert into Notes
-              </Button>
-            </div>
-            <div className="text-[10px] text-muted-foreground pt-1">Drafted by {aiDraft.model}</div>
+        {draftSource === "server" && (
+          <Callout tone="info" icon="history">
+            Started from {serverDraft?.by || "another reviewer"}&apos;s in-progress notes
+            {serverDraft?.at ? ` (${formatDateTime(serverDraft.at)})` : ""}. Edit anything before you
+            decide. Whatever you type here saves for anyone else who opens this project too.
+          </Callout>
+        )}
+        {draftSource === "firstPass" && (
+          <Callout tone="neutral" icon="history">
+            Started from the first reviewer&apos;s notes. Edit anything before you decide.
+          </Callout>
+        )}
+        <input type="hidden" name="projectId" value={projectId} />
+        <input type="hidden" name="repoOpened" defaultValue="0" ref={repoOpened} />
+        <input type="hidden" name="demoOpened" defaultValue="0" ref={demoOpened} />
+        <input type="hidden" name="repoSeconds" defaultValue="0" ref={repoSeconds} />
+        <input type="hidden" name="demoSeconds" defaultValue="0" ref={demoSeconds} />
+        <input type="hidden" name="totalSeconds" defaultValue="0" ref={totalSeconds} />
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            {STEPS.map((s, i) => (
+              <span key={s.n} className="flex items-center gap-2">
+                {i > 0 && <span className="hc-muted">→</span>}
+                <button
+                  type="button"
+                  className="hc-step"
+                  data-active={step === s.n ? true : undefined}
+                  onClick={() => goToStep(s.n)}
+                >
+                  {s.n}. {s.label}
+                </button>
+              </span>
+            ))}
           </div>
-        )}
-      </div>
-      <div className="rounded-lg border p-4 flex flex-col gap-4">
-        <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground leading-relaxed">
-          Internal audit note , never shown to the player. Should let someone who
-          wasn&apos;t involved reach the same conclusion you did.
+          <span className="hc-save-status" data-tone={serverSave === "error" ? "danger" : serverSave === "saved" ? "success" : undefined}>
+            {serverSave === "saving"
+              ? "Saving draft…"
+              : serverSave === "saved"
+                ? "Draft saved"
+                : serverSave === "error"
+                  ? "Draft kept in this browser only"
+                  : "Autosaves as you type"}
+          </span>
         </div>
-        <div>
-          <Label className="text-xs font-normal text-muted-foreground mb-1.5 block leading-relaxed">
-            Technical features , a detailed explanation of what the project is, to
-            show you actually checked it. Use specific technical terms (&quot;OAuth
-            app&quot;, not generic words). If you can&apos;t find any, describe in
-            detail what it looks like and does.
-          </Label>
-          <div className="relative">
-            <Textarea
+        {stepError && <Callout tone="danger" icon="important">{stepError}</Callout>}
+
+        <div data-step="1" hidden={step !== 1} className="flex flex-col gap-4">
+          {((repoUrl && isSafeUrl(repoUrl)) || (demoUrl && isSafeUrl(demoUrl))) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {repoUrl && isSafeUrl(repoUrl) && (
+                <a href={repoUrl} target="_blank" rel="noreferrer" onClick={() => markOpen("repo")} className="hc-btn hc-btn-outline">
+                  Repo
+                </a>
+              )}
+              {demoUrl && isSafeUrl(demoUrl) && (
+                <a href={demoUrl} target="_blank" rel="noreferrer" onClick={() => markOpen("demo")} className="hc-btn hc-btn-outline">
+                  Demo
+                </a>
+              )}
+            </div>
+          )}
+          <InlineNumber
+            label="Hours to credit"
+            hint={
+              journalDeflatedHours > 0 || deflated
+                ? [
+                    journalDeflatedHours > 0 ? `${journalDeflatedHours}h deflated in journals` : null,
+                    deflated ? `${round1(claimedHours - hours)}h deflated not in journals` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")
+                : "Decrease only"
+            }
+          >
+            <Input
+              name="approvedHours"
+              type="number"
+              step="0.1"
+              min="0"
+              max={claimedHours}
+              value={hours}
+              onChange={(e) => {
+                const v = Math.min(claimedHours, Math.max(0, Number(e.target.value) || 0));
+                hoursEditedRef.current = true;
+                setHours(v);
+                saveDraft({ hours: v });
+              }}
+              className="w-28"
+            />
+          </InlineNumber>
+          {collaborators.map((c) => (
+            <CollaboratorHoursInput key={c.id} c={c} />
+          ))}
+          {blackout && <BlackoutReviewSection data={blackout} />}
+          <TierAndPayout
+            hours={hours}
+            tier={tierState}
+            onTier={(t) => {
+              setTierState(t);
+              saveDraft({ tier: t });
+            }}
+            savedTier={tier}
+            projectId={projectId}
+            playerReBefore={playerReBefore}
+            forTrial={!!trial}
+            trialMinHours={trial?.minHours}
+            trialName={trial?.name}
+            fundingUsd={fundingUsd}
+          />
+          {trial?.minHours != null &&
+            (hours < trial.minHours ? (
+              <Callout tone="danger" icon="important">
+                Trial &quot;{trial.name}&quot; needs {trial.minHours}h minimum to approve. The credited hours are below
+                that, so Approve will be blocked.
+              </Callout>
+            ) : (
+              <p className="hc-caption text-xs">
+                Trial &quot;{trial.name}&quot; needs {trial.minHours}h minimum to approve.
+              </p>
+            ))}
+          {bounties.length > 0 && (
+            <div className="hc-panel flex flex-col gap-2">
+              <p className="hc-eyebrow">Bounty board · tick what this project meets (paid on final approval)</p>
+              {bounties.map((b) => (
+                <Checkbox
+                  key={b.id}
+                  name="bountyIds"
+                  value={String(b.id)}
+                  label={
+                    <>
+                      {b.name} <Badge tone="yellow">+{b.reward} px</Badge>
+                      {b.description && <span className="hc-muted"> {b.description}</span>}
+                    </>
+                  }
+                />
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button type="button" onClick={() => goToStep(2)}>
+              Next: Audit notes →
+            </Button>
+          </div>
+        </div>
+
+        <div data-step="2" hidden={step !== 2} className="flex flex-col gap-4">
+          <div className="hc-panel flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="hc-eyebrow">AI draft (beta)</span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!isSuper || aiPending}
+                onClick={runAiDraft}
+                title={isSuper ? undefined : "Only owners can generate this. Ask one to run it for you."}
+              >
+                {aiPending ? "Generating…" : "Generate AI draft"}
+              </Button>
+              {!isSuper && <span className="hc-caption text-xs">Only owners can click this</span>}
+            </div>
+            <p className="hc-caption text-xs">
+              Reads the repo, commits, journals and Hackatime data and drafts the fields below for you to check and
+              edit. It never picks a verdict or hours, that&apos;s still on you. If you already lowered the hours, it
+              drafts the explanation for that number too, so set hours first for the best deflation draft.
+            </p>
+            {aiError && <Callout tone="danger" icon="important">{aiError}</Callout>}
+            {aiDraft && (
+              <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-2 text-sm">
+                <p className="hc-caption">{aiDraft.summary}</p>
+                {aiDraft.redFlags.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {aiDraft.redFlags.map((f, i) => (
+                      <Badge key={i} tone="danger">{f}</Badge>
+                    ))}
+                  </div>
+                )}
+                {aiDraft.strengths.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {aiDraft.strengths.map((s, i) => (
+                      <Badge key={i} tone="success">{s}</Badge>
+                    ))}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("technicalFeatures", aiDraft.technicalFeatures)}>
+                    Insert into Technical features
+                  </Button>
+                  {needsDeflationReason && aiDraft.deflationReason && (
+                    <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("deflationReason", aiDraft.deflationReason)}>
+                      Insert into Why lower the hours?
+                    </Button>
+                  )}
+                  <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("notes", aiDraft.notes)}>
+                    Insert into Notes
+                  </Button>
+                </div>
+                <p className="hc-caption text-xs">Drafted by {aiDraft.model}</p>
+              </div>
+            )}
+          </div>
+
+          <p className="hc-eyebrow">
+            Internal audit note, never shown to the player. Someone who wasn&apos;t involved should reach the same
+            conclusion you did.
+          </p>
+          <Field
+            label="Technical features"
+            hint={
+              <>
+                A detailed explanation of what the project is, to show you actually checked it. Use specific technical
+                terms (&quot;OAuth app&quot;, not generic words). If you can&apos;t find any, describe in detail what
+                it looks like and does.
+              </>
+            }
+          >
+            <AuditTextarea
               name="technicalFeatures"
               required
               minLength={TECHNICAL_FEATURES_MIN}
@@ -1131,147 +1115,121 @@ export function ReviewForm({
               placeholder={
                 "Example: The demo features a light-mode landing page with an action button labeled \"Encode some data\" and a secondary \"Decode an image\". The encoding page has a drag-and-drop box that shows the image's resolution, total pixels and size, and lets you encode text, image, audio or a file into it. The repository has a broad README with screenshots and sections (Features, Tech Stack, How to use, Run locally). Written with React.\n\nThen cover the README (is it clear, does it explain how to run locally and how it was made) and the demo (how it is hosted)."
               }
-              className="w-full text-sm pb-5"
-              rows={3}
+              rows={5}
             />
-            <span
-              className={`pointer-events-none absolute bottom-1.5 right-2 text-[10px] tabular-nums ${
-                featuresLen >= TECHNICAL_FEATURES_MIN ? "text-emerald-500" : "text-muted-foreground"
-              }`}
-            >
+            <span className="hc-counter" data-done={featuresLen >= TECHNICAL_FEATURES_MIN ? true : undefined}>
               {featuresLen}/{TECHNICAL_FEATURES_MIN}
             </span>
-          </div>
-        </div>
-        {needsDeflationReason && (
-          <div>
-            <Label className="text-xs font-normal text-muted-foreground mb-1.5 block">
-              Why lower the hours? ({rawClaimedHours}h claimed → {hours}h credited) , a
-              short justification: what made you deflate (suspected AI use, too few
-              proofs such as few commits and no journal) and how much you deflated
-              and approved.
-            </Label>
-            <Textarea
-              name="deflationReason"
-              ref={deflationReasonRef}
+          </Field>
+          {needsDeflationReason && (
+            <Field
+              label={`Why lower the hours? (${rawClaimedHours}h claimed → ${hours}h credited)`}
+              hint="A short justification: what made you deflate (suspected AI use, too few proofs such as few commits and no journal) and how much you deflated and approved."
+            >
+              <AuditTextarea
+                name="deflationReason"
+                ref={deflationReasonRef}
+                onChange={() => saveDraft()}
+                placeholder={
+                  "Example: The HTML has AI comments like <!-- Open Graph tags -->, the CSS and JS do not and look handwritten. The commits are numerous and consistent but not descriptive (\"added css\" for all of them), so they do not show progress. I deflate 2h from the 10h submitted to approve 8h."
+                }
+                rows={3}
+              />
+            </Field>
+          )}
+          {ageFlag && (
+            <Field label="Age justification" hint="This submitter turns 19 between shipping and this review.">
+              <AuditTextarea
+                name="ageJustification"
+                required
+                ref={ageJustificationRef}
+                onChange={() => saveDraft()}
+                placeholder="Document the submitter's age at shipping vs. now."
+                rows={3}
+              />
+            </Field>
+          )}
+          <Field
+            label="Additional notes"
+            hint={
+              <>
+                Required. Show your thinking: the user&apos;s level (check their repo count) and how it affects the
+                hours (a beginner gets more hours approved than an advanced user for the same project), why you
+                didn&apos;t deflate (commit count, whether they are descriptive and show steady progress, journals),
+                and any other proof that supports the time.
+              </>
+            }
+          >
+            <AuditTextarea
+              name="notes"
+              required
+              ref={notesRef}
               onChange={() => saveDraft()}
               placeholder={
-                "Example: The HTML has AI comments like <!-- Open Graph tags -->, the CSS and JS do not and look handwritten. The commits are numerous and consistent but not descriptive (\"added css\" for all of them), so they do not show progress. I deflate 2h from the 10h submitted to approve 8h."
+                "Example: User is advanced, several ships in HC, active in many channels, 37 repos. 38 descriptive commits showing steady progress, like 002793b adding a loading state to the delete button (22 lines in 6 minutes) or 3af0c0b adding 200 lines in 1.2h for custom artwork. The longest gap between commits is 1.2h, which is consistent. There is 1 detailed journal adding 8h of unlapsed art made in Krita; it is their first time doing art and it looks legit. The 8h for the whole site is legit, but I still deflate to respect the guidelines."
               }
-              className="w-full text-sm"
-              rows={3}
+              rows={5}
             />
+          </Field>
+          <div className="flex justify-between">
+            <Button type="button" variant="outline" onClick={() => goToStep(1)}>
+              ← Back
+            </Button>
+            <Button type="button" onClick={() => goToStep(3)}>
+              Next: Verdict →
+            </Button>
           </div>
-        )}
-        {ageFlag && (
-          <div>
-            <Label className="text-xs font-normal text-muted-foreground mb-1.5 block leading-relaxed">
-              Age justification , this submitter turns 19 between shipping and this
-              review
-            </Label>
-            <Textarea
-              name="ageJustification"
+        </div>
+
+        <div data-step="3" hidden={step !== 3} className="flex flex-col gap-4">
+          <Field
+            label="Note to the player"
+            hint={`Required. Be nice and personal, show their work is good. Macros: ${REVIEW_MACROS.map((m) => `${m.trigger} = ${m.label}`).join(", ")}`}
+          >
+            <AuditTextarea
+              name="note"
               required
-              ref={ageJustificationRef}
-              onChange={() => saveDraft()}
-              placeholder="Document the submitter's age at shipping vs. now."
-              className="w-full text-sm"
-              rows={3}
+              ref={noteRef}
+              onChange={(e) => {
+                // Macros (lib/reviewMacros.ts): typing /ai swaps in the canned
+                // text. Only after something was typed or pasted, so deleting
+                // back down to "/ai" never expands it.
+                const input = e.currentTarget;
+                if ((e.nativeEvent as InputEvent).inputType?.startsWith("insert")) {
+                  const expanded = expandMacro(input.value, input.selectionStart ?? input.value.length);
+                  if (expanded) {
+                    input.value = expanded.value;
+                    input.setSelectionRange(expanded.caret, expanded.caret);
+                  }
+                }
+                saveDraft();
+              }}
+              placeholder={
+                "If the site was a restaurant menu, play along and talk like you are ordering before telling them it is a great project. Finish with a short motivation like \"Keep it up!\"."
+              }
+              rows={4}
             />
-          </div>
-        )}
-        <div>
-          <Label className="text-xs font-normal text-muted-foreground mb-1.5 block leading-relaxed">
-            Additional notes , required. Show your thinking during the review: the
-            user&apos;s level (check their repo count) and how it affects the hours
-            (a beginner gets more hours approved than an advanced user for the same
-            project), why you didn&apos;t deflate (commit count and whether they are
-            descriptive and show steady progress, journals), and any other proof
-            that supports the time.
-          </Label>
-          <Textarea
-            name="notes"
-            required
-            ref={notesRef}
-            onChange={() => saveDraft()}
-            placeholder={
-              "Example: User is advanced, several ships in HC, active in many channels, 37 repos. 38 descriptive commits showing steady progress, like 002793b adding a loading state to the delete button (22 lines in 6 minutes) or 3af0c0b adding 200 lines in 1.2h for custom artwork. The longest gap between commits is 1.2h, which is consistent. There is 1 detailed journal adding 8h of unlapsed art made in Krita; it is their first time doing art and it looks legit. The 8h for the whole site is legit, but I still deflate to respect the guidelines."
-            }
-            className="w-full text-sm"
-            rows={3}
+          </Field>
+          <Checkbox
+            name="revealName"
+            value="1"
+            defaultChecked
+            label={'Show my name to the player in this verdict\'s notification (approved / needs changes). Untick to send it as "the review team" instead.'}
+          />
+          <Checkbox
+            name="notifyOnResubmit"
+            value="1"
+            label="If you request changes: DM me on Slack when the player ships this project again, so I can re-review it while I still remember it."
+          />
+          {submitError && <Callout tone="danger" icon="important">{submitError}</Callout>}
+          <VerdictButtons
+            secondPass={secondPass}
+            pendingVerdict={pendingVerdict}
+            onVerdictSelect={onVerdictSelect}
+            onBack={() => goToStep(2)}
           />
         </div>
-      </div>
-      <div className="flex justify-between">
-        <Button type="button" variant="outline" onClick={() => goToStep(1)}>
-          ← Back
-        </Button>
-        <Button type="button" onClick={() => goToStep(3)}>
-          Next: Verdict →
-        </Button>
-      </div>
-      </div>
-
-      <div className={step === 3 ? "flex flex-col gap-2" : "hidden"}>
-      <Textarea
-        name="note"
-        required
-        ref={noteRef}
-        onChange={(e) => {
-          // Macros (lib/reviewMacros.ts): typing /ai swaps in the canned text.
-          // Only after something was typed or pasted, so deleting back down to
-          // "/ai" never expands it.
-          const input = e.currentTarget;
-          if ((e.nativeEvent as InputEvent).inputType?.startsWith("insert")) {
-            const expanded = expandMacro(input.value, input.selectionStart ?? input.value.length);
-            if (expanded) {
-              input.value = expanded.value;
-              input.setSelectionRange(expanded.caret, expanded.caret);
-            }
-          }
-          saveDraft();
-        }}
-        placeholder={
-          "Note to the player (required). Be nice and personal, show their work is good. If the site was a restaurant menu, play along and talk like you are ordering before telling them it is a great project. Finish with a short motivation like \"Keep it up!\"."
-        }
-        className="w-full text-sm"
-        rows={3}
-      />
-      <p className="text-xs text-muted-foreground -mt-1">
-        Macros: {REVIEW_MACROS.map((m) => `${m.trigger} = ${m.label}`).join(", ")}
-      </p>
-      <label className="flex items-start gap-2 text-sm cursor-pointer">
-        <input
-          type="checkbox"
-          name="revealName"
-          value="1"
-          className="mt-0.5 h-4 w-4 rounded border-border accent-brand"
-        />
-        <span className="text-muted-foreground">
-          Show my name to the player in this verdict&apos;s notification (approved / needs
-          changes) , unticked sends it as &quot;the review team&quot; instead.
-        </span>
-      </label>
-      <label className="flex items-start gap-2 text-sm cursor-pointer">
-        <input
-          type="checkbox"
-          name="notifyOnResubmit"
-          value="1"
-          className="mt-0.5 h-4 w-4 rounded border-border accent-brand"
-        />
-        <span className="text-muted-foreground">
-          If you request changes: DM me on Slack when the player ships this project again, so I
-          can re-review it while I still remember it.
-        </span>
-      </label>
-      <div className="flex flex-wrap gap-2 items-center">
-        <Button type="button" variant="outline" onClick={() => goToStep(2)}>
-          ← Back
-        </Button>
-        <VerdictButtons secondPass={secondPass} onVerdictSelect={onVerdictSelect} />
-      </div>
-      </div>
-    </form>
-    </>
+      </form>
+    </div>
   );
 }

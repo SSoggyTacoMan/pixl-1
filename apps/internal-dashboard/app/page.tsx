@@ -12,24 +12,35 @@ import {
 } from "@/lib/db";
 import { GrowthChart } from "@/app/_components/GrowthChart";
 import { PixelFlowChart } from "@/app/_components/PixelFlowChart";
-import { Badge } from "@/app/_components/ProjectBadges";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Badge,
+  ButtonLink,
+  Card,
+  CardHeader,
+  EmptyState,
+  Mono,
+  Muted,
+  PageHeader,
+  Stat,
+  StatGrid,
+  TextLink,
+  formatDateTime,
+  type Tone,
+} from "@/app/_ui/ui";
 
-const FEED_BADGE: Record<
-  string,
-  { label: string; tone: "amber" | "rose" | "green" | "blue" }
-> = {
-  mod: { label: "mod", tone: "amber" },
-  team: { label: "team", tone: "rose" },
-  review: { label: "review", tone: "green" },
-  pixels: { label: "pixels", tone: "blue" },
-  payout: { label: "payout", tone: "blue" },
+const FEED_BADGE: Record<string, { label: string; tone: Tone }> = {
+  mod: { label: "Mod", tone: "warning" },
+  team: { label: "Team", tone: "danger" },
+  review: { label: "Review", tone: "success" },
+  pixels: { label: "Pixels", tone: "info" },
+  payout: { label: "Payout", tone: "info" },
 };
 
 export const dynamic = "force-dynamic";
 
 const RANGES = [14, 30, 60, 90];
+
+const ROW = "flex items-center justify-between gap-4 border-b border-[var(--border)] px-4 py-3 last:border-b-0";
 
 export default async function Overview({
   searchParams,
@@ -38,9 +49,8 @@ export default async function Overview({
 }) {
   const access = await requirePage("staff");
   const live = await getLiveMode();
-  // Non-owners don't get the owner Overview; their home is their own
-  // reviewer stats (helpers/fulfillers: their own queue). Only owners see the
-  // full dashboard overview.
+  // Only owners get the full overview. Reviewers land on their own stats,
+  // helpers and fulfillers on their own queue.
   if (!access.isOwner) redirect(access.isReviewer ? "/review/stats" : landingFor(access));
   // Live mode hides everything internal from a screen share: moderation
   // (violations, bans) and the pixel economy, including their entries in the
@@ -66,236 +76,152 @@ export default async function Overview({
     }),
   ]);
 
-  const cards = [
-    {
-      label: "Players",
-      value: stats.players,
-      delta: stats.playersWeek,
-      accent: false,
-    },
-    {
-      label: "Projects",
-      value: stats.projects,
-      delta: stats.projectsWeek,
-      accent: false,
-    },
-    ...(showModeration
-      ? [
-          {
-            label: "Violations · 7d",
-            value: stats.violations7d,
-            delta: null,
-            accent: false,
-          },
-          {
-            label: "Active bans",
-            value: stats.activeBans,
-            delta: null,
-            accent: true,
-          },
-        ]
-      : []),
-  ];
+  const rangePicker = (
+    <div className="hc-segmented" role="tablist" aria-label="Chart range">
+      {RANGES.map((r) => (
+        <Link
+          key={r}
+          href={r === 30 ? "/" : `/?range=${r}`}
+          role="tab"
+          aria-selected={r === days}
+          className="hc-segmented-item inline-flex items-center justify-center px-3"
+        >
+          {r}d
+        </Link>
+      ))}
+    </div>
+  );
 
   return (
-    <div className="space-y-8">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 w-full">
-        {cards.map((c) => (
-          <Card key={c.label} className="w-full">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                {c.label}
-              </CardTitle>
-            </CardHeader>
+    <div className="flex flex-col gap-6">
+      <PageHeader title="Overview" description="Everything happening across Pixl." actions={rangePicker} />
 
-            <CardContent>
-              <div className="flex items-end gap-2">
-                <div
-                  className={`text-3xl font-bold tabular-nums ${
-                    c.accent ? "text-brand" : ""
-                  }`}
-                >
-                  {c.value.toLocaleString()}
-                </div>
-
-                {c.delta !== null && c.delta > 0 && (
-                  <span className="text-xs font-medium text-emerald-500">
-                    ▲ {c.delta}/wk
-                  </span>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <div>
-        <h3 className="text-lg font-semibold text-foreground tracking-tight mb-3">
-          New players
-        </h3>
-        <div className="grid grid-cols-3 gap-4">
-          {[
-            { label: "Today", value: stats.playersToday },
-            { label: "This week", value: stats.playersWeek },
-            { label: "This month", value: stats.playersMonth },
-          ].map((c) => (
-            <Card key={c.label} className="p-5 gap-0">
-              <div className="text-sm font-medium text-muted-foreground">
-                {c.label}
-              </div>
-              <div className="text-3xl font-semibold text-foreground tabular-nums mt-2">
-                +{c.value.toLocaleString()}
-              </div>
-            </Card>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
-          <h3 className="text-lg font-semibold text-foreground tracking-tight">
-            Growth
-          </h3>
-          <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-card">
-            {RANGES.map((r) => (
-              <Button
-                key={r}
-                asChild
-                variant="ghost"
-                size="sm"
-                className={
-                  r === days
-                    ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
-                    : ""
-                }
-              >
-                <Link href={r === 30 ? "/" : `/?range=${r}`}>{r}d</Link>
-              </Button>
-            ))}
-          </div>
-        </div>
-        <div className="grid lg:grid-cols-2 gap-4">
-          <Card className="p-5">
-            <GrowthChart
-              title="Players"
-              series="players"
-              kind="cumulative"
-              points={growth.players}
-            />
-          </Card>
-          <Card className="p-5">
-            <GrowthChart
-              title="Projects"
-              series="projects"
-              kind="cumulative"
-              points={growth.projects}
-            />
-          </Card>
-          {showModeration && (
-            <Card className="p-5 lg:col-span-2">
-              <GrowthChart
-                title="Violations"
-                series="violations"
-                kind="daily"
-                points={growth.violations}
-              />
-            </Card>
-          )}
-          {showPixels && (
-            <Card className="p-5 lg:col-span-2">
-              <PixelFlowChart points={pixelFlow} />
-            </Card>
-          )}
-        </div>
-      </div>
-
-      {feed.length > 0 && (
-        <div>
-          <h3 className="text-lg font-semibold text-foreground tracking-tight mb-3">
-            Activity
-          </h3>
-          <Card className="divide-y divide-border py-0">
-            {feed.map((f, i) => {
-              const badge = FEED_BADGE[f.kind] ?? FEED_BADGE.mod;
-              return (
-                <div
-                  key={i}
-                  className="p-3.5 flex flex-wrap items-center gap-x-3 gap-y-1"
-                >
-                  <Badge tone={badge.tone}>{badge.label}</Badge>
-                  <div className="flex-1 min-w-0">
-                    {f.href ? (
-                      <Link
-                        href={f.href}
-                        className="font-medium text-sm hover:text-brand"
-                      >
-                        {f.text}
-                      </Link>
-                    ) : (
-                      <span className="font-medium text-sm">{f.text}</span>
-                    )}
-                    {f.detail && (
-                      <div className="text-xs text-muted-foreground truncate">
-                        {f.detail}
-                      </div>
-                    )}
-                  </div>
-                  <div className="text-xs text-muted-foreground shrink-0">
-                    {new Date(f.when).toLocaleString()}
-                  </div>
-                </div>
-              );
-            })}
-          </Card>
-        </div>
-      )}
-
-      {showModeration && (
-        <div>
-          <div className="flex items-baseline justify-between gap-3 flex-wrap mb-3">
-            <h3 className="text-lg font-semibold text-foreground tracking-tight">
-              Latest violations
-            </h3>
-            <Link
+      <StatGrid>
+        <Stat
+          label="Players"
+          value={stats.players.toLocaleString()}
+          icon="people-3"
+          href="/players"
+          hint={`+${stats.playersToday} today, +${stats.playersWeek} this week, +${stats.playersMonth} this month`}
+        />
+        <Stat
+          label="Projects"
+          value={stats.projects.toLocaleString()}
+          icon="rep"
+          href="/projects"
+          hint={stats.projectsWeek > 0 ? `+${stats.projectsWeek} this week` : undefined}
+        />
+        {showModeration && (
+          <>
+            <Stat
+              label="Violations, 7d"
+              value={stats.violations7d.toLocaleString()}
+              icon="important"
+              tone="warning"
               href="/violations"
-              className="text-brand font-medium text-sm hover:underline"
-            >
-              See all →
-            </Link>
-          </div>
-          <Card className="divide-y divide-border py-0">
-            {recent.length === 0 && (
-              <div className="p-5 text-muted-foreground text-sm">
-                Nothing yet , squeaky clean.
-              </div>
-            )}
-            {recent.map((v) => (
-              <div
-                key={v.id}
-                className="p-4 flex flex-wrap items-center gap-x-4 gap-y-1"
-              >
-                <Badge tone={v.kind === "chat" ? "amber" : "rose"}>
-                  {v.kind}
-                </Badge>
-                <div className="flex-1 min-w-0">
-                  <Link
-                    href={`/players/${v.user_id}`}
-                    className="font-medium hover:text-brand"
-                  >
-                    {liveName(live, v.users, v.users?.real_name || v.users?.display_name || v.user_id)}
-                  </Link>
-                  <div className="text-sm text-muted-foreground truncate">
-                    “{v.content}”
-                  </div>
-                </div>
-                <div className="text-xs text-muted-foreground shrink-0">
-                  {new Date(v.created_at).toLocaleString()}
-                </div>
-              </div>
-            ))}
+            />
+            <Stat
+              label="Active bans"
+              value={stats.activeBans.toLocaleString()}
+              icon="private"
+              tone="danger"
+              href="/bans"
+            />
+          </>
+        )}
+      </StatGrid>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <GrowthChart title="Players" series="players" kind="cumulative" points={growth.players} />
+        </Card>
+        <Card>
+          <GrowthChart title="Projects" series="projects" kind="cumulative" points={growth.projects} />
+        </Card>
+        {showModeration && (
+          <Card className="lg:col-span-2">
+            <GrowthChart title="Violations" series="violations" kind="daily" points={growth.violations} />
           </Card>
-        </div>
-      )}
+        )}
+        {showPixels && (
+          <Card className="lg:col-span-2">
+            <PixelFlowChart points={pixelFlow} />
+          </Card>
+        )}
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card padding="flush">
+          <CardHeader title="Recent activity" icon="history" />
+          {feed.length === 0 ? (
+            <EmptyState title="Nothing yet" icon="history" />
+          ) : (
+            <ul>
+              {feed.map((f, i) => {
+                const badge = FEED_BADGE[f.kind] ?? FEED_BADGE.mod;
+                return (
+                  <li key={i} className={ROW}>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Badge tone={badge.tone}>{badge.label}</Badge>
+                      <div className="min-w-0">
+                        {f.href ? (
+                          <TextLink href={f.href} className="font-bold">
+                            {f.text}
+                          </TextLink>
+                        ) : (
+                          <span className="font-bold">{f.text}</span>
+                        )}
+                        {f.detail && <div className="truncate text-sm hc-muted">{f.detail}</div>}
+                      </div>
+                    </div>
+                    <Muted className="shrink-0 text-xs">
+                      <Mono>{formatDateTime(f.when)}</Mono>
+                    </Muted>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+
+        {showModeration && (
+          <Card padding="flush">
+            <CardHeader
+              title="Latest violations"
+              icon="important"
+              action={
+                <ButtonLink href="/violations" variant="ghost" size="sm">
+                  View all
+                </ButtonLink>
+              }
+            />
+            {recent.length === 0 ? (
+              <EmptyState title="Squeaky clean" icon="checkmark-all">
+                No violations yet.
+              </EmptyState>
+            ) : (
+              <ul>
+                {recent.map((v) => (
+                  <li key={v.id} className={ROW}>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Badge tone={v.kind === "chat" ? "warning" : "danger"}>{v.kind}</Badge>
+                      <div className="min-w-0">
+                        <TextLink href={`/players/${v.user_id}`} className="font-bold">
+                          {liveName(live, v.users, v.users?.real_name || v.users?.display_name || v.user_id)}
+                        </TextLink>
+                        <div className="truncate text-sm hc-muted">&ldquo;{v.content}&rdquo;</div>
+                      </div>
+                    </div>
+                    <Muted className="shrink-0 text-xs">
+                      <Mono>{formatDateTime(v.created_at)}</Mono>
+                    </Muted>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        )}
+      </div>
     </div>
   );
 }

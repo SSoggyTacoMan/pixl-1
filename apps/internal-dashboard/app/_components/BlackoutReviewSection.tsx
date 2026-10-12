@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { BlackoutBadge } from "@/app/_components/BlackoutBadge";
+import { Callout, DescriptionList, Field, Input, Muted, Textarea } from "@/app/_ui/ui";
 
 export interface BlackoutReviewPerson {
   userId: string;
@@ -39,102 +40,111 @@ export interface BlackoutReviewData {
 
 const fmt = (iso: string) =>
   new Date(iso).toLocaleString("en-GB", {
-    day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
   }) + " UTC";
 const h2 = (seconds: number) => `${Math.round((seconds / 3600) * 100) / 100}h`;
 const maxHours = (p: BlackoutReviewPerson) => Math.round((p.eligibleTrackedSeconds / 3600) * 100) / 100;
 
+// Rendered inside ReviewForm's <form>: every field here is submitted with the
+// verdict (blackoutDecision, blackoutNote, blackoutHours_<userId>).
 export function BlackoutReviewSection({ data }: { data: BlackoutReviewData }) {
   const [decision, setDecision] = useState<"eligible" | "ineligible" | "">(data.decision ?? "");
   const graceActive = data.reshipCount > 0 && data.fixWindowEnd;
   const incompleteNames = data.people.filter((p) => !p.evidenceOk).map((p) => p.name);
 
+  const facts: [string, string][] = [
+    ["Operation", `${fmt(data.operationStartsAt)} → ${fmt(data.operationEndsAt)}`],
+    ["Joined", fmt(data.joinedAt)],
+    ["First Blackout ship", fmt(data.firstShipAt)],
+    ["Counted window", `${fmt(data.windowStart)} → ${fmt(data.firstShipAt)}`],
+  ];
+  if (data.changesRequestedAt)
+    facts.push([
+      "Changes requested",
+      `${fmt(data.changesRequestedAt)}${data.graceDeadline ? ` (fix by ${fmt(data.graceDeadline)})` : ""}`,
+    ]);
+  if (data.reshipCount > 0) facts.push(["Reships", String(data.reshipCount)]);
+
   return (
-    <fieldset className="rounded-lg border border-amber-300/70 dark:border-amber-500/40 bg-amber-50/50 dark:bg-amber-500/[0.06] p-3 grid gap-3 min-w-0">
-      <legend className="px-1.5 flex items-center gap-2">
+    <fieldset className="hc-panel flex min-w-0 flex-col gap-3">
+      <legend className="flex items-center gap-2 px-1">
         <BlackoutBadge />
-        <span className="text-xs font-semibold">{data.operationName} entry</span>
+        <span className="hc-eyebrow">{data.operationName} entry</span>
       </legend>
 
-      <p className="text-xs text-muted-foreground">
+      <p className="hc-caption text-sm">
         Rule on whether this counts for Blackout, and how many tracked hours inside the window are approved. You never
         set a rate: Pixl pays each person{" "}
-        {data.rateMode === "additive"
-          ? <>their own rate + ${data.rateUsd.toFixed(2)}/hr</>
-          : <>max(their own rate, ${data.rateUsd.toFixed(2)}/hr)</>}
-        {" "}on the approved hours, once.
+        {data.rateMode === "additive" ? (
+          <>their own rate + ${data.rateUsd.toFixed(2)}/hr</>
+        ) : (
+          <>max(their own rate, ${data.rateUsd.toFixed(2)}/hr)</>
+        )}{" "}
+        on the approved hours, once.
       </p>
 
-      <ul className="text-xs text-muted-foreground list-disc pl-4 grid gap-0.5">
+      <ul className="hc-caption list-disc pl-5 text-sm">
         <li>Joined during the event, not after the fact</li>
         <li>The project genuinely fits the Blackout prompt</li>
         <li>The approved hours were worked inside the window below</li>
       </ul>
 
       {data.decisionBy && data.decision && (
-        <div className="text-xs rounded-md border border-border bg-background/60 p-2">
+        <Callout tone="neutral">
           {data.decisionStage === "first_pass" ? "First pass proposed" : "Previously ruled"}: <b>{data.decision}</b>
-          {data.decisionNote ? ` , ${data.decisionNote}` : ""} <span className="text-muted-foreground">({data.decisionBy.replace(/\s*\([^)]*\)\s*$/, "")})</span>
-        </div>
+          {data.decisionNote ? `. ${data.decisionNote}` : ""}{" "}
+          <Muted>({data.decisionBy.replace(/\s*\([^)]*\)\s*$/, "")})</Muted>
+        </Callout>
       )}
 
-      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
-        <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Operation</dt><dd className="text-right">{fmt(data.operationStartsAt)} → {fmt(data.operationEndsAt)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Joined</dt><dd className="text-right">{fmt(data.joinedAt)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-muted-foreground">First Blackout ship</dt><dd className="text-right">{fmt(data.firstShipAt)}</dd></div>
-        <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Counted window</dt><dd className="text-right">{fmt(data.windowStart)} → {fmt(data.firstShipAt)}</dd></div>
-        {data.changesRequestedAt && (
-          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Changes requested</dt><dd className="text-right">{fmt(data.changesRequestedAt)}{data.graceDeadline ? ` (fix by ${fmt(data.graceDeadline)})` : ""}</dd></div>
-        )}
-        {data.reshipCount > 0 && (
-          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Reships</dt><dd className="text-right">{data.reshipCount}</dd></div>
-        )}
-      </dl>
+      <DescriptionList items={facts} />
       {graceActive && (
-        <p className="text-xs text-muted-foreground">
-          Work after the first ship counts only inside the fix window, and only a small slice (the greater of 1h or 25% of the
-          original hours). It is already capped in the numbers below.
+        <p className="hc-caption text-sm">
+          Work after the first ship counts only inside the fix window, and only a small slice (the greater of 1h or 25%
+          of the original hours). It is already capped in the numbers below.
         </p>
       )}
       {incompleteNames.length > 0 && (
-        <div role="alert" className="rounded-md border-2 border-rose-400 dark:border-rose-500/70 bg-rose-50 dark:bg-rose-500/10 p-2.5 text-xs grid gap-0.5">
-          <b className="text-rose-700 dark:text-rose-300 uppercase tracking-wide">Time evidence incomplete</b>
-          <span>
-            Hackatime couldn&apos;t be read at ship time for {incompleteNames.join(", ")}, so the tracked hours below may be
-            under-counted. Pixl can&apos;t raise the ceiling for you. If the work looks bigger than the numbers, leave a note
-            rather than guessing.
-          </span>
+        <div role="alert">
+          <Callout tone="danger" icon="important">
+            <b>Time evidence incomplete.</b> Hackatime couldn&apos;t be read at ship time for{" "}
+            {incompleteNames.join(", ")}, so the tracked hours below may be under-counted. Pixl can&apos;t raise the
+            ceiling for you. If the work looks bigger than the numbers, leave a note rather than guessing.
+          </Callout>
         </div>
       )}
       {data.trialHold && (
-        <div role="alert" className="rounded-md border-2 border-amber-400 dark:border-amber-500/70 bg-amber-100/60 dark:bg-amber-500/10 p-2.5 text-xs grid gap-0.5">
-          <b className="text-amber-800 dark:text-amber-300 uppercase tracking-wide">Trial payout held</b>
-          <span>
-            This ship is for the Trial &quot;{data.trialHold.name}&quot;. The owner&apos;s pixels are held until they pick
-            pixels over the prize, and their Blackout top-up is skipped on this approval (not deferred). Collaborators are
-            still topped up.
-          </span>
+        <div role="alert">
+          <Callout tone="warning" icon="important">
+            <b>Trial payout held.</b> This ship is for the Trial &quot;{data.trialHold.name}&quot;. The owner&apos;s
+            pixels are held until they pick pixels over the prize, and their Blackout top-up is skipped on this approval
+            (not deferred). Collaborators are still topped up.
+          </Callout>
         </div>
       )}
 
-      <div className="grid gap-2">
+      <div className="flex flex-col gap-2">
         {data.people.map((p) => {
           const cap = maxHours(p);
           const start = p.proposedHours ?? Math.min(cap, p.claimedHours ?? cap);
           return (
-            <div key={p.userId} className="rounded-md border border-border bg-background/60 p-2.5 grid gap-1.5">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-sm font-medium">
-                  {p.name} <span className="text-xs text-muted-foreground font-normal">{p.role}</span>
+            <div key={p.userId} className="hc-card flex flex-col gap-2" data-density="compact">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-bold">
+                  {p.name} <Muted className="text-xs font-normal">{p.role}</Muted>
                 </span>
-                <span className="text-xs text-muted-foreground">
+                <span className="hc-caption text-xs">
                   tracked in window: {h2(p.hackatimeBaseSeconds)} Hackatime + {h2(p.journalBaseSeconds)} journal
                   {p.fixTrackedSeconds > 0 ? ` · fix window ${h2(p.fixTrackedSeconds)} (capped)` : ""}
                 </span>
               </div>
-              <label className="flex items-center gap-2 text-xs flex-wrap">
-                <span>Approved Blackout hours</span>
-                <input
+              <label className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="hc-label">Approved Blackout hours</span>
+                <Input
                   type="number"
                   name={`blackoutHours_${p.userId}`}
                   defaultValue={decision === "ineligible" ? 0 : start}
@@ -142,16 +152,15 @@ export function BlackoutReviewSection({ data }: { data: BlackoutReviewData }) {
                   inputMode="decimal"
                   onBlur={(e) => {
                     const n = Number(e.currentTarget.value);
-                    e.currentTarget.value = String(
-                      Number.isFinite(n) ? Math.min(Math.max(n, 0), cap) : 0,
-                    );
+                    e.currentTarget.value = String(Number.isFinite(n) ? Math.min(Math.max(n, 0), cap) : 0);
                   }}
                   disabled={decision === "ineligible"}
-                  className="w-24 rounded-md border border-input bg-background px-2 py-1 text-sm tabular-nums disabled:opacity-50"
+                  className="w-24 tabular-nums disabled:opacity-50"
                 />
-                <span className="text-muted-foreground">
-                  max {cap}h{p.claimedHours != null ? ` · normal credit ${Math.round(p.claimedHours * 100) / 100}h` : ""}
-                </span>
+                <Muted className="text-xs">
+                  max {cap}h
+                  {p.claimedHours != null ? ` · normal credit ${Math.round(p.claimedHours * 100) / 100}h` : ""}
+                </Muted>
               </label>
               {decision === "ineligible" && <input type="hidden" name={`blackoutHours_${p.userId}`} value="0" />}
             </div>
@@ -159,33 +168,47 @@ export function BlackoutReviewSection({ data }: { data: BlackoutReviewData }) {
         })}
       </div>
 
-      <div className="flex items-center gap-4 flex-wrap text-sm" role="radiogroup" aria-label="Blackout eligibility">
-        <label className="flex items-center gap-1.5">
-          <input type="radio" name="blackoutDecision" value="eligible" checked={decision === "eligible"} onChange={() => setDecision("eligible")} />
-          Eligible
+      <div className="flex flex-wrap items-center gap-4" role="radiogroup" aria-label="Blackout eligibility">
+        <label className="hc-check">
+          <input
+            type="radio"
+            name="blackoutDecision"
+            value="eligible"
+            checked={decision === "eligible"}
+            onChange={() => setDecision("eligible")}
+          />
+          <span>Eligible</span>
         </label>
-        <label className="flex items-center gap-1.5">
-          <input type="radio" name="blackoutDecision" value="ineligible" checked={decision === "ineligible"} onChange={() => setDecision("ineligible")} />
-          Not eligible
+        <label className="hc-check">
+          <input
+            type="radio"
+            name="blackoutDecision"
+            value="ineligible"
+            checked={decision === "ineligible"}
+            onChange={() => setDecision("ineligible")}
+          />
+          <span>Not eligible</span>
         </label>
       </div>
       {decision === "ineligible" && (
-        <p className="text-xs text-muted-foreground">
-          This is the &quot;not a Blackout project, treat it as a normal PIXL project instead&quot; call: it only removes the
-          Blackout bonus path. It never changes this project&apos;s normal review, decision, or payout below.
+        <p className="hc-caption text-sm">
+          This is the &quot;not a Blackout project, treat it as a normal Pixl project instead&quot; call: it only
+          removes the Blackout bonus path. It never changes this project&apos;s normal review, decision, or payout.
         </p>
       )}
-      <label className="grid gap-1 text-xs">
-        <span>Reason / adjustment note{decision === "ineligible" ? " (required)" : ""}</span>
-        <textarea
+      <Field label={`Reason / adjustment note${decision === "ineligible" ? " (required)" : ""}`}>
+        <Textarea
           name="blackoutNote"
           defaultValue={data.decisionNote}
           maxLength={1000}
           rows={2}
-          placeholder={decision === "ineligible" ? "Why doesn't this count for Blackout?" : "Optional: why the hours were lowered, what you checked"}
-          className="rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+          placeholder={
+            decision === "ineligible"
+              ? "Why doesn't this count for Blackout?"
+              : "Optional: why the hours were lowered, what you checked"
+          }
         />
-      </label>
+      </Field>
     </fieldset>
   );
 }

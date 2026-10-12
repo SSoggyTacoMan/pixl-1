@@ -20,7 +20,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN node node_modules/next/dist/bin/next build
+# One id per build for next.config's deploymentId (version skew protection).
+# A file rather than an env var so `next start` reads the same value.
+RUN echo "b$(date +%s)" > .deployment-id && node node_modules/next/dist/bin/next build
 
 FROM node:26-slim AS runtime
 WORKDIR /app
@@ -31,7 +33,7 @@ ENV PORT=3000
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/.next ./.next
 COPY --from=build --chown=node:node /app/public ./public
-COPY --from=build --chown=node:node /app/next.config.ts /app/package.json ./
+COPY --from=build --chown=node:node /app/next.config.ts /app/package.json /app/.deployment-id ./
 
 USER node
 EXPOSE 3000

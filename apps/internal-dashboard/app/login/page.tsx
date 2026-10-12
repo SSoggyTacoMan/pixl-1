@@ -1,6 +1,5 @@
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+/* eslint-disable @next/next/no-img-element */
+import { Callout, Card, Icon, buttonClass } from "@/app/_ui/ui";
 
 export default async function LoginPage({
   searchParams,
@@ -12,33 +11,35 @@ export default async function LoginPage({
     error === "denied"
       ? "That Hack Club account isn't linked to a Pixl team member. If you think that's a mistake, contact the Pixl team."
       : error
-        ? "Sign-in failed , try again."
+        ? "Sign-in failed. Try again."
         : null;
+
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
-      <Card className="p-8 w-full max-w-sm gap-0">
-        <div className="flex items-center gap-3 mb-6">
-          <span className="grid place-items-center w-10 h-10 rounded-xl bg-brand text-white font-bold">
-            P
-          </span>
-          <div>
-            <div className="font-semibold text-lg tracking-tight leading-none">Pixl</div>
-            <div className="text-xs text-muted-foreground mt-1">Team HQ</div>
+    <main className="flex min-h-screen items-center justify-center p-6">
+      <div className="w-full max-w-sm">
+        <Card>
+          <div className="flex flex-col items-center gap-4 text-center">
+            <img src="/logo.png" alt="Pixl" width={64} height={64} />
+            <div>
+              <h1 className="hc-title">Pixl</h1>
+              <p className="hc-caption mt-1 text-sm">Access is limited to approved Hack Club accounts.</p>
+            </div>
+            {message && (
+              <div className="w-full text-left">
+                <Callout tone="danger" icon="important">
+                  {message}
+                </Callout>
+              </div>
+            )}
+            {/* A plain <a>, not next/link: the login route sets the OAuth state
+                cookie, so it must never be prefetched or fetched as RSC. */}
+            <a href="/api/auth/login" className={`${buttonClass("primary", "lg")} w-full justify-center`}>
+              <Icon glyph="door-enter" size={22} />
+              Sign in with Hack Club
+            </a>
           </div>
-        </div>
-        <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
-        <p className="text-sm text-muted-foreground mt-1 mb-6">
-          Access is limited to approved Hack Club accounts.
-        </p>
-        {message && (
-          <Alert variant="destructive" className="mb-5">
-            <AlertDescription className="text-destructive">{message}</AlertDescription>
-          </Alert>
-        )}
-        <Button asChild className="bg-ink text-white hover:bg-ink/90 w-full">
-          <a href="/api/auth/login">Continue with Hack Club</a>
-        </Button>
-      </Card>
-    </div>
+        </Card>
+      </div>
+    </main>
   );
 }

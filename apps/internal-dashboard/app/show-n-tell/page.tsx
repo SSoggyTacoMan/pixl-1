@@ -8,18 +8,25 @@ import {
   addCustomShowNTellEntry,
   removeShowNTellEntry,
 } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  ActionButton,
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  Details,
+  EmptyRow,
+  Field,
+  Icon,
+  Input,
+  Muted,
+  PageHeader,
+  Table,
+  TextLink,
+  formatDate,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
-
-function dateLabel(iso: string | null): string {
-  if (!iso) return "-";
-  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-}
 
 export default async function ShowNTellPage({
   searchParams,
@@ -39,164 +46,209 @@ export default async function ShowNTellPage({
     q ? searchShippableProjects(q) : Promise.resolve([]),
   ]);
   const existingProjectIds = new Set(entries.map((e) => e.project_id));
+  const sortedEntries = entries.slice().sort((a, b) => b.vote_count - a.vote_count);
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Show &amp; Tell</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          One vote per player per project, players sign in for real so it's not a
-          stuffable form. Open a round when a Show &amp; Tell is happening, add the
-          projects being shown, close it when it wraps up.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Show & Tell"
+        description="One vote per player per project. Players sign in for real, so it's not a stuffable form. Open a round when a Show & Tell is happening, add the projects being shown, and close it when it wraps up."
+      />
 
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-4">New round</div>
-        <form action={createShowNTellRound} className="flex gap-3 items-end flex-wrap">
-          <Label className="block font-normal flex-1 min-w-48">
-            <span className="block text-sm font-medium mb-1.5">Title</span>
-            <Input name="title" required maxLength={120} placeholder="e.g. September Show & Tell" className="w-full text-sm" />
-          </Label>
-          <PendingButton className="bg-brand text-white border-transparent" pendingText="Creating…">
-            Create round
-          </PendingButton>
+      <Card>
+        <CardHeader title="New round" icon="plus" />
+        <form action={createShowNTellRound} className="flex flex-wrap items-end gap-3">
+          <Field label="Title" className="min-w-48 flex-1">
+            <Input name="title" required maxLength={120} placeholder="e.g. September Show & Tell" />
+          </Field>
+          <ActionButton pendingLabel="Creating...">Create round</ActionButton>
         </form>
       </Card>
 
-      <div>
-        <div className="text-sm font-medium text-muted-foreground mb-3">Rounds</div>
-        <Card className="overflow-hidden py-0 divide-y divide-border">
+      <Card padding="flush">
+        <CardHeader title="Rounds" icon="event-code" count={rounds.length} />
+        <Table headers={["Round", "Status", "When", ""]}>
           {rounds.map((r) => (
-            <div key={r.id} className="p-3.5 flex items-center gap-3 flex-wrap">
-              <a href={`/show-n-tell?round=${r.id}`} className={`font-medium hover:text-brand ${r.id === selectedRoundId ? "text-brand" : ""}`}>
-                {r.title}
-              </a>
-              {r.is_open ? (
-                <Badge variant="success">Open</Badge>
-              ) : (
-                <Badge variant="secondary">Closed</Badge>
-              )}
-              <span className="text-xs text-muted-foreground">
-                {r.is_open ? `opened ${dateLabel(r.opened_at)}` : r.closed_at ? `closed ${dateLabel(r.closed_at)}` : `created ${dateLabel(r.created_at)}`}
-              </span>
-              <div className="ml-auto flex gap-2">
-                {r.is_open ? (
-                  <form action={closeShowNTellRound}>
-                    <input type="hidden" name="id" value={r.id} />
-                    <PendingButton variant="outline" size="sm" pendingText="Closing…">
-                      Close
-                    </PendingButton>
-                  </form>
-                ) : (
-                  <form action={openShowNTellRound}>
-                    <input type="hidden" name="id" value={r.id} />
-                    <PendingButton size="sm" pendingText="Opening…" className="bg-mint text-ink border-transparent hover:bg-mint/90">
-                      Open
-                    </PendingButton>
-                  </form>
+            <tr key={r.id}>
+              <td>
+                <TextLink href={`/show-n-tell?round=${r.id}`} className="font-bold">
+                  {r.title}
+                </TextLink>
+                {r.id === selectedRoundId && (
+                  <span className="ml-2">
+                    <Badge tone="info" outline>
+                      viewing
+                    </Badge>
+                  </span>
                 )}
-              </div>
-            </div>
+              </td>
+              <td>{r.is_open ? <Badge tone="success">Open</Badge> : <Badge tone="neutral">Closed</Badge>}</td>
+              <td className="text-sm">
+                <Muted>
+                  {r.is_open
+                    ? `opened ${formatDate(r.opened_at)}`
+                    : r.closed_at
+                      ? `closed ${formatDate(r.closed_at)}`
+                      : `created ${formatDate(r.created_at)}`}
+                </Muted>
+              </td>
+              <td>
+                <div className="flex justify-end">
+                  {r.is_open ? (
+                    <form action={closeShowNTellRound}>
+                      <input type="hidden" name="id" value={r.id} />
+                      <ActionButton variant="outline" size="sm" pendingLabel="Closing...">
+                        Close
+                      </ActionButton>
+                    </form>
+                  ) : (
+                    <form action={openShowNTellRound}>
+                      <input type="hidden" name="id" value={r.id} />
+                      <ActionButton variant="success" size="sm" pendingLabel="Opening...">
+                        Open
+                      </ActionButton>
+                    </form>
+                  )}
+                </div>
+              </td>
+            </tr>
           ))}
           {rounds.length === 0 && (
-            <div className="p-5 text-muted-foreground text-sm">No rounds yet, create one above.</div>
+            <EmptyRow colSpan={4} title="No rounds yet" icon="event-code">
+              Create one above.
+            </EmptyRow>
           )}
-        </Card>
-      </div>
+        </Table>
+      </Card>
 
       {selectedRound && (
-        <div>
-          <div className="text-sm font-medium text-muted-foreground mb-3">
-            Entries in &ldquo;{selectedRound.title}&rdquo;
-          </div>
-
-          <Card className="p-5 md:p-6 gap-0 mb-4">
-            <div className="text-sm font-medium mb-3">Add a project</div>
-            <form className="flex gap-2 mb-3">
+        <>
+          <Card>
+            <CardHeader title={<>Add a project to &ldquo;{selectedRound.title}&rdquo;</>} icon="search" />
+            <form className="flex flex-wrap items-center gap-2">
               <input type="hidden" name="round" value={selectedRound.id} />
-              <Input name="q" defaultValue={q ?? ""} placeholder="Search projects by name (shipped or still in progress)…" className="text-sm flex-1" />
-              <PendingButton type="submit">Search</PendingButton>
+              <div className="relative min-w-60 flex-1">
+                <Icon
+                  glyph="search"
+                  size={20}
+                  className="hc-muted pointer-events-none absolute top-1/2 left-2 -translate-y-1/2"
+                />
+                <Input
+                  name="q"
+                  type="search"
+                  defaultValue={q ?? ""}
+                  placeholder="Search projects by name (shipped or still in progress)"
+                  className="hc-input-search"
+                />
+              </div>
+              <Button type="submit" variant="outline">
+                Search
+              </Button>
             </form>
             {q && (
-              <div className="space-y-2">
+              <div className="mt-3 flex flex-col gap-2">
                 {searchResults.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3 text-sm p-2 rounded-md border border-border">
-                    <span className="font-medium">{p.name}</span>
-                    <span className="text-muted-foreground text-xs">{p.owner}</span>
-                    {existingProjectIds.has(p.id) ? (
-                      <Badge variant="secondary" className="ml-auto">Already added</Badge>
-                    ) : (
-                      <form action={addShowNTellEntry} className="ml-auto">
-                        <input type="hidden" name="roundId" value={selectedRound.id} />
-                        <input type="hidden" name="projectId" value={p.id} />
-                        <PendingButton size="sm" pendingText="Adding…">Add</PendingButton>
-                      </form>
-                    )}
+                  <div key={p.id} className="hc-panel flex items-center gap-3 text-sm">
+                    <span className="font-bold">{p.name}</span>
+                    <Muted className="text-xs">{p.owner}</Muted>
+                    <div className="ml-auto">
+                      {existingProjectIds.has(p.id) ? (
+                        <Badge tone="neutral">Already added</Badge>
+                      ) : (
+                        <form action={addShowNTellEntry}>
+                          <input type="hidden" name="roundId" value={selectedRound.id} />
+                          <input type="hidden" name="projectId" value={p.id} />
+                          <ActionButton size="sm" icon="plus" pendingLabel="Adding...">
+                            Add
+                          </ActionButton>
+                        </form>
+                      )}
+                    </div>
                   </div>
                 ))}
-                {searchResults.length === 0 && (
-                  <div className="text-sm text-muted-foreground">No projects match that search.</div>
-                )}
+                {searchResults.length === 0 && <Muted className="text-sm">No projects match that search.</Muted>}
               </div>
             )}
-            <div className="mt-4 pt-4 border-t border-border">
-              <div className="text-xs font-medium text-muted-foreground mb-2">
-                Not in Pixl? Add it by name instead (no project record needed)
-              </div>
-              <form action={addCustomShowNTellEntry} className="flex gap-2">
+            <div className="mt-4 border-t pt-4" style={{ borderColor: "var(--border)" }}>
+              <form action={addCustomShowNTellEntry} className="flex flex-wrap items-end gap-2">
                 <input type="hidden" name="roundId" value={selectedRound.id} />
-                <Input name="customName" required maxLength={120} placeholder="e.g. a live demo shown at the event" className="text-sm flex-1" />
-                <PendingButton type="submit" pendingText="Adding…">Add</PendingButton>
+                <Field
+                  label="Not in Pixl?"
+                  hint="Add it by name instead, no project record needed."
+                  className="min-w-60 flex-1"
+                >
+                  <Input name="customName" required maxLength={120} placeholder="e.g. a live demo shown at the event" />
+                </Field>
+                <ActionButton variant="outline" pendingLabel="Adding...">
+                  Add
+                </ActionButton>
               </form>
             </div>
           </Card>
 
-          <Card className="overflow-hidden py-0 divide-y divide-border">
-            {entries
-              .slice()
-              .sort((a, b) => b.vote_count - a.vote_count)
-              .map((e) => (
-                <div key={e.id} className="p-3.5 flex items-center gap-3 flex-wrap">
-                  <span className="font-medium">{e.project_name}</span>
-                  <span className="text-xs text-muted-foreground">{e.project_owner}</span>
-                  <Badge variant="secondary">{e.vote_count} vote{e.vote_count === 1 ? "" : "s"}</Badge>
-                  <span className="text-xs text-muted-foreground ml-auto">added by {e.added_by}</span>
-                  <form action={removeShowNTellEntry}>
-                    <input type="hidden" name="id" value={e.id} />
-                    <PendingButton
-                      variant="ghost"
-                      size="sm"
-                      pendingText="Removing…"
-                      className="text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10"
-                    >
-                      Remove
-                    </PendingButton>
-                  </form>
-                  {e.voters.length > 0 && (
-                    <details className="w-full mt-1">
-                      <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground select-none">
-                        {e.voters.length} voter{e.voters.length === 1 ? "" : "s"}
-                      </summary>
-                      <div className="mt-1.5 flex flex-wrap gap-1.5">
-                        {e.voters.map((v) => (
-                          <Badge key={v.id} variant="outline" className="text-xs font-normal">
-                            {v.name || v.id.slice(0, 8)}
-                            <span className="text-muted-foreground ml-1">
-                              {new Date(v.voted_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
-                            </span>
-                          </Badge>
-                        ))}
+          <Card padding="flush">
+            <CardHeader
+              title={<>Entries in &ldquo;{selectedRound.title}&rdquo;</>}
+              icon="list"
+              count={entries.length}
+            />
+            <Table headers={["Project", "Votes", "Added by", ""]}>
+              {sortedEntries.map((e) => (
+                <tr key={e.id}>
+                  <td>
+                    <div className="font-bold">{e.project_name}</div>
+                    <div className="text-xs">
+                      <Muted>{e.project_owner}</Muted>
+                    </div>
+                    {e.voters.length > 0 && (
+                      <div className="mt-2">
+                        <Details summary={`${e.voters.length} voter${e.voters.length === 1 ? "" : "s"}`}>
+                          <div className="flex flex-wrap gap-1.5">
+                            {e.voters.map((v) => (
+                              <Badge key={v.id} tone="neutral" outline>
+                                {v.name || v.id.slice(0, 8)}
+                                <Muted>
+                                  {new Date(v.voted_at).toLocaleDateString("en-US", {
+                                    month: "short",
+                                    day: "numeric",
+                                    timeZone: "UTC",
+                                  })}
+                                </Muted>
+                              </Badge>
+                            ))}
+                          </div>
+                        </Details>
                       </div>
-                    </details>
-                  )}
-                </div>
+                    )}
+                  </td>
+                  <td>
+                    <Badge tone="info">
+                      {e.vote_count} vote{e.vote_count === 1 ? "" : "s"}
+                    </Badge>
+                  </td>
+                  <td className="text-sm">
+                    <Muted>{e.added_by}</Muted>
+                  </td>
+                  <td>
+                    <div className="flex justify-end">
+                      <form action={removeShowNTellEntry}>
+                        <input type="hidden" name="id" value={e.id} />
+                        <ActionButton variant="ghost" size="sm" icon="delete" pendingLabel="Removing...">
+                          Remove
+                        </ActionButton>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
               ))}
-            {entries.length === 0 && (
-              <div className="p-5 text-muted-foreground text-sm">No entries yet, search above to add one.</div>
-            )}
+              {entries.length === 0 && (
+                <EmptyRow colSpan={4} title="No entries yet" icon="search">
+                  Search above to add one.
+                </EmptyRow>
+              )}
+            </Table>
           </Card>
-        </div>
+        </>
       )}
     </div>
   );
