@@ -136,6 +136,13 @@ export function isInReview(p: Pick<Project, "status">): boolean {
   return IN_REVIEW.includes(String(p.status));
 }
 
+// A project can only be pulled back before a reviewer has given a verdict on
+// it. Once it is past first pass the server refuses (a maker could otherwise
+// unship to dodge a pending verdict), so the button isn't offered either.
+export function canUnship(p: Pick<Project, "status">): boolean {
+  return String(p.status) === "shipped";
+}
+
 export function canShip(p: Pick<Project, "status" | "rejected_at">): boolean {
   return !isInReview(p) && (["draft", "needs_changes", "approved"].includes(String(p.status)) || !!p.rejected_at);
 }

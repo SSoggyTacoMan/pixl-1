@@ -38,7 +38,7 @@ const ERRORS: Record<string, string> = {
   removed: "You were removed from this project.",
   journal_too_short: "Log more detail: journals need about 100 characters per hour.",
   journal_images_required: "Add at least one image to this entry, more for longer sessions.",
-  not_in_review: "This project isn't in review.",
+  not_in_review: "A reviewer has already started on this project, so it can't be unshipped now. You'll be able to edit it once the review is done.",
   project_in_review: "This project is in review, so its journal is locked until the review is done.",
   trial_hours_below_minimum: "This Trial needs more tracked hours before you can ship it.",
   eligibility_attestation_required: "Confirm this isn't a school assignment or paid Hack Club work before shipping.",
