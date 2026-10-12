@@ -62,6 +62,7 @@ import {
 import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { decryptPII } from "@/lib/crypto";
 import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
+import { withAgeOverride } from "@/lib/ageOverrides";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
 import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
 import { fetchHackatimeReport, fetchTrustFactor } from "@/lib/hackatime";
@@ -2605,7 +2606,7 @@ async function pushPersonToAirtable(
     state: decryptPII(user?.address_state),
     country: decryptPII(user?.address_country),
     zip: decryptPII(user?.address_postal),
-    auditSections,
+    auditSections: withAgeOverride(person.userId, auditSections),
     hackatimeProjectDateRanges,
     submitterHackatimeId: hackatimeReport.hackatimeUserId,
     lapseLinks,

@@ -16,6 +16,12 @@ export const MANUAL_ELIGIBILITY_OVERRIDE_USER_IDS = new Set<string>([
   // all (confirmed via a fresh re-sync, not stale Pixl-side data) - a gap on
   // HCA's own side, not a real rejection. Approved by Gabin, 2026-10-01.
   "a893cc19-1b35-42c9-86df-1e0ffbf1cc50",
+  // Muhammad Ans (Slack U0976TZ1BCN, project 388, "Yappy Yap") - turned 19 after
+  // first shipping, so HCA no longer reports him ysws_eligible. Allowed to
+  // resubmit; the dashboard fills the Airtable "Override Age Justification" with
+  // "shipped before turning 19" on approval (apps/internal-dashboard/lib/ageOverrides.ts).
+  // Approved by Gabin, 2026-10-13.
+  "718c246b-cd32-4751-adbf-efe2dce3231b",
 ]);
 
 export interface HcaStateRow {
