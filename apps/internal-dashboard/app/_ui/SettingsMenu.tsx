@@ -139,8 +139,14 @@ export default function SettingsMenu({ initial }: { initial: StaffSettings }) {
               onChange={(compact) => update({ compact })}
             />
             <Toggle
+              label="Review sound"
+              hint="A short sound after you submit a review."
+              checked={settings.sound}
+              onChange={(sound) => update({ sound })}
+            />
+            <Toggle
               label="Confetti"
-              hint="Confetti and a little sound after you submit a review."
+              hint="Confetti after you submit a review."
               checked={settings.confetti}
               onChange={(confetti) => update({ confetti })}
             />
