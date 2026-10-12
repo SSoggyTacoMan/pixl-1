@@ -36,7 +36,7 @@ fixed, never redefined per theme (see the comment next to it in `pixl.css`).
 ## Consuming it
 
 Nothing imports `@pixl/theme` at runtime, for the same reason nothing imports
-`@pixl/config` at runtime: Railway/Vercel build from per-app roots, and the
+`@pixl/config` at runtime: Orchard builds apps from per-app Docker contexts, and the
 game runs from an exported PCK. Generated, committed copies reach every
 consumer instead:
 

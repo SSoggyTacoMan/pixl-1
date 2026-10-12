@@ -4,12 +4,13 @@
  *   bun run config:sync
  *
  * This package is a *build-time* source of truth, not a runtime dependency.
- * Nothing imports "@pixl/config" at runtime, deliberately: both Railway services
- * build from a `/apps/<app>` root directory, so a workspace package sitting
- * outside that directory does not exist at install time and `bun install`
- * fails with "Workspace dependency @pixl/config not found". Generating a
- * self-contained file into each app sidesteps package resolution everywhere -
- * Railway, Vercel, the Godot export, and plain <script> tags all just work.
+ * Nothing imports "@pixl/config" at runtime, deliberately: on Orchard the
+ * server, Pixo and the internal dashboard build from their own `apps/<app>`
+ * Docker build context, so a workspace package sitting outside that directory
+ * does not exist at install time and `bun install` fails with "Workspace
+ * dependency @pixl/config not found". Generating a self-contained file into
+ * each app sidesteps package resolution everywhere - per-app Docker builds,
+ * the Godot export, and plain <script> tags all just work.
  *
  * Every target below is committed (the apps need them to build and run) but
  * generated. Hand-edits are overwritten on the next run. See README.md.

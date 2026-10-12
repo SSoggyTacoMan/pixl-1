@@ -371,7 +371,7 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 
 ## Deployment
 
-Pixorpheus runs as a single **Bun** process (`bun run src/index.ts` / `bun run start`), no build step. It's deployed on **Railway**, sharing its Supabase database with the rest of the monorepo, and auto-deploys from GitHub pushes to `main`.
+Pixorpheus runs as a single **Bun** process (`bun run src/index.ts` / `bun run start`), no build step. It's deployed on **Orchard** (Kubernetes, the `pixl-pixorpheus` deployment in the `ysws-pixl` namespace), built from its own `apps/pixorpheus` Docker context and sharing its Postgres database with the rest of the monorepo. Other services reach it in-cluster at `http://pixl-pixorpheus.ysws-pixl.svc.cluster.local:3000`.
 
 The Pixl server calls `POST /api/external/pixl-channel/join` with `x-api-key` and `{ "slackId": "U..." }` after a successful Hack Club login. The endpoint uses Pixorpheus's bot token to add the Slack member to `#pixl`; the caller's login remains valid if the bot is unavailable and retries next login.
 

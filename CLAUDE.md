@@ -18,7 +18,7 @@ Pixl is a Bun/Turborepo monorepo (`bun` workspaces: `apps/*`, `packages/*`) for 
 | `packages/docs-engine` | Bun/TypeScript | | Renders `docs/*.md` for Pixl Dashboard and builds OG preview cards. |
 | `packages/map-sync` | Bun/TypeScript | | Copies the game's baked world-map PNGs into the internal dashboard for the NPC spot-picker. |
 
-Everything deploys on Orchard (Kubernetes). Stale `vercel.json` files are not deploy config. Every env var on Orchard must be stored with `secret: true`.
+Everything deploys on Orchard (Kubernetes). Every env var on Orchard must be stored with `secret: true`.
 
 ### Boundaries (do not break these)
 

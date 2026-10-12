@@ -7,8 +7,8 @@ every app picks it up.
 ## Consuming it
 
 Nothing imports `@pixl/config` at runtime - not even the TypeScript apps.
-Railway and Vercel both build each app from its own `/apps/<app>` root, so a
-workspace package living outside that directory doesn't exist at install
+On Orchard most apps build from their own `apps/<app>` Docker build context,
+so a workspace package living outside that directory doesn't exist at install
 time there. Every consumer instead gets a *generated, committed copy*,
 written by the sync script:
 

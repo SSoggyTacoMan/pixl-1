@@ -84,7 +84,7 @@ Prizes are swappable for equivalent value. Shipping something entirely of your o
 
 ## Repository Structure
 
-Bun + Turborepo monorepo. Every app talks to the same [Supabase](https://supabase.com/) (Postgres) project directly rather than through a shared internal API, plus Hack Club Auth / Slack OAuth for identity. Deployed on [Orchard](https://orchard.my) (Kubernetes), not Vercel, despite some apps still shipping a `vercel.json` from an earlier deploy target.
+Bun + Turborepo monorepo. Every app talks to the same [Supabase](https://supabase.com/) (Postgres) project directly rather than through a shared internal API, plus Hack Club Auth / Slack OAuth for identity. Deployed on [Orchard](https://orchard.my) (Kubernetes).
 
 ```
 pixl/
@@ -115,7 +115,7 @@ pixl/
 
 ### Packages
 
-Shared code, each generating committed copies for the apps that can't import a workspace package directly (Vercel/per-app builds don't see outside their own app root):
+Shared code, each generating committed copies for the apps that can't import a workspace package directly (Orchard's per-app Docker builds don't see outside their own app root):
 
 | Package | Purpose |
 |---|---|
