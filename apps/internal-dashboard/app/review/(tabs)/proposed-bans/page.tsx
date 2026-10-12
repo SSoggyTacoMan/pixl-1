@@ -30,7 +30,7 @@ export default async function ProposedBansPage() {
       </p>
       <Card padding="flush">
         <CardHeader title="Proposed bans" icon="flag" count={rows.length} />
-        <ReviewTable rows={rows} handles={handles} emptyLabel="Nothing waiting on a ban decision right now." />
+        <ReviewTable makerLinks={access.isOwner} rows={rows} handles={handles} emptyLabel="Nothing waiting on a ban decision right now." />
       </Card>
     </div>
   );

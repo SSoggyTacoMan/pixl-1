@@ -87,7 +87,7 @@ export default async function FraudReviewsPage() {
             These passed a first review and are parked until Robert&apos;s fraud review lands. Read-only, nothing
             to action: they move on to Spot check automatically once his score is in.
           </p>
-          <TelescreenReviewTable
+          <TelescreenReviewTable makerLinks={access.isOwner}
             rows={awaiting}
             handles={handles}
             blackoutIds={blackoutIds}

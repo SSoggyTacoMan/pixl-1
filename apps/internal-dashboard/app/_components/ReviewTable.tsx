@@ -32,6 +32,7 @@ export function ReviewTable({
   hackatimeUserIds,
   emptyLabel = "Nothing here.",
   blackoutIds = [],
+  makerLinks = false,
 }: {
   rows: ShippedProject[];
   handles: Map<string, string>;
@@ -43,6 +44,8 @@ export function ReviewTable({
   emptyLabel?: string;
   /** Project ids that are Operation Blackout entries, shown with a badge. */
   blackoutIds?: number[];
+  /** Link each maker to their player page. Owners only: /players is theirs. */
+  makerLinks?: boolean;
 }) {
   const blackoutSet = new Set(blackoutIds);
   const router = useRouter();
@@ -115,7 +118,18 @@ export function ReviewTable({
               </div>
             </td>
             <td>
-              <span className="block max-w-[220px] truncate">{maker}</span>
+              {makerLinks && !live ? (
+                <Link
+                  href={`/players/${p.user_id}`}
+                  prefetch={false}
+                  className="hc-link block max-w-[220px] truncate"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {maker}
+                </Link>
+              ) : (
+                <span className="block max-w-[220px] truncate">{maker}</span>
+              )}
             </td>
             <td>
               <div className="flex flex-wrap items-center gap-1.5">

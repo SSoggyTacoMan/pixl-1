@@ -15,7 +15,7 @@ export default async function ReviewedPage() {
   return (
     <Card padding="flush">
       <CardHeader title="Reviewed" icon="history" count={rows.length} />
-      <ReviewTable rows={rows} handles={handles} emptyLabel="No projects reviewed yet." />
+      <ReviewTable makerLinks={access.isOwner} rows={rows} handles={handles} emptyLabel="No projects reviewed yet." />
     </Card>
   );
 }

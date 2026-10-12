@@ -193,10 +193,10 @@ export interface ProjectRow {
   second_pass_telescreen_checked: boolean;
   second_pass_hours_deflated: boolean;
   second_pass_heartbeats_added: boolean;
-  // Reviewer override that counts Hackatime hours from before the global
-  // hackatimeCutoff for this one project, see extendHoursCutoff in
-  // app/actions.ts. hours_extended_since is the "since" date used the last
-  // time it was applied; null means no override is in effect.
+  // A past reviewer override that counted Hackatime hours from before the
+  // global hackatimeCutoff for this one project. The override can no longer
+  // be set from the dashboard; these only describe ones already applied.
+  // hours_extended_since is the "since" date used; null means none.
   hours_extended_since: string | null;
   hours_extended_by: string;
   hours_extended_note: string;

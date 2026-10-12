@@ -1213,7 +1213,8 @@ export function ReviewForm({
           <Checkbox
             name="revealName"
             value="1"
-            label={'Show my name to the player in this verdict\'s notification (approved / needs changes). Unticked sends it as "the review team" instead.'}
+            defaultChecked
+            label={'Show my name to the player in this verdict\'s notification (approved / needs changes). Untick to send it as "the review team" instead.'}
           />
           <Checkbox
             name="notifyOnResubmit"

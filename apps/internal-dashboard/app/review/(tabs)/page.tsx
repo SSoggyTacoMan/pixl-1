@@ -141,7 +141,7 @@ export default async function ReviewListPage({
               </Link>
             ))}
           </div>
-          <ReviewTable
+          <ReviewTable makerLinks={access.isOwner}
             rows={masked(slice)}
             handles={handles}
             blackoutIds={blackoutIds}

@@ -40,7 +40,7 @@ export default async function SpotCheckPage() {
       </p>
       <Card padding="flush">
         <CardHeader title="Spot check" icon="checkmark" count={rows.length} />
-        <TelescreenReviewTable
+        <TelescreenReviewTable makerLinks={access.isOwner}
           rows={rows}
           handles={handles}
           blackoutIds={blackoutIds}

@@ -37,7 +37,6 @@ import {
   sendBackToFirstPass,
   unshipProject,
   toggleProjectPeak,
-  extendHoursCutoff,
   holdReview,
   releaseReviewHold,
   updateFundingAmount,
@@ -409,8 +408,6 @@ export default async function ReviewDetail({
     p.first_pass_hours != null && hours > 0 ? Math.round(((hours - p.first_pass_hours) / hours) * 100) : 0;
 
   const ageFlag = turnedNineteenSinceShipping(p.users?.birthday, shippedAt);
-  // One day before the global cutoff, for the extend-hours date input's max.
-  const maxExtendDateStr = new Date((hackatimeCutoffUnix - 86_400) * 1000).toISOString().slice(0, 10);
   const bounties: BountyOption[] = (
     (bountyEventsResult.data ?? []) as { id: number; name: string; config: Record<string, unknown> }[]
   ).map((ev) => ({
@@ -715,40 +712,6 @@ export default async function ReviewDetail({
         </Details>
       )}
 
-      {canReview && (
-        <Details summary="Extend hours cutoff">
-          <form action={extendHoursCutoff} className="flex flex-col gap-3">
-            <input type="hidden" name="projectId" value={p.id} />
-            <p className="hc-caption text-sm">
-              Normally only hours from {hackatimeCutoffLabel} onward count. If this project genuinely started earlier
-              and paused (verify against Hackatime&apos;s first-activity date), pick how far back to count from. This
-              re-pulls their Hackatime spans and raises the credited total, it never lowers it.
-            </p>
-            <Input
-              type="date"
-              name="since"
-              required
-              max={maxExtendDateStr}
-              defaultValue={
-                p.hours_extended_since ? new Date(p.hours_extended_since).toISOString().slice(0, 10) : undefined
-              }
-            />
-            <Textarea
-              name="note"
-              required
-              rows={2}
-              placeholder="Why count from this date (the player will see this in a DM)..."
-            />
-            <ActionButton
-              variant="outline"
-              pendingLabel="Extending..."
-              confirm="Recount this project's hours from that date? This only ever raises the credited total."
-            >
-              Extend cutoff
-            </ActionButton>
-          </form>
-        </Details>
-      )}
 
       {canReview && isFinalStage && (
         <Details summary="Send back to first pass">
@@ -957,9 +920,9 @@ export default async function ReviewDetail({
     {
       key: "notes",
       label: (
-        <span className="flex items-center gap-2">
+        <>
           Notes {notes.length > 0 && <CountBadge>{notes.length}</CountBadge>}
-        </span>
+        </>
       ),
       content: (
         <div className="pt-4">
@@ -1378,7 +1341,7 @@ export default async function ReviewDetail({
             </Callout>
           )}
 
-          <Tabs variant="segmented" tabs={rightTabs} />
+          <Tabs variant="segmented" sticky tabs={rightTabs} />
         </aside>
       </div>
 

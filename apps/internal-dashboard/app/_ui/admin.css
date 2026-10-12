@@ -820,6 +820,10 @@ html[data-theme="light"] .admin-shell {
 }
 
 .hc-segmented-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   height: 30px;
   background: transparent;
   border: 0;
@@ -1677,4 +1681,12 @@ html[data-density="compact"] .hc-main {
 .hc-switch:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Segmented tabs that stay put while their own panel scrolls (the review
+   page's right column). */
+.hc-segmented.hc-tabs-sticky {
+  top: 0;
+  border-radius: var(--radius-lg);
+  background: var(--sunken);
 }
