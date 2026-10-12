@@ -2,11 +2,8 @@ import crypto from "crypto";
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { app, receiver } from "../slack/app.js";
-import {
-  ensurePixlChannelMembership,
-  isSlackUserId,
-  type SlackConversationClient,
-} from "../slack/pixlMembership.js";
+import { ensurePixlChannelMembership, type SlackConversationClient } from "../slack/pixlMembership.js";
+import { isSlackTs, slackUserIdFromBody } from "./validate.js";
 import { PIXL_REVIEW_CHANNEL } from "../constants.js";
 import { resolveTicket } from "../tickets/service.js";
 
@@ -24,13 +21,6 @@ function requireExternalApiKey(req: Request, res: Response, next: NextFunction) 
   const valid = providedBuf.length === keyBuf.length && crypto.timingSafeEqual(providedBuf, keyBuf);
   if (!valid) return res.status(401).json({ error: "Invalid API key" });
   next();
-}
-
-function slackUserIdFromBody(body: unknown): string | null {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
-  if (!("slackId" in body) || typeof body.slackId !== "string") return null;
-  const slackId = body.slackId.trim();
-  return isSlackUserId(slackId) ? slackId : null;
 }
 
 const pixlMembershipClient: SlackConversationClient = {
@@ -70,9 +60,12 @@ receiver.app.post("/api/external/review-channel/join", express.json(), requireEx
 });
 
 receiver.app.post("/api/external/tickets/:ts/resolve", express.json(), requireExternalApiKey, async (req, res) => {
-  const ts = req.params.ts as string;
-  const slackId = req.body?.slackId?.trim();
-  if (!slackId) return res.status(400).json({ error: "Missing slackId" });
+  const ts = req.params.ts;
+  if (!isSlackTs(ts)) return res.status(400).json({ error: "Invalid ticket ts" });
+  // Validated like every other external route: the resolver's id ends up in
+  // a posted Slack message and the ticket row.
+  const slackId = slackUserIdFromBody(req.body);
+  if (!slackId) return res.status(400).json({ error: "Invalid Slack user ID" });
 
   try {
     const result = await resolveTicket(ts, slackId, app.client);

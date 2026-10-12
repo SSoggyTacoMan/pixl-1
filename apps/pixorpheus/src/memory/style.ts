@@ -11,13 +11,37 @@ export async function loadStyleMemory(): Promise<void> {
       .order("id", { ascending: false })
       .limit(1)
       .maybeSingle();
-    styleNotes = data?.notes || "";
+    // Legacy rows predate sanitizeStyleNotes, so clean them on load too.
+    styleNotes = sanitizeStyleNotes(data?.notes || "");
   } catch (e) {
     styleNotes = "";
   }
 }
 
-export async function saveStyleMemory(notes: string): Promise<void> {
+/** Saved style notes never exceed this (the prompt only reads 400 anyway). */
+export const STYLE_NOTES_MAX = 1500;
+
+/**
+ * Style notes are model output derived from chat messages and end up in
+ * every prompt, so they are stored as plain prose: every Slack control
+ * sequence (<!channel>, <@U...>, <#C...>, <https://...|label>, mailto:,
+ * slack://) and bare URL is removed, and the length is capped.
+ */
+export function sanitizeStyleNotes(notes: string): string {
+  return notes
+    .replace(/<[^>]*>/g, " ")
+    .replace(/<|>/g, " ")
+    .replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|mailto:|tel:|slack:|www\.)\S+/gi, " ")
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, STYLE_NOTES_MAX);
+}
+
+export async function saveStyleMemory(rawNotes: string): Promise<void> {
+  const notes = sanitizeStyleNotes(rawNotes);
+  if (!notes) return;
   styleNotes = notes;
   try {
     await db().from("style_memory").delete().gte("id", 1);

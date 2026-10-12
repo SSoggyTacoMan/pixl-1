@@ -3,7 +3,6 @@ import { app } from "../slack/app.js";
 import { aiPost, streamedAICall } from "../ai/client.js";
 import { getAIReply } from "../ai/persona.js";
 import { checkAiRateLimit, AI_RATE_LIMIT_MESSAGE } from "../ai/rateLimit.js";
-import { userMemory, parseFacts } from "../memory/users.js";
 import { botStats } from "../stats.js";
 import { escapeMrkdwn } from "../slack/escape.js";
 import { hasBannedLanguage } from "../ai/outputFilter.js";
@@ -25,17 +24,18 @@ app.command("/pixl-roast", async ({ command, ack, client }) => {
   let nameForAI = "this person";
   try {
     const info = await client.users.info({ user: targetId });
-    nameForAI = info.user?.profile?.display_name || info.user?.real_name || info.user?.name || "this person";
+    // Display name or handle only, never the real name.
+    nameForAI = info.user?.profile?.display_name || info.user?.name || "this person";
   } catch (e) {}
 
-  const memoryFacts = parseFacts(userMemory.get(targetId));
-  const memoryHint = memoryFacts?.length ? ` known facts: ${memoryFacts.join(", ")}.` : "";
+  // Never feed stored memory into a roast: memory is harvested from DMs and
+  // the target didn't ask for any of it to be aired in a channel.
   botStats.roasts++;
   await getAIReply(
     [
       {
         role: "user",
-        content: `write a single brutal, creative, funny roast sentence about "${nameForAI}".${memoryHint} do NOT start with "i don't know", "i've never met", or any disclaimer. just go straight in with the roast. be specific and unhinged.`,
+        content: `write a single brutal, creative, funny roast sentence about "${nameForAI}". do NOT start with "i don't know", "i've never met", or any disclaimer. just go straight in with the roast. be specific and unhinged.`,
       },
     ],
     null,

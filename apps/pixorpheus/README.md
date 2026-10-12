@@ -64,7 +64,7 @@ There is no separate dashboard process anymore - the standalone helper dashboard
 | `/pixl-fact` | Get a random surprising fact (AI-generated) |
 | `/pixl-urban [word]` | Urban Dictionary definition - AI-filtered to remove the worst ones |
 | `/pixl-ask [question]` | Ask Pixorpheus anything publicly |
-| `/pixl-roast [@user]` | Roast someone (or yourself) - pulls from memory for extra precision |
+| `/pixl-roast [@user]` | Roast someone (or yourself) - never uses stored memory |
 | `/pixl-remind [time] [message]` | Set a reminder - supports `s`, `min`, `h` (e.g. `/pixl-remind 10min grab lunch`) - max 24h |
 | `/pixl-countdown [time] [label]` | Countdown timer that posts to channel when it hits zero |
 | `/pixl-poll Question; Option1, Option2 [, 10min]` | Create a poll with emoji reactions - add a time at the end to auto-close it |
@@ -82,17 +82,17 @@ There is no separate dashboard process anymore - the standalone helper dashboard
 
 | Command | Description |
 |---|---|
-| `/pixl-mymemory [@user]` | See what Pixorpheus remembers about you (ephemeral) - or mention someone to show their profile publicly |
+| `/pixl-mymemory [@user]` | See what Pixorpheus remembers about you (ephemeral). Looking up someone else is admin-only (`SLACK_ADMIN_USER_IDS`), ephemeral and audited |
 | `/pixl-helpstats` | Ticket stats - total, open, resolved counts |
 
 ### Support Team Only
 
-These commands require being a helper, an admin (`SLACK_ADMIN_USER_IDS`), or a member of the ticket channel.
+`/pixl-addhelper` and `/pixl-removehelper` are admin-only (`SLACK_ADMIN_USER_IDS`, nobody if unset) and every attempt is written to `audit_log`. The rest require being a helper, an admin, or a member of the ticket channel.
 
 | Command | Description |
 |---|---|
-| `/pixl-addhelper @user` | Add someone to the helpers list |
-| `/pixl-removehelper @user` | Remove someone from the helpers list |
+| `/pixl-addhelper @user` | Add someone to the helpers list (admins only) |
+| `/pixl-removehelper @user` | Remove someone from the helpers list (admins only) |
 | `/pixl-helpers` | List all current helpers |
 | `/pixl-remember [fact]` | Teach Pixorpheus a fact about the server - injected into every AI reply (Gabin can also use this) |
 | `/pixl-forget [number]` | Remove a stored memory entry by number |
@@ -106,9 +106,9 @@ These are typed directly in a message (not slash commands). They only work in ch
 
 | Command | Where | Description |
 |---|---|---|
-| `pixo:kawaii` | Any channel Pixorpheus is in | Start listening mode - Pixorpheus begins collecting messages in that channel to learn the writing style |
-| `pixo:notkawaii` | Same channel | Stop listening mode - processes the collected messages and saves the speaking style |
-| `pixo:kawaii?` | Anywhere | Check if listening mode is active - shows the channel and how many messages have been collected (ephemeral) |
+| `pixo:kawaii` | Training channel, admins only | Start listening mode - Pixorpheus begins collecting admins' messages there to learn the writing style |
+| `pixo:notkawaii` | Training channel, admins only | Stop listening mode - processes the collected messages and saves the speaking style |
+| `pixo:kawaii?` | Training channel, admins only | Check if listening mode is active (ephemeral) |
 | `pixo:recap` | Any channel | Summarize the last 6 hours of messages in the channel, shown only to you (ephemeral). Use `pixo:recap today` to summarize since midnight, `pixo:recap 2h` for a custom timeframe (supports `min`, `h`, `d`). In a thread, it summarizes the thread instead. |
 | `pixo:compact` (also `pixo /compact`, `@Pixorpheus /compact`) | Any channel | Compact the day: summarizes everything since local midnight in that channel, posted as a real threaded reply (visible to everyone, not ephemeral). Use `pixo:compact yesterday` for the previous day's compact, pulled from the stored daily compact if one exists, computed live otherwise. Every day, right after midnight, Pixorpheus also silently generates and stores a compact of #pixl for the day that just ended (nothing is posted); this is what `pixo:compact yesterday` reads back. |
 
@@ -154,7 +154,7 @@ Messages are batched for 1.5 seconds (if mentioned) or 8 seconds (if chiming) to
 
 Pixorpheus automatically learns about people over time:
 
-- **Facts** - extracted from every conversation (name, projects, skills, interests, etc.). Stored per user in PostgreSQL. Up to 100 facts per person.
+- **Facts** - harmless interests and preferences only (projects, games, tech stack, opinions). Identity details (real name, age, location, school, pronouns, contact info, family, ...) are never extracted, and `src/memory/identityFilter.ts` drops them again at read time. Only the speaker's own facts are ever put in a reply's prompt. Stored per user in PostgreSQL, up to 100 facts per person.
 - **Personality traits** - extracted 20% of the time, capturing communication style (blunt, enthusiastic, chaotic, etc.)
 - **Server memory** - facts about the Pixl program added via `/pixl-remember` - injected into every AI reply
 - **Style notes** - learned from the listening/training system (see below) - also injected into every reply
@@ -271,14 +271,14 @@ Reactions on the original message: 🤔 = open, ✅ = resolved.
 
 ## Style Listening System
 
-> ⚠️ Only works in channels where Pixorpheus has been added (private channels or channels it's a member of).
+> Admins only (`SLACK_ADMIN_USER_IDS`), in the training channel only (`TRAINING_CHANNEL` in `src/constants.ts`). Anywhere else the phrases are ordinary messages.
 
 This system lets you train Pixorpheus's speaking style from real conversations.
 
 ### How to use
 
-1. Type `pixo:kawaii` in a channel - Pixorpheus confirms it's watching
-2. Talk normally in that channel - it collects all messages
+1. Type `pixo:kawaii` in the training channel - listening starts silently
+2. Talk normally there - it collects admins' messages
 3. Type `pixo:notkawaii` when done - Pixorpheus processes the messages and saves the style
 4. From now on, the style notes are injected into every AI reply
 
@@ -286,13 +286,13 @@ Only one listening session can be active at a time. Minimum 5 messages needed to
 
 ### Check status
 
-Type `pixo:kawaii?` anywhere - you'll get an ephemeral showing whether listening mode is on, which channel, and how many messages collected.
+Type `pixo:kawaii?` in the training channel - you'll get an ephemeral showing whether listening mode is on, which channel, and how many messages collected.
 
 ---
 
 ## Training Mode
 
-A more explicit style training flow, available only in the designated training channel (`TRAINING_CHANNEL` env var, hardcoded as `C0BD7JSTQNM`).
+A more explicit style training flow, admins only (`SLACK_ADMIN_USER_IDS`) and only in the designated training channel (`TRAINING_CHANNEL` in `src/constants.ts`, `C0BD7JSTQNM`). Saved style notes are stripped of Slack control sequences and links and capped at 1500 characters.
 
 | Command | Effect |
 |---|---|
@@ -351,7 +351,7 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 | `SLACK_HELP_CHANNEL` | Channel ID of the help channel where users post questions |
 | `SLACK_TICKET_CHANNEL` | Channel ID of the private ticket channel for the support team |
 | `SLACK_FAQ_URL` | URL to the FAQ (linked in the "Someone will be here soon!" message) |
-| `SLACK_ADMIN_USER_IDS` | Comma-separated Slack user IDs of admins (bypass helper checks) |
+| `SLACK_ADMIN_USER_IDS` | Comma-separated Slack user IDs of admins: manage helpers, read others' memory, style training. Empty means no admins (fail closed) |
 | `SLACK_USER_TOKEN` | User token (`xoxp-...`) for deleting macro messages in threads |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Supabase project URL + service key (shared with the other apps in this monorepo) |
 | `OPENROUTER_API_KEY` | OpenRouter API key (main AI + utility models) |

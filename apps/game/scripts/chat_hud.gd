@@ -41,17 +41,24 @@ var _img_regex := RegEx.create_from_string("\\[img\\b[^\\]]*\\][\\s\\S]*?\\[/img
 # Match any bbcode tag, for measuring the rendered text width.
 var _tag_regex := RegEx.create_from_string("\\[/?[a-zA-Z][^\\]]*\\]")
 
-# Escape brackets so names / system text can't inject bbcode.
+# Escape brackets so names, player messages and system text can't inject
+# bbcode. Only "[" needs escaping (a lone "]" can't open a tag). The old
+# version also replaced "]" afterwards, which turned the "]" of the "[lb]" it
+# had just inserted into "[rb]" and rendered "[" as garbage.
 func _bb_escape(s: String) -> String:
-	return s.replace("[", "[lb]").replace("]", "[rb]")
+	return s.replace("[", "[lb]")
 
-# Keep formatting bbcode in a message but drop images.
+# Player-authored text: images dropped, then every bracket escaped so other
+# players' messages can never render tags ([url], [color], fake system lines).
+# Only text the client itself builds (system lines, the DM prefix) keeps bbcode.
 func _sanitize_bb(s: String) -> String:
-	return _img_regex.sub(s, "", true)
+	return _bb_escape(_img_regex.sub(s, "", true))
 
-# Plain text (tags removed) for width measurement.
+# Plain text (tags removed) for width measurement. Escaped brackets are
+# swapped out first so the tag regex doesn't eat "[lb]"/"[rb]" as tags.
 func _strip_bb(s: String) -> String:
-	return _tag_regex.sub(s, "", true).replace("[lb]", "[").replace("[rb]", "]")
+	var t := s.replace("[lb]", char(1)).replace("[rb]", char(2))
+	return _tag_regex.sub(t, "", true).replace(char(1), "[").replace(char(2), "]")
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS

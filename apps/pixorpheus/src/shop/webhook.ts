@@ -1,6 +1,9 @@
 import crypto from "crypto";
 import express from "express";
 import { app, receiver } from "../slack/app.js";
+import { diffLines, region, render, requestIdFrom, RecentIds, type Bucket, type WebhookPayload } from "./format.js";
+
+const seenRequestIds = new RecentIds();
 
 // Where shop-change notifications go. Defaults to the #shop-changes channel
 // the team asked for; override with SHOP_NOTIFY_CHANNEL if it ever moves.
@@ -11,132 +14,6 @@ const SHOP_CHANNEL = process.env.SHOP_NOTIFY_CHANNEL || "C0BA5SAEZQS";
 // webhook per region, all within a few ms. Buffer briefly and collapse
 // identical changes into a single message that lists the regions.
 const AGGREGATION_WINDOW_MS = 2000;
-
-// Supabase Database Webhook payload for a table change.
-type ShopRow = {
-  id: number;
-  name: string;
-  description: string;
-  price: number;
-  image_url: string;
-  options: unknown;
-  active: boolean;
-  position: number;
-  created_by: string;
-  region?: string | null;
-  unlock_xp?: number | null;
-  unlock_trial_ids?: unknown[] | null;
-  manual_locked?: boolean | null;
-  lock_note?: string | null;
-  beacon_locked?: boolean | null;
-  discount_percent?: number | null;
-};
-
-type WebhookPayload = {
-  type: "INSERT" | "UPDATE" | "DELETE";
-  table: string;
-  schema: string;
-  record: ShopRow | null;
-  old_record: ShopRow | null;
-};
-
-// Stable display order for regions in a grouped message.
-const REGION_ORDER = [
-  "US",
-  "NORTH_AMERICA",
-  "SOUTH_AMERICA",
-  "EUROPE",
-  "ASIA",
-  "INDIA",
-  "AFRICA",
-  "BANGLADESH",
-];
-
-const px = (n: number | null | undefined) => `${n ?? 0}px`;
-const region = (r: ShopRow) => r.region || "US";
-
-function sortRegions(regions: Iterable<string>): string[] {
-  return [...new Set(regions)].sort((a, b) => {
-    const ia = REGION_ORDER.indexOf(a);
-    const ib = REGION_ORDER.indexOf(b);
-    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b);
-  });
-}
-
-/** `US`, `EUROPE`, `ASIA` → "`US` `EUROPE` `ASIA`" */
-function regionTags(regions: Iterable<string>): string {
-  return sortRegions(regions)
-    .map((r) => `\`${r}\``)
-    .join(" ");
-}
-
-/** Truncate long text (descriptions) so a message stays readable. */
-function short(s: string, max = 140): string {
-  const t = (s ?? "").replace(/\s+/g, " ").trim();
-  return t.length > max ? t.slice(0, max - 1) + "…" : t;
-}
-
-/** Human-readable list of what changed between two rows on an UPDATE.
- *  Only region-independent fields go here, so the same edit across regions
- *  produces identical lines (and therefore groups into one message). */
-function diffLines(oldRow: ShopRow, newRow: ShopRow): string[] {
-  const lines: string[] = [];
-
-  if (oldRow.name !== newRow.name) {
-    lines.push(`• name: *${oldRow.name}* → *${newRow.name}*`);
-  }
-  if (oldRow.price !== newRow.price) {
-    lines.push(`• price: ${px(oldRow.price)} → ${px(newRow.price)}`);
-  }
-  if ((oldRow.description ?? "") !== (newRow.description ?? "")) {
-    lines.push(`• description:\n> _${short(oldRow.description)}_\n> ↳ ${short(newRow.description)}`);
-  }
-  if (!!oldRow.active !== !!newRow.active) {
-    lines.push(`• ${newRow.active ? "activated ✅ (now visible in shop)" : "deactivated 🚫 (hidden from shop)"}`);
-  }
-  if ((oldRow.image_url ?? "") !== (newRow.image_url ?? "")) {
-    lines.push(`• image updated`);
-  }
-  if (JSON.stringify(oldRow.options) !== JSON.stringify(newRow.options)) {
-    lines.push(`• options changed`);
-  }
-  if ((oldRow.position ?? 0) !== (newRow.position ?? 0)) {
-    lines.push(`• position: ${oldRow.position ?? 0} → ${newRow.position ?? 0}`);
-  }
-  if (!!oldRow.manual_locked !== !!newRow.manual_locked) {
-    lines.push(
-      newRow.manual_locked
-        ? `• 🔒 manually locked${newRow.lock_note ? ` - _${short(newRow.lock_note, 100)}_` : ""}`
-        : "• 🔓 manual lock removed",
-    );
-  }
-  if (!!oldRow.beacon_locked !== !!newRow.beacon_locked) {
-    lines.push(
-      newRow.beacon_locked
-        ? "• 🔒 Beacon-locked (needs an unspent Beacon-project unlock)"
-        : "• 🔓 Beacon lock removed",
-    );
-  }
-  if (JSON.stringify(oldRow.unlock_trial_ids ?? []) !== JSON.stringify(newRow.unlock_trial_ids ?? [])) {
-    lines.push("• Trial gate changed");
-  }
-  if ((oldRow.discount_percent ?? 0) !== (newRow.discount_percent ?? 0)) {
-    const pct = newRow.discount_percent ?? 0;
-    lines.push(pct > 0 ? `• 🏷️ discount: ${pct}% off` : "• discount removed");
-  }
-
-  return lines;
-}
-
-// ── Aggregation buffer ──────────────────────────────────────────────────────
-// One bucket per distinct change, keyed so identical edits across regions merge.
-type Bucket = {
-  kind: WebhookPayload["type"];
-  name: string;
-  regions: Set<string>;
-  lines: string[]; // UPDATE: the shared diff
-  prices: Map<string, number>; // INSERT: region → price (prices differ per region)
-};
 
 const buckets = new Map<string, Bucket>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -171,32 +48,6 @@ async function flush(): Promise<void> {
       console.error("[shop-webhook] post failed:", e?.message ?? e);
     }
   }
-}
-
-function render(b: Bucket): string {
-  const tags = regionTags(b.regions);
-  const n = b.regions.size;
-  const regionWord = n === 1 ? "region" : "regions";
-
-  if (b.kind === "INSERT") {
-    // Prices differ per region, so list each one; collapse if they're all equal.
-    const uniquePrices = new Set(b.prices.values());
-    if (uniquePrices.size <= 1) {
-      const p = [...uniquePrices][0];
-      return `🆕 *New shop item* - *${b.name}* · ${px(p)} · ${n} ${regionWord}: ${tags}`;
-    }
-    const list = sortRegions(b.regions)
-      .map((r) => `• \`${r}\` - ${px(b.prices.get(r))}`)
-      .join("\n");
-    return `🆕 *New shop item* - *${b.name}* · added to ${n} ${regionWord}:\n${list}`;
-  }
-
-  if (b.kind === "DELETE") {
-    return `🗑️ *Shop item removed* - *${b.name}* · ${n} ${regionWord}: ${tags}`;
-  }
-
-  // UPDATE
-  return `✏️ *Shop item updated* - *${b.name}* · ${n} ${regionWord}: ${tags}\n${b.lines.join("\n")}`;
 }
 
 function handleShopChange(payload: WebhookPayload): void {
@@ -244,6 +95,12 @@ function handleShopChange(payload: WebhookPayload): void {
 // header in the Supabase webhook config / trigger). The secret is required,
 // without it configured, the endpoint refuses all requests rather than
 // accepting unverified ones.
+//
+// Known limitation: a static shared secret has no timestamp or body
+// signature, so a captured request can be replayed. Requests carrying an id
+// (x-pixl-request-id / x-request-id / idempotency-key / body.request_id) are
+// deduplicated; moving the sender (internal dashboard) to a timestamped HMAC
+// is the real fix and needs a coordinated change on both sides.
 receiver.app.post("/webhooks/shop", express.json({ limit: "1mb" }), (req, res) => {
   const secret = process.env.SHOP_WEBHOOK_SECRET;
   if (!secret) {
@@ -255,6 +112,10 @@ receiver.app.post("/webhooks/shop", express.json({ limit: "1mb" }), (req, res) =
   const secretBuf = Buffer.from(secret);
   if (providedBuf.length !== secretBuf.length || !crypto.timingSafeEqual(providedBuf, secretBuf)) {
     return res.status(401).send("Invalid secret");
+  }
+  const requestId = requestIdFrom(req.headers, req.body);
+  if (requestId && seenRequestIds.checkAndRecord(requestId)) {
+    return res.status(200).send("duplicate");
   }
   res.status(200).send("ok");
   try {

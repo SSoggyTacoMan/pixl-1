@@ -7,13 +7,19 @@
 #
 # --production is safe here: every @slack/web-api and @slack/types import in
 # src/ is `import type`, which Bun erases, so nothing resolves them at runtime.
-# There is no bun.lock in this app, so the install resolves fresh.
+#
+# The install is pinned by this app's own standalone bun.lock (not the root
+# workspace lock - the build context is this folder). After changing
+# package.json, regenerate it the same way as apps/server's: copy package.json
+# to a temp dir, run `bun install` with this image's Bun version (1.3.13, so
+# the lockfile format matches), check `bun install --frozen-lockfile`, and
+# copy bun.lock back. CI verifies it stays in sync.
 
 FROM oven/bun:1.3.13
 WORKDIR /app
 
-COPY package.json ./
-RUN bun install --production
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
 
 COPY . .
 RUN chown -R bun:bun /app

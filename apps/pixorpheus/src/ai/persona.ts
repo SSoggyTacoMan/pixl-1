@@ -3,7 +3,7 @@ import { extractReaction } from "./emoji.js";
 import { config, hasLaunched, launchDateLabel, pxPerHourFor } from "../config.generated.js";
 import { PIXL_MAIN_CHANNEL } from "../constants.js";
 import type { AIMessage, AIReplyResult, StreamTarget, ThreadContext } from "./types.js";
-import { userMemory, personalityMemory, getDisplayName, parseFacts } from "../memory/users.js";
+import { getDisplayName, getSafeFacts, getSafeTraits } from "../memory/users.js";
 import { programMemory } from "../memory/program.js";
 import { styleNotes } from "../memory/style.js";
 import { botIdentity } from "../slack/identity.js";
@@ -12,6 +12,25 @@ import { botIdentity } from "../slack/identity.js";
 // hour target at the RE cap) - round to 2dp for anything printed in the
 // prompt so Pixo doesn't parrot back a long float.
 const reRate = (n: number) => String(Math.round(n * 100) / 100);
+
+/**
+ * The stored-memory block for a reply: facts ONLY about the person being
+ * replied to (the history's other participants and anyone @-mentioned are
+ * never looked up), filtered through the identity filter. Exported for tests.
+ */
+export function speakerFactsBlock(userId: string | null): string | null {
+  // Facts about anyone else mentioned in the history used to be included
+  // too, which let one user pull another user's DM-derived memory into a
+  // public channel just by @-mentioning them.
+  if (!userId) return null;
+  const facts = getSafeFacts(userId).slice(0, 20);
+  const traits = getSafeTraits(userId).slice(0, 3);
+  if (!facts.length && !traits.length) return null;
+  const name = getDisplayName(userId) || "the person you're replying to";
+  const lines = [`${name}:`, ...facts.map((f) => `- ${f}`)];
+  if (traits.length) lines.push(`  vibe: ${traits.join(", ")}`);
+  return lines.join("\n");
+}
 
 /**
  * streamTarget (optional): when given, the reply is posted as a placeholder
@@ -90,26 +109,9 @@ export async function getAIReply(
 REACT RULE: if you want to REACT to the message that triggered your reply (add an emoji reaction to it), add exactly this on a NEW LINE at the VERY END of your response: REACT: :emoji_name:, one emoji from the list above, only when it genuinely fits. Omit the REACT line completely if nothing fits. Never explain the reaction.
 FINAL LENGTH CHECK: before sending, ask yourself, is this shorter than 2 sentences? if not, cut it. default to 2-5 words. a reaction, a quick take. nothing more unless explicitly asked for details.`;
 
-  // Only include the current user's facts (full) + other users mentioned in history (brief)
-  const mentionedUids = new Set<string>();
-  if (userId) mentionedUids.add(userId);
-  for (const msg of history) {
-    const m = (msg.content || "").matchAll(/<@([A-Z0-9]+)>/g);
-    for (const match of m) mentionedUids.add(match[1]);
-  }
-  const allUserFacts: string[] = [];
-  for (const uid of mentionedUids) {
-    const ufacts = userMemory.get(uid);
-    if (!ufacts?.length) continue;
-    const name = getDisplayName(uid) || uid;
-    const facts = parseFacts(ufacts).slice(0, uid === userId ? 20 : 8);
-    const traits = parseFacts(personalityMemory.get(uid)).slice(0, 3);
-    let entry = `${name}:\n${facts.map((f) => `- ${f}`).join("\n")}`;
-    if (traits.length) entry += `\n  vibe: ${traits.join(", ")}`;
-    allUserFacts.push(entry);
-  }
+  const speakerFacts = speakerFactsBlock(userId);
   let memoryBlock = [
-    allUserFacts.length ? `PEOPLE IN THIS CONVO:\n${allUserFacts.join("\n")}` : null,
+    speakerFacts ? `THE PERSON YOU ARE REPLYING TO:\n${speakerFacts}` : null,
     programMemory.length ? `SERVER FACTS:\n${programMemory.map((f) => `- ${f}`).join("\n")}` : null,
     styleNotes ? `YOUR STYLE: ${styleNotes.slice(0, 400)}` : null,
     searchResults ? `WEB SEARCH:\n${searchResults.slice(0, 1500)}` : null,
@@ -201,7 +203,7 @@ FINAL LENGTH CHECK: before sending, ask yourself, is this shorter than 2 sentenc
         ) ||
         /^\d+\.\s/.test(content);
       if (isLeak) {
-        console.warn("[getAIReply] reasoning/prompt leak detected - discarding:", content.slice(0, 60));
+        console.warn("[getAIReply] reasoning/prompt leak detected - discarding, length:", content.length);
         if (stream) await stream.discard();
       } else {
         const result = extractReaction(content);
@@ -209,7 +211,7 @@ FINAL LENGTH CHECK: before sending, ask yourself, is this shorter than 2 sentenc
         return result;
       }
     } else {
-      console.warn("[getAIReply] empty content from model - raw:", JSON.stringify(rawContent)?.slice(0, 120));
+      console.warn("[getAIReply] empty content from model - raw length:", rawContent.length);
       if (stream) await stream.discard();
     }
   } catch (e) {

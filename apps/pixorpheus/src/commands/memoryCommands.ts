@@ -3,7 +3,9 @@ import { GABIN_ID } from "../constants.js";
 import { aiPost } from "../ai/client.js";
 import { sanitizeAIOutput } from "../ai/outputFilter.js";
 import { checkAiRateLimit, AI_RATE_LIMIT_MESSAGE } from "../ai/rateLimit.js";
-import { userMemory, personalityMemory, parseFacts, getDisplayName, GARBAGE_PATTERNS } from "../memory/users.js";
+import { getSafeFacts, getSafeTraits, getDisplayName, GARBAGE_PATTERNS } from "../memory/users.js";
+import { isSlackAdmin } from "../slack/admins.js";
+import { audit } from "../audit.js";
 import { programMemory, addProgramFact, removeProgramFact } from "../memory/program.js";
 import { checkIsHelper, checkIsInTicketChannel } from "../tickets/service.js";
 
@@ -80,16 +82,24 @@ app.command("/pixl-mymemory", async ({ command, ack, respond }) => {
   const targetId = mentionMatch ? mentionMatch[1] : command.user_id;
   const isSelf = targetId === command.user_id;
 
-  // Memory is harvested from private DMs and can contain sensitive facts,
-  // only the subject themself or a helper/admin can look it up.
-  if (!isSelf && !(await checkIsHelper(command.user_id))) {
-    await respond({ text: "you can only look up your own memory.", response_type: "ephemeral" });
-    return;
+  // Memory is harvested from private DMs, so only the subject themself or a
+  // Pixl admin (SLACK_ADMIN_USER_IDS, env only) can look it up. Helpers and
+  // ticket-channel members no longer can, and every cross-user lookup is
+  // audited.
+  if (!isSelf) {
+    const admin = isSlackAdmin(command.user_id);
+    await audit(
+      { action: "memory.read_other", slackId: command.user_id, target: `slack:${targetId}`, result: admin ? "ok" : "denied" },
+      admin,
+    );
+    if (!admin) {
+      await respond({ text: "you can only look up your own memory.", response_type: "ephemeral" });
+      return;
+    }
   }
 
-  const list = parseFacts(userMemory.get(targetId));
-  const traitList = parseFacts(personalityMemory.get(targetId));
-  const cleanFacts = list.filter((f) => !GARBAGE_PATTERNS.some((p) => p.test(f)));
+  const traitList = getSafeTraits(targetId);
+  const cleanFacts = getSafeFacts(targetId).filter((f) => !GARBAGE_PATTERNS.some((p) => p.test(f)));
 
   const displayName = getDisplayName(targetId) || (isSelf ? "you" : `<@${targetId}>`);
 

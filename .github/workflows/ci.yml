@@ -46,12 +46,12 @@ jobs:
       - name: Install (workspace)
         run: bun install --frozen-lockfile
 
-      # apps/server and apps/internal-dashboard build from their own folder in
-      # Docker with --frozen-lockfile, so their standalone lockfiles must stay
-      # in sync with package.json too.
+      # apps/server, apps/internal-dashboard and apps/pixorpheus build from
+      # their own folder in Docker with --frozen-lockfile, so their standalone
+      # lockfiles must stay in sync with package.json too.
       - name: Verify standalone lockfiles
         run: |
-          for app in server internal-dashboard; do
+          for app in server internal-dashboard pixorpheus; do
             tmp="$(mktemp -d)"
             cp "apps/$app/package.json" "apps/$app/bun.lock" "$tmp/"
             (cd "$tmp" && bun install --frozen-lockfile --ignore-scripts > /dev/null)

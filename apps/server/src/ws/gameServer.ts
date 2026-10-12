@@ -226,6 +226,25 @@ const SAVE_INTERVAL_MS = 5000;
 // never broadcast, store, or reach any client.
 const IMG_TAG_RE = /\[img\b[^\]]*\][\s\S]*?\[\/img\]/gi;
 
+/**
+ * Normalizes player-authored chat/DM text before it is stored or broadcast.
+ * The Godot client renders chat in RichTextLabels with BBCode on, so a raw
+ * "[" let any player inject tags ([url], [color], [font_size], fake system
+ * lines) into everyone else's chat. Square brackets become parentheses here:
+ * the client also escapes player text, this is the server-side half so older
+ * clients and anything else reading chat_messages are covered too.
+ * Exported for tests.
+ */
+export function sanitizePlayerChat(input: unknown, max: number): string {
+  return String(input ?? "")
+    .replace(IMG_TAG_RE, " ")
+    .replace(/\[/g, "(")
+    .replace(/\]/g, ")")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
 function broadcastToScene(
   scene: string,
   message: object,
@@ -1048,11 +1067,7 @@ export function attachWebSocketServer(httpServer: Server) {
       }
 
       if (msg.type === "chat") {
-        const raw = String(msg.text ?? "")
-          .replace(IMG_TAG_RE, " ")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 280);
+        const raw = sanitizePlayerChat(msg.text, 280);
 
         if (/^\/pixo(\s|$)/i.test(raw)) {
           const question = raw.replace(/^\/pixo\s*/i, "").trim();
@@ -1126,11 +1141,7 @@ export function attachWebSocketServer(httpServer: Server) {
 
       if (msg.type === "dm") {
         const targetName = String(msg.to ?? "").trim();
-        const raw = String(msg.text ?? "")
-          .replace(IMG_TAG_RE, " ")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 200);
+        const raw = sanitizePlayerChat(msg.text, 200);
         if (!targetName || !raw) return;
         const text = censorChat(raw);
         if (text !== raw) void punishChat(player, ws, raw);
