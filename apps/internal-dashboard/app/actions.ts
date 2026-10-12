@@ -2460,7 +2460,7 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
   let journalShareUrl = "";
   if ((journalCount ?? 0) > 0) {
     const token = await ensureJournalShareToken(projectId);
-    if (token) journalShareUrl = `${config.urls.play}/journals/${projectId}/${token}`;
+    if (token) journalShareUrl = `${config.urls.site}/journals/${projectId}/${token}`;
   }
 
   const { data: collabRows, error: collabError } = await db

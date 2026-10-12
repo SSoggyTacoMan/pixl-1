@@ -3,6 +3,7 @@ import { dmOrEmail } from "@/lib/notify";
 import { dmUser } from "@/lib/slack";
 import { pixorpheusUrl } from "@/lib/pixo";
 import { callPixo } from "@/lib/pixoCall";
+import { config } from "@/app/_generated/config";
 
 // Review verdicts (approved / changes requested) are announced publicly in the
 // review channel by Pixo instead of being DMed. Bans still use DMs.
@@ -10,8 +11,8 @@ import { callPixo } from "@/lib/pixoCall";
 // ever posts to the one fixed review channel.
 
 const GABIN_SLACK_ID = "U0A2SJ7B739";
-// The player-facing project page on the game site (served by apps/game).
-const PROJECT_PAGE_URL = "https://play.pixl.hackclub.com/project";
+// The public project page on Pixl Dashboard (the game site has no player pages).
+const PROJECT_PAGE_URL = `${config.urls.site}/projects`;
 const SLACK_ID_RE = /^[UW][A-Z0-9]{5,20}$/;
 
 export type ReviewAnnouncementKind = "changes" | "first_pass" | "final";
