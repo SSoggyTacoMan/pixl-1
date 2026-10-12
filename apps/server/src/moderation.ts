@@ -4,6 +4,7 @@ import { verifySessionToken } from "./auth/session.js";
 import { bearerToken } from "./http/bearer.js";
 import { auditRequestThrottled } from "./audit.js";
 import { externalDmUrl } from "./pixoUrl.js";
+import { callPixo, type PixoCallDeps } from "./pixoCall.js";
 
 // Normalized roots (see normalize below): lowercase, leetspeak folded, symbols
 // stripped. Substring match, so common evasions like f.u-c_k or sh1t still hit.
@@ -305,27 +306,37 @@ const BAN_AFTER = 7;
 // same endpoint the dashboard uses.
 const EXTERNAL_DM_URL = externalDmUrl();
 
-// Slack DM as Pixo (same external API the dashboard uses). Fire-and-forget:
-// moderation must never fail because the DM did.
-async function dmSlack(userId: string, text: string): Promise<void> {
+// Slack DM as Pixo (same external API the dashboard uses). Never throws and
+// is never awaited by the moderation path: a stopped or unreachable Pixo is
+// logged and audited by callPixo and the warn/ban still lands.
+export async function sendModerationDm(slackId: string, text: string, deps?: PixoCallDeps): Promise<boolean> {
   const key = process.env.EXTERNAL_API_KEY;
-  if (!key || !EXTERNAL_DM_URL) return;
-  const { data: user } = await supabase
-    .from("users")
-    .select("slack_id")
-    .eq("id", userId)
-    .maybeSingle();
-  const slackId = (user?.slack_id as string) ?? "";
-  if (!slackId) return;
-  try {
-    await fetch(EXTERNAL_DM_URL, {
+  if (!key || !EXTERNAL_DM_URL || !slackId) return false;
+  const r = await callPixo(
+    "moderation.dm",
+    EXTERNAL_DM_URL,
+    {
       method: "POST",
       headers: { "x-api-key": key, "Content-Type": "application/json" },
       body: JSON.stringify({ userId: slackId, message: text }),
-      signal: AbortSignal.timeout(8000),
-    });
+    },
+    deps,
+  );
+  return r.ok;
+}
+
+async function dmSlack(userId: string, text: string): Promise<void> {
+  try {
+    if (!process.env.EXTERNAL_API_KEY) return;
+    const { data: user } = await supabase
+      .from("users")
+      .select("slack_id")
+      .eq("id", userId)
+      .maybeSingle();
+    const slackId = (user?.slack_id as string) ?? "";
+    if (slackId) await sendModerationDm(slackId, text);
   } catch (e) {
-    console.error("moderation dm failed", e);
+    console.error("moderation dm failed", (e as Error).message);
   }
 }
 
@@ -381,7 +392,7 @@ export async function recordChatViolation(
         title: "Banned from Pixl (1 week)",
         body,
       });
-      await dmSlack(userId, `You've been banned from Pixl for 1 week.\n\n${body}`);
+      void dmSlack(userId, `You've been banned from Pixl for 1 week.\n\n${body}`);
       return { count: n, warned: false, banned: true };
     }
     return { count: n, warned: true, banned: false };
@@ -393,7 +404,7 @@ export async function recordChatViolation(
       title: "Chat warning",
       body,
     });
-    await dmSlack(userId, `⚠ ${body}`);
+    void dmSlack(userId, `⚠ ${body}`);
     return { count: n, warned: true, banned: false };
   }
   return { count: n, warned: false, banned: false };

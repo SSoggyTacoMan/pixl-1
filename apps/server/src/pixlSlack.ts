@@ -1,4 +1,5 @@
 import { pixorpheusUrl } from "./pixoUrl.js";
+import { callPixo, type PixoCallDeps } from "./pixoCall.js";
 
 export interface PixorpheusSettings {
   readonly apiKey: string;
@@ -26,25 +27,24 @@ export async function requestPixlChannelEnrollment(
   settings: PixorpheusSettings,
   request: PixorpheusFetcher,
   path: string = "/api/external/pixl-channel/join",
+  deps: Omit<PixoCallDeps, "fetchImpl"> = {},
 ): Promise<PixlChannelEnrollment> {
   if (!settings.apiKey || !settings.url) return { kind: "not_configured" };
   const endpoint = enrollmentEndpoint(settings.url, path);
   if (!endpoint) return { kind: "failed" };
 
-  try {
-    const response = await request(endpoint, {
+  // Never throws; a stopped Pixo is logged + audited and the login goes on.
+  const r = await callPixo(
+    `pixl-channel ${path}`,
+    endpoint,
+    {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": settings.apiKey },
       body: JSON.stringify({ slackId }),
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (response.ok) return { kind: "enrolled" };
-    console.error("[pixl-slack] Pixorpheus enrollment failed", response.status);
-    return { kind: "failed" };
-  } catch (error) {
-    console.error("[pixl-slack] Pixorpheus enrollment request failed", error);
-    return { kind: "failed" };
-  }
+    },
+    { ...deps, fetchImpl: request },
+  );
+  return r.ok ? { kind: "enrolled" } : { kind: "failed" };
 }
 
 export async function enrollSlackPlayerInPixl(slackId: string): Promise<PixlChannelEnrollment> {

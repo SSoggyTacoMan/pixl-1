@@ -1,4 +1,5 @@
 import { externalDmUrl } from "@/lib/pixo";
+import { callPixo, type PixoCallDeps } from "@/lib/pixoCall";
 
 const API = "https://slack.com/api";
 
@@ -245,20 +246,28 @@ export async function postToChannel(channel: string, text: string): Promise<void
 // Relays a DM through Pixo's external DM API (POST /api/external/dm on
 // apps/pixorpheus). Used whenever EXTERNAL_API_KEY is set, at EXTERNAL_DM_URL
 // or Pixo's in-cluster address by default (lib/pixo.ts), never a public host.
-async function dmViaPixorpheus(url: string, key: string, userId: string, text: string): Promise<void> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "x-api-key": key, "Content-Type": "application/json" },
-    body: JSON.stringify({ userId, message: text }),
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!res.ok) {
-    let detail = "";
-    try {
-      detail = ((await res.json()) as { error?: string }).error ?? "";
-    } catch {}
-    throw new Error(`Pixorpheus DM failed (${res.status})${detail ? `: ${detail}` : ""}`);
-  }
+export type PixoDmOutcome = "sent" | "offline" | "rejected";
+
+// Never throws: Pixo being down is reported by callPixo (logged + audited).
+export async function dmViaPixorpheus(
+  url: string,
+  key: string,
+  userId: string,
+  text: string,
+  deps?: PixoCallDeps,
+): Promise<PixoDmOutcome> {
+  const r = await callPixo(
+    "dm",
+    url,
+    {
+      method: "POST",
+      headers: { "x-api-key": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, message: text }),
+    },
+    deps,
+  );
+  if (r.ok) return "sent";
+  return r.offline ? "offline" : "rejected";
 }
 
 // Slack ids the dashboard should never DM, regardless of reason (warn,
@@ -276,16 +285,25 @@ export const DM_EXCLUDED_SLACK_IDS = new Set<string>(["U09HNFFLFDF"]);
 // dashboard's own Slack bot (the token the tickets/avatar helpers use).
 // Pixo rejects Slack control syntax (<!here>, <https://...|label>), so DM
 // text here sticks to plain URLs and <@user> mentions.
-// A no-op (not a thrown error) for an excluded id - several callers don't
-// wrap this in try/catch, so throwing here would turn "don't DM this person"
-// into "break whatever action was trying to DM them".
-export async function dmUser(slackUserId: string, text: string): Promise<void> {
-  if (DM_EXCLUDED_SLACK_IDS.has(slackUserId)) return;
+// Never throws, so a DM can never break the staff action that sent it:
+// resolves true when the DM went out, false otherwise (already logged). An
+// excluded id is a no-op that resolves false. When Pixo is offline (stopped,
+// unreachable, timed out, 5xx) the DM falls back to the dashboard's own bot;
+// a DM Pixo rejected (4xx, e.g. control syntax) is not retried elsewhere.
+export async function dmUser(slackUserId: string, text: string): Promise<boolean> {
+  if (DM_EXCLUDED_SLACK_IDS.has(slackUserId)) return false;
   const key = process.env.EXTERNAL_API_KEY;
   if (key) {
-    await dmViaPixorpheus(externalDmUrl(), key, slackUserId, text);
-    return;
+    const outcome = await dmViaPixorpheus(externalDmUrl(), key, slackUserId, text);
+    if (outcome === "sent") return true;
+    if (outcome === "rejected" || !process.env.SLACK_BOT_TOKEN) return false;
   }
-  // chat.postMessage with a user id as the channel opens (or reuses) the IM.
-  await slackCall("chat.postMessage", { channel: slackUserId, text });
+  try {
+    // chat.postMessage with a user id as the channel opens (or reuses) the IM.
+    await slackCall("chat.postMessage", { channel: slackUserId, text });
+    return true;
+  } catch (e) {
+    console.error("dmUser: direct DM failed", (e as Error).message);
+    return false;
+  }
 }

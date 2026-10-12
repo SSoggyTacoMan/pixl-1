@@ -15,5 +15,5 @@ export const POST = guardedRoute<Ctx>("api.tickets.resolve", "helper", async (ac
     username: access.session.name,
   });
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: 502 });
-  return NextResponse.json({ ok: true, alreadyClosed: result.alreadyClosed ?? false });
+  return NextResponse.json({ ok: true, alreadyClosed: result.alreadyClosed ?? false, notice: result.notice ?? null });
 });

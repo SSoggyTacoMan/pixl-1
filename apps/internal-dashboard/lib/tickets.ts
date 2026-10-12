@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { isValidTicketTs } from "./requestGuards";
 import { externalTicketsUrl } from "./pixo";
+import { callPixo, PIXO_OFFLINE_MESSAGE, type PixoCallDeps } from "./pixoCall";
 
 export interface TicketStats {
   total: number;
@@ -308,7 +309,11 @@ export interface ResolveResult {
   ok: boolean;
   error?: string;
   alreadyClosed?: boolean;
+  /** Set when Pixo was offline and the dashboard resolved it on its own. */
+  notice?: string;
 }
+
+export const PIXO_OFFLINE_RESOLVE_NOTICE = `${PIXO_OFFLINE_MESSAGE} Resolved here instead; the Slack thread may not show it until Pixo is back.`;
 
 // Resolve a ticket via Pixorpheus's bot instead of the dashboard's own Slack
 // app , the dashboard's bot isn't reliably a member of the help channel (and
@@ -317,41 +322,62 @@ export interface ResolveResult {
 // channel and already has a working "Mark resolved" flow, so this just asks
 // it to replay that exact flow via its EXTERNAL_API_KEY-guarded API instead
 // of duplicating the Slack calls with a weaker token.
-async function resolveViaPixorpheus(
+// Never throws. Returns "offline" when Pixo didn't answer (stopped,
+// unreachable, timed out, 5xx) so the caller can resolve without it.
+export async function resolveViaPixorpheus(
   url: string,
   key: string,
   ts: string,
   actor: { slackId: string; username: string },
-): Promise<ResolveResult> {
+  deps?: PixoCallDeps,
+): Promise<ResolveResult | "offline"> {
   if (!isValidTicketTs(ts)) return { ok: false, error: "Invalid ticket id." };
-  const res = await fetch(`${url}/${encodeURIComponent(ts)}/resolve`, {
-    method: "POST",
-    headers: { "x-api-key": key, "Content-Type": "application/json" },
-    body: JSON.stringify({ slackId: actor.slackId, username: actor.username }),
-    signal: AbortSignal.timeout(8000),
-  });
-  if (res.ok) return { ok: true };
+  const r = await callPixo(
+    "tickets.resolve",
+    `${url}/${encodeURIComponent(ts)}/resolve`,
+    {
+      method: "POST",
+      headers: { "x-api-key": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ slackId: actor.slackId, username: actor.username }),
+    },
+    deps,
+  );
+  if (r.ok) return { ok: true };
+  if (r.offline || !r.res) return "offline";
   let msg = "";
   try {
-    msg = ((await res.json()) as { error?: string }).error ?? "";
+    msg = ((await r.res.json()) as { error?: string }).error ?? "";
   } catch {}
-  if (res.status === 400 && /already resolved/i.test(msg)) return { ok: true, alreadyClosed: true };
-  if (res.status === 404) return { ok: false, error: "No ticket found for this message." };
-  return { ok: false, error: msg || `Pixorpheus resolve failed (${res.status})` };
+  if (r.status === 400 && /already resolved/i.test(msg)) return { ok: true, alreadyClosed: true };
+  if (r.status === 404) return { ok: false, error: "No ticket found for this message." };
+  return { ok: false, error: msg || `Pixorpheus resolve failed (${r.status})` };
 }
 
 // Resolve a ticket straight from the dashboard. Routes through Pixorpheus
 // (see resolveViaPixorpheus) whenever EXTERNAL_API_KEY is configured, at
-// EXTERNAL_TICKETS_URL or Pixo's in-cluster address by default (lib/pixo.ts);
-// otherwise falls back to closing the row and running the Slack side-effects
-// directly from here, same as before.
+// EXTERNAL_TICKETS_URL or Pixo's in-cluster address by default (lib/pixo.ts).
+// Without the key, or when Pixo is offline, it closes the row and runs the
+// Slack side-effects directly from here (best-effort), so staff are never
+// blocked by Pixo being down.
 export async function resolveTicketFromDash(
   ts: string,
   actor: { slackId: string; username: string },
 ): Promise<ResolveResult> {
   if (!isValidTicketTs(ts)) return { ok: false, error: "Invalid ticket id." };
   const extKey = process.env.EXTERNAL_API_KEY;
-  if (extKey) return resolveViaPixorpheus(externalTicketsUrl(), extKey, ts, actor);
+  if (extKey) {
+    const viaPixo = await resolveViaPixorpheus(externalTicketsUrl(), extKey, ts, actor);
+    if (viaPixo !== "offline") return viaPixo;
+    const direct = await resolveDirectly(ts, actor);
+    return direct.ok && !direct.alreadyClosed ? { ...direct, notice: PIXO_OFFLINE_RESOLVE_NOTICE } : direct;
+  }
+  return resolveDirectly(ts, actor);
+}
+
+async function resolveDirectly(
+  ts: string,
+  actor: { slackId: string; username: string },
+): Promise<ResolveResult> {
 
   const { data: ticket, error: readError } = await db
     .from("tickets")

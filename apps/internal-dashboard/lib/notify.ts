@@ -33,12 +33,8 @@ export async function dmOrEmail(userId: string, subject: string, body: string): 
   const email = (user?.email as string | null) ?? null;
 
   if (slackId && !DM_EXCLUDED_SLACK_IDS.has(slackId)) {
-    try {
-      await dmUser(slackId, `<@${slackId}> ${subject}\n\n${body}`);
-      return;
-    } catch (e) {
-      console.error("DM failed, trying email", (e as Error).message);
-    }
+    if (await dmUser(slackId, `<@${slackId}> ${subject}\n\n${body}`)) return;
+    console.error("DM failed, trying email");
   }
   if (email) await sendEmail(email, `Pixl , ${subject}`, body);
 }

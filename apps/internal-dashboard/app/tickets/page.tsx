@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/table";
 import { PendingButton } from "@/app/_components/PendingButton";
 import { TicketsClient } from "./TicketsClient";
+import { pixorpheusUrl } from "@/lib/pixo";
+import { PIXO_OFFLINE_MESSAGE, pixoStatus } from "@/lib/pixoCall";
 import { TicketsActivityChart } from "./TicketsActivityChart";
 
 export const dynamic = "force-dynamic";
@@ -118,7 +120,7 @@ async function ResolverLeaderboard() {
 
 export default async function TicketsPage() {
   const access = await requirePage("helper");
-  const [stats, activity] = await Promise.all([ticketStats(), ticketActivity()]);
+  const [stats, activity, pixo] = await Promise.all([ticketStats(), ticketActivity(), pixoStatus(pixorpheusUrl())]);
 
   return (
     <div>
@@ -126,6 +128,13 @@ export default async function TicketsPage() {
       <p className="text-sm text-muted-foreground mb-6">
         Support requests from the Slack help channel. Reply in-thread or resolve from here.
       </p>
+
+      {pixo === "offline" && (
+        <div role="status" className="mb-6 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-foreground">
+          {PIXO_OFFLINE_MESSAGE} Tickets still load and can be resolved here, but resolves are saved by the dashboard
+          and the Slack thread may not show them until Pixo is back.
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-3 mb-6 max-w-lg">
         <StatCard label="Total" value={stats.total} />

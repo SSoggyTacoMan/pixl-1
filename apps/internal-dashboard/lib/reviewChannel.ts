@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { dmOrEmail } from "@/lib/notify";
 import { dmUser } from "@/lib/slack";
 import { pixorpheusUrl } from "@/lib/pixo";
+import { callPixo } from "@/lib/pixoCall";
 
 // Review verdicts (approved / changes requested) are announced publicly in the
 // review channel by Pixo instead of being DMed. Bans still use DMs.
@@ -83,19 +84,13 @@ export function reviewerToTag(reviewerSlackId: string, revealName: boolean): str
 async function postToReviewChannel(message: string): Promise<boolean> {
   const key = process.env.EXTERNAL_API_KEY;
   if (!key) return false;
-  try {
-    const res = await fetch(`${pixorpheusUrl()}/api/external/review-post`, {
-      method: "POST",
-      headers: { "x-api-key": key, "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) console.error("review channel post failed", res.status);
-    return res.ok;
-  } catch (e) {
-    console.error("review channel post failed", (e as Error).message);
-    return false;
-  }
+  // Never throws; when Pixo is offline the caller falls back to DMs/email.
+  const r = await callPixo("review-post", `${pixorpheusUrl()}/api/external/review-post`, {
+    method: "POST",
+    headers: { "x-api-key": key, "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  return r.ok;
 }
 
 export interface ReviewAnnouncement {

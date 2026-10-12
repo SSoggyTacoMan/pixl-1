@@ -200,7 +200,7 @@ export function TicketsClient() {
       const res = await fetch(`/api/tickets/${ts}/resolve`, { method: "POST" });
       const data = await res.json();
       if (res.ok && data.ok) {
-        setRowStatus({ msg: data.alreadyClosed ? "Already resolved" : "Resolved", kind: "ok" });
+        setRowStatus({ msg: data.notice || (data.alreadyClosed ? "Already resolved" : "Resolved"), kind: "ok" });
         loadTickets();
         loadThread(ts, true);
       } else {

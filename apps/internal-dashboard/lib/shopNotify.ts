@@ -1,4 +1,5 @@
 import { pixorpheusUrl } from "@/lib/pixo";
+import { callPixo } from "@/lib/pixoCall";
 
 // Shop-change notifications for pixorpheus (the Slack bot).
 //
@@ -11,12 +12,6 @@ import { pixorpheusUrl } from "@/lib/pixo";
 //
 // The payload deliberately keeps the exact shape a Supabase Database Webhook
 // would send, so pixorpheus' /webhooks/shop handler needs no changes.
-
-
-// pixorpheus answers 200 and processes asynchronously, so this is quick. It
-// must never block or fail a shop mutation, the write already succeeded by the
-// time we get here.
-const TIMEOUT_MS = 5000;
 
 export interface ShopRowSnapshot {
   id: number;
@@ -52,28 +47,22 @@ async function post(
     }
     return;
   }
-  try {
-    const res = await fetch(`${pixorpheusUrl()}/webhooks/shop`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-shop-webhook-secret": secret,
-      },
-      body: JSON.stringify({
-        type,
-        table: "shop_items",
-        schema: "public",
-        record,
-        old_record: oldRecord,
-      }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      console.error(`[shop-notify] pixorpheus returned ${res.status} for ${type}`);
-    }
-  } catch (e: unknown) {
-    console.error("[shop-notify]", e instanceof Error ? e.message : e);
-  }
+  // Never throws and never fails the shop write; a down Pixo is logged and
+  // audited by callPixo and the change simply isn't announced.
+  await callPixo(`shop-notify ${type}`, `${pixorpheusUrl()}/webhooks/shop`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-shop-webhook-secret": secret,
+    },
+    body: JSON.stringify({
+      type,
+      table: "shop_items",
+      schema: "public",
+      record,
+      old_record: oldRecord,
+    }),
+  });
 }
 
 export async function notifyShopInsert(row: ShopRowSnapshot): Promise<void> {
