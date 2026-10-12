@@ -25,7 +25,7 @@ export function ProjectCard({ p, owner, canVote = true }: { p: ExploreProject; o
   return (
     <article className="proj-card" aria-label={p.name}>
       <div className="pc-photo">
-        <SafeImage src={p.image_url} />
+        <SafeImage player src={p.image_url} />
       </div>
       <div className="pc-avatar">
         <Avatar name={who.display_name} url={who.avatar_url} />

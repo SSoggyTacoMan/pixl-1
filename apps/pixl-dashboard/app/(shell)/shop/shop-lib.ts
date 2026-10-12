@@ -136,7 +136,9 @@ export function lockReason(item: ShopItem): string {
   if (item.lock_note) return item.lock_note;
   if (item.beacon_locked) return "Get a project nominated as a Beacon to unlock this.";
   const trials = (item.unlock_trials ?? []).map((t) => `"${t}"`).join(" or ");
-  return `Ship ${trials || "the required Trial"} to unlock this.`;
+  // Trial-gated items unlock once the Trial project is APPROVED in review,
+  // not merely shipped (apps/server's shop gate).
+  return `Get ${trials || "the required Trial"} approved to unlock this.`;
 }
 
 /** "Added Sep 19", formatted in UTC so it's the same day everywhere. */

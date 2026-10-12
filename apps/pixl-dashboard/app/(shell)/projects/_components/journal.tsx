@@ -9,9 +9,8 @@ import { deleteJournal, editJournal, postJournal } from "../collab-actions";
 import { projectError, projectErrorWith } from "../errors";
 import { timeAgo } from "../format";
 import type { JournalEntry } from "../types";
+import { journalDraftKey as draftKey } from "@/lib/local-state";
 import { JournalForm, type JournalDraft } from "./journal-form";
-
-const draftKey = (id: number) => `pixl_journal_draft_${id}`;
 
 function readDraft(id: number): JournalDraft {
   try {

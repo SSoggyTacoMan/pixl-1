@@ -55,6 +55,7 @@ export function timeAgo(iso: string): string {
 export function postError(code: string): string {
   if (code === "blocked_content") return "That idea contains blocked content.";
   if (code === "title_too_short") return "Give it a title (3+ characters).";
+  if (code === "invalid_image_url") return "Images must be uploaded through Pixl (re-upload this image).";
   return "Couldn't post that idea.";
 }
 

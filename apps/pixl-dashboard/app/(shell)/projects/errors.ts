@@ -30,6 +30,12 @@ const ERRORS: Record<string, string> = {
   project_required: "Save the project before uploading a BOM.",
   unsupported_type: "That file type isn't supported, use PNG, JPG, or WebP.",
   empty_body: "That upload came through empty, try again.",
+  // Any image URL not on the Hack Club CDN (thumbnail, journal images, cart
+  // screenshots): the server rejects it so nobody can track viewers.
+  invalid_image_url: "Images must be uploaded through Pixl (re-upload this image).",
+  busy: "Uploads are busy, try again in a moment.",
+  // Redeeming a join code for a project whose owner removed you.
+  removed: "You were removed from this project.",
   journal_too_short: "Log more detail: journals need about 100 characters per hour.",
   journal_images_required: "Add at least one image to this entry, more for longer sessions.",
   not_in_review: "This project isn't in review.",

@@ -20,12 +20,33 @@ export function safeNext(next: string | null | undefined): string {
   try {
     const u = new URL(next, "https://pixl.invalid");
     if (u.origin !== "https://pixl.invalid") return DEFAULT_NEXT;
+    // Re-check AFTER parsing: WHATWG URL collapses dot segments ("/.//x",
+    // "/%2e%2e//x", "/a/..//x" all become "//x"), so a value that passed the
+    // raw checks above can still parse into a protocol-relative path.
+    if (!isSafeRelativePath(u.pathname)) return DEFAULT_NEXT;
     // Never send someone back into the auth routes themselves.
     if (u.pathname.startsWith("/api/")) return DEFAULT_NEXT;
-    return u.pathname + u.search + u.hash;
+    const out = u.pathname + u.search + u.hash;
+    return isSafeRelativePath(out) ? out : DEFAULT_NEXT;
   } catch {
     return DEFAULT_NEXT;
   }
+}
+
+/**
+ * A path a browser can only resolve against this origin: a single leading
+ * "/", never "//" or "/\", no backslashes, and no encoded slash/backslash
+ * that a later decode could turn back into one.
+ */
+function isSafeRelativePath(p: string): boolean {
+  return (
+    p.startsWith("/") &&
+    !p.startsWith("//") &&
+    !p.startsWith("/\\") &&
+    !p.includes("\\") &&
+    !/%(2f|5c)/i.test(p) &&
+    !/[\u0000-\u001f]/.test(p)
+  );
 }
 
 export function newState(): string {

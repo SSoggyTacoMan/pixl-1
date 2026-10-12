@@ -95,6 +95,20 @@ export const generateJoinCode = guardedAction(
   { revalidate: ["/projects"], pick: (d: { code?: unknown }) => ({ code: typeof d?.code === "string" ? d.code : "" }) },
 );
 
+// Owner only (apps/server enforces it): replaces the join code so an old,
+// leaked code stops working. Collaborators never see the code at all
+// (apps/server sends join_code: null to non-owners).
+export const rotateJoinCode = guardedAction(
+  "collab.code_rotate",
+  z.object({ projectId: z.number().int().positive().max(2_147_483_647) }),
+  ({ projectId }) => ({
+    method: "POST",
+    path: `/api/projects/${projectId}/collaborators/code/rotate`,
+    target: `project:${projectId}`,
+  }),
+  { revalidate: ["/projects"], pick: (d: { code?: unknown }) => ({ code: typeof d?.code === "string" ? d.code : "" }) },
+);
+
 export const acceptInvite = guardedAction(
   "collab.accept",
   z.object({ collabId: rowId }),

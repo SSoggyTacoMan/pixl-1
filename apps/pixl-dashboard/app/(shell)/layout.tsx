@@ -1,6 +1,8 @@
 import { headers } from "next/headers";
-import { serverApi } from "@/lib/server-api";
+import { redirect } from "next/navigation";
+import { serverApi, serverGet } from "@/lib/server-api";
 import { getSession } from "@/lib/session";
+import { expiredUrl, sessionRejected } from "@/lib/session-expiry";
 import { GAME_URL } from "@/lib/urls";
 import { Gate } from "./gate";
 import { ShellNav } from "./shell-nav";
@@ -17,17 +19,22 @@ export default async function ShellLayout({ children }: { children: React.ReactN
   // Verified locally against JWT_SECRET on every request.
   const session = await getSession();
 
-  if (!session) {
-    // proxy.ts forwards the requested path so the no-JS login link returns
-    // to the same page; safeNext() re-checks it server side.
-    const h = await headers();
-    return <Gate next={h.get("x-pixl-path") ?? "/dashboard"} />;
-  }
+  // proxy.ts forwards the requested path so the no-JS login link returns to
+  // the same page; safeNext() re-checks it server side.
+  const here = async () => (await headers()).get("x-pixl-path") ?? "/dashboard";
 
-  const [wallet, events] = await Promise.all([
-    serverApi<Wallet>("/api/profile/wallet"),
+  if (!session) return <Gate next={await here()} />;
+
+  const [walletRes, events] = await Promise.all([
+    serverGet<Wallet>("/api/profile/wallet"),
     serverApi<EventsActive>("/api/events/active"),
   ]);
+  // The JWT still verifies locally but apps/server has revoked it (or banned
+  // the player): treat it as signed out. A layout can't clear cookies, so
+  // /api/auth/expired does, re-checks with the server, then comes back here
+  // to render the Gate.
+  if (!walletRes.ok && sessionRejected(walletRes.status, walletRes.error)) redirect(expiredUrl(await here()));
+  const wallet = walletRes.ok ? walletRes.data : null;
 
   return (
     <>

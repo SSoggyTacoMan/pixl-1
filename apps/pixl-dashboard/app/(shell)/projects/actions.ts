@@ -91,25 +91,10 @@ export const claimTrialReward = guardedAction(
 
 // ---- uploads ---------------------------------------------------------------
 
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
-const MAX_IMAGE_BYTES = 15_000_000; // apps/server/src/routes/uploads.ts MAX_IMAGE_BYTES
+// Images (up to 15MB) are NOT a Server Action: they go through the
+// /api/uploads/image route handler (lib/upload-route.ts) so the global Server
+// Action body limit can stay at 1MB. A 512KB CSV fits under that limit.
 const MAX_CSV_BYTES = 512 * 1024;
-
-const imageForm = z.instanceof(FormData).transform((fd, ctx) => {
-  const file = fd.get("file");
-  if (!(file instanceof Blob) || file.size === 0 || file.size > MAX_IMAGE_BYTES || !IMAGE_TYPES.includes(file.type)) {
-    ctx.addIssue({ code: "custom", message: "bad image" });
-    return z.NEVER;
-  }
-  return file;
-});
-
-export const uploadImage = guardedAction(
-  "upload.image",
-  imageForm,
-  (file) => ({ method: "POST", path: "/api/uploads", body: { kind: "raw", value: file, contentType: file.type } }),
-  { pick: (d: { url?: unknown }) => ({ url: typeof d?.url === "string" ? d.url : "" }) },
-);
 
 const bomForm = z.instanceof(FormData).transform((fd, ctx) => {
   const file = fd.get("file");

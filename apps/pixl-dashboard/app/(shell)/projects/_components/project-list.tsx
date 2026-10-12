@@ -49,7 +49,7 @@ function ProjectRow({ p, stats, blackout }: { p: Project; stats: HtStats | null;
   return (
     <div className="card panel proj-row">
       <Link href={`/projects/${p.id}`} className="proj-thumb" aria-label={p.name}>
-        <SafeImage src={p.image_url} fallback="NO IMAGE" />
+        <SafeImage player src={p.image_url} fallback="NO IMAGE" />
       </Link>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">

@@ -53,7 +53,7 @@ export function ProjectHeader({
         </span>
       </div>
       <div className="proj-hero mb-4">
-        <SafeImage src={imageUrl} fallback={<span className="faint text-sm">No thumbnail yet</span>} />
+        <SafeImage player src={imageUrl} fallback={<span className="faint text-sm">No thumbnail yet</span>} />
       </div>
       {project.status === "needs_changes" && project.review_note ? (
         <Notice tone="bad" className="mb-3">

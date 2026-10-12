@@ -14,3 +14,9 @@ describe("shopError", () => {
     expect(shopError("sold_out")).toBe("That option just sold out, pick another.");
   });
 });
+
+describe("server security codes", () => {
+  test("locked (beacon / trial gate on buy) explains how it unlocks", () => {
+    expect(shopError("locked")).toContain("Beacon nomination or an approved Trial project");
+  });
+});

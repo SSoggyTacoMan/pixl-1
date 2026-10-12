@@ -1,11 +1,14 @@
 import path from "node:path";
 import type { NextConfig } from "next";
 import { CDN_HOSTS } from "./lib/cdn-hosts";
+import { FALLBACK_CSP } from "./lib/csp";
 
 // Static security headers for every response (pages, API routes, static
-// files). The Content-Security-Policy itself is per-request (it carries a
-// nonce) and is set in proxy.ts.
+// files). The real Content-Security-Policy is per-request (it carries a
+// nonce) and is set in proxy.ts, which overrides this static fallback on every
+// page it matches; the fallback covers whatever the proxy skips.
 const SECURITY_HEADERS = [
+  { key: "Content-Security-Policy", value: FALLBACK_CSP },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "X-Frame-Options", value: "DENY" },
@@ -36,9 +39,10 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     serverActions: {
-      // Project screenshots are uploaded through a Server Action; the server
-      // itself caps images at 15MB (apps/server/src/routes/uploads.ts).
-      bodySizeLimit: "16mb",
+      // The 1MB default, stated explicitly. Image uploads (up to 15MB) go
+      // through the /api/uploads/image route handler instead, which enforces
+      // its own session, Origin, type and size checks (lib/upload-route.ts).
+      bodySizeLimit: "1mb",
     },
   },
   async headers() {

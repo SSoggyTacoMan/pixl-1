@@ -4,11 +4,13 @@
 // session): these are zod-validated, call exactly one apps/server endpoint
 // each, and write the same structured log line. apps/server's forms routes
 // require an Origin on the apex host (isTrustedOrigin), so this server sends
-// the site origin explicitly, and passes the visitor's IP along so the
-// server's per-IP rate limits key on the visitor rather than on this app.
+// the site origin explicitly, plus this app's service key and the visitor's
+// IP (lib/form-forwarding.ts) so the server's per-IP rate limits key on the
+// visitor rather than on this app.
 import { headers } from "next/headers";
 import { z } from "zod";
 import { config } from "@/app/_generated/config";
+import { formForwardHeaders } from "@/lib/form-forwarding";
 import { buildServerRequest } from "@/lib/server-api-core";
 
 export type FormActionResult = { ok: true } | { ok: false; error: string };
@@ -32,12 +34,15 @@ function log(action: string, slack: string | null, result: string, error: string
 }
 
 async function post(path: string, body: unknown): Promise<FormActionResult> {
+  const serviceKey = process.env.SERVICE_KEY_PIXL_DASHBOARD;
+  if (!serviceKey) {
+    // Without the key apps/server ignores the forwarded IP and every visitor
+    // shares one rate-limit bucket, so refuse rather than degrade silently.
+    console.error("SERVICE_KEY_PIXL_DASHBOARD is not set - public forms cannot submit");
+    return { ok: false, error: "server_unreachable" };
+  }
   const { url, init } = buildServerRequest(path, { method: "POST", body: { kind: "json", value: body } });
-  const h = new Headers(init.headers);
-  h.set("origin", config.urls.site);
-  const fwd = (await headers()).get("x-forwarded-for");
-  const ip = fwd?.split(",")[0]?.trim();
-  if (ip) h.set("x-forwarded-for", ip);
+  const h = formForwardHeaders(init.headers, await headers(), { origin: config.urls.site, serviceKey });
   try {
     const res = await fetch(url, { ...init, headers: h });
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };

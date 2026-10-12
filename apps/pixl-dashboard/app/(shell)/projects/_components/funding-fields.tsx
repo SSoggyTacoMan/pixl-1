@@ -54,7 +54,7 @@ export function HardwareFields({
             <div className="mt-2 flex flex-wrap gap-2">
               {form.cartUrls.map((u, i) => (
                 <div key={`${u}-${i}`} className="panel-deep flex flex-col items-center gap-1 p-1">
-                  <SafeImage src={u} className="h-16 w-24 object-cover" />
+                  <SafeImage player src={u} className="h-16 w-24 object-cover" />
                   {!locked ? (
                     <button
                       type="button"

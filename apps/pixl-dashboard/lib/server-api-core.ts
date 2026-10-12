@@ -32,10 +32,21 @@ export function assertServerPath(path: string): void {
     path.startsWith("//") ||
     path.includes("\\") ||
     /(^|\/)\.\.?(\/|$|\?)/.test(path) ||
-    /[\s\u0000-\u001f]/.test(path)
+    /[\s\u0000-\u001f]/.test(path) ||
+    // WHATWG URL treats "%2e"/".%2E"/"%2e%2e" as dot segments, and an encoded
+    // "/" or "\" can be decoded into a separator further down the stack. No
+    // legitimate caller needs any of them in the path (encodeURIComponent
+    // never emits %2e), so the path part refuses them outright.
+    /%(2e|2f|5c)/i.test(pathPart(path))
   ) {
     throw new Error(`invalid server path: ${String(path)}`);
   }
+}
+
+/** The part of a request target before any query string or fragment. */
+function pathPart(path: string): string {
+  const cut = path.search(/[?#]/);
+  return cut === -1 ? path : path.slice(0, cut);
 }
 
 export function buildServerRequest(
@@ -45,6 +56,10 @@ export function buildServerRequest(
   assertServerPath(path);
   const url = new URL(path, SERVER_ORIGIN);
   if (url.origin !== new URL(SERVER_ORIGIN).origin) throw new Error("server origin mismatch");
+  // Backstop for anything the string checks miss: if URL parsing rewrote the
+  // path at all (dot-segment collapsing, re-encoding), the request would hit
+  // a different route than the caller wrote, so refuse it.
+  if (url.pathname !== pathPart(path)) throw new Error(`invalid server path: ${path}`);
 
   const headers = new Headers();
   headers.set("accept", "application/json");

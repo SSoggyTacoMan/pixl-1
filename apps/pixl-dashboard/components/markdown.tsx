@@ -1,9 +1,11 @@
 // Safe Markdown subset for player-written text (journals, descriptions),
 // ported from pixl.js's markdown()/mdInline() but rendered straight to React
 // elements: there is no HTML string anywhere, so nothing a player types can
-// become markup. Links and images only render for http(s) URLs.
+// become markup. Links only render for http(s) URLs; images only load from
+// the Hack Club CDN (lib/cdn-hosts.ts) - any other host would hand every
+// viewer's IP to whoever wrote the entry, so those render as a plain link.
 import type { ReactNode } from "react";
-import { safeHttpUrl, safeImageSrc } from "@/lib/safe-url";
+import { playerImageSrc, safeHttpUrl } from "@/lib/safe-url";
 
 type Tok = { re: RegExp; render: (m: RegExpExecArray, key: string) => ReactNode };
 
@@ -12,9 +14,18 @@ const INLINE: Tok[] = [
   {
     re: /!\[([^[\]]*)\]\((https?:\/\/[^)\s[\]]+)\)/,
     render: (m, k) => {
-      const src = safeImageSrc(m[2]);
+      const src = playerImageSrc(m[2]);
       // eslint-disable-next-line @next/next/no-img-element
-      return src ? <img key={k} src={src} alt={m[1]} loading="lazy" referrerPolicy="no-referrer" /> : null;
+      if (src) return <img key={k} src={src} alt={m[1]} loading="lazy" referrerPolicy="no-referrer" />;
+      const href = safeHttpUrl(m[2]);
+      const label = m[1].trim() || "image";
+      return href ? (
+        <a key={k} href={href} target="_blank" rel="noopener noreferrer nofollow">
+          {label}
+        </a>
+      ) : (
+        label
+      );
     },
   },
   {

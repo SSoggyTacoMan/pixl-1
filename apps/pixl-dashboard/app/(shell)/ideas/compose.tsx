@@ -125,7 +125,7 @@ export function Compose() {
             />
             {imageUrl ? (
               <div className="thumb-preview">
-                <SafeImage src={imageUrl} />
+                <SafeImage player src={imageUrl} />
               </div>
             ) : null}
           </div>

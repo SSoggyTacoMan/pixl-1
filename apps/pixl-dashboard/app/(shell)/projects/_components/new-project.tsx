@@ -29,7 +29,7 @@ export function NewProject({
       <TrialBrief trial={trial} />
       {form.imageUrl ? (
         <div className="proj-hero mb-4">
-          <SafeImage src={form.imageUrl} />
+          <SafeImage player src={form.imageUrl} />
         </div>
       ) : null}
       {flash ? (

@@ -37,7 +37,7 @@ export function EntryList({ initial }: { initial: SttEntry[] }) {
           <div key={e.id} className="panel stt-card">
             <span className={`stt-rank ${RANK[i] ?? ""}`}>#{i + 1}</span>
             <div className="stt-thumb">
-              <SafeImage src={e.imageUrl} fallback={<span className="faint text-xl">?</span>} />
+              <SafeImage player src={e.imageUrl} fallback={<span className="faint text-xl">?</span>} />
             </div>
             <div className="stt-body">
               <div className="stt-name">{e.name || "Untitled"}</div>

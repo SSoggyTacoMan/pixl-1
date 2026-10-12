@@ -31,11 +31,39 @@ describe("safeNext", () => {
     "javascript:alert(1)",
     "/api/auth/login",
     "/x\n",
+    // Dot segments that WHATWG URL collapses into a protocol-relative "//host".
+    "/.//evil.com",
+    "/..//evil.com",
+    "/%2e//evil.com",
+    "/%2E//evil.com",
+    "/%2e%2e//evil.com",
+    "/.%2e//evil.com",
+    "/a/..//evil.com/x",
+    "/a/b/../..//evil.com",
+    // Encoded slashes/backslashes a later decode could turn into "//" or "/\".
+    "/%5cevil.com",
+    "/%5Cevil.com",
+    "/%5c%5cevil.com",
+    "/.%5cevil.com",
+    "/a/%2e%2e/%5cevil.com",
+    "/%2f%2fevil.com",
+    "/%2F%2Fevil.com",
+    "/%2e%2e/%2fevil.com",
   ]) {
     test(`falls back for ${JSON.stringify(bad)}`, () => {
       expect(safeNext(bad as string | null)).toBe("/dashboard");
     });
   }
+
+  test("still collapses harmless dot segments", () => {
+    expect(safeNext("/a/../shop")).toBe("/shop");
+    expect(safeNext("/./orders?x=1")).toBe("/orders?x=1");
+  });
+
+  test("a login-state cookie holding a dot-segment next decodes to /dashboard", () => {
+    const raw = `${"s".repeat(32)}.${Buffer.from("/.//evil.com").toString("base64url")}`;
+    expect(decodeLoginState(raw)?.next).toBe("/dashboard");
+  });
 });
 
 describe("login state cookie", () => {

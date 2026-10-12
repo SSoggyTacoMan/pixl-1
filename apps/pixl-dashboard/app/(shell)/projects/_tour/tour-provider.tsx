@@ -14,13 +14,11 @@
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { setOnboardingStep } from "@/lib/actions/onboarding";
+import { FP_SHOWN_KEY, ONBOARDED_KEY, TOUR_STEP_KEY } from "@/lib/local-state";
 import { clampStep, firstProjectSteps, onboardingSteps, type TourStep, type TourTrial } from "./steps";
 import { TourOverlay } from "./tour-overlay";
 import "./tour.css";
 
-const TOUR_STEP_KEY = "pixl_tour_step";
-const ONBOARDED_KEY = "pixl_onboarded";
-const FP_SHOWN_KEY = "pixl_fp_shown";
 const START_DELAY_MS = 700;
 
 function store(kind: "local" | "session") {

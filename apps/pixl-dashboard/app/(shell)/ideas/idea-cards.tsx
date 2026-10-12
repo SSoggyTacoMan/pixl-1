@@ -49,7 +49,7 @@ function PosterThumb({ idea, roles }: { idea: Idea; roles: string[] }) {
   ) : (
     none
   );
-  return <SafeImage src={idea.image_url} fallback={rolesThumb} />;
+  return <SafeImage player src={idea.image_url} fallback={rolesThumb} />;
 }
 
 export function PosterCard({ idea }: { idea: Idea }) {

@@ -104,10 +104,17 @@ export function proxy(req: NextRequest) {
   return res;
 }
 
+// Skips ONLY real static prefixes and a few exact metadata files. It used to
+// skip any path whose last segment had a dot, which let a page route like
+// /form/review.x render with no CSP at all. Public files outside these
+// prefixes (e.g. /logo.png) just get a CSP header they don't need, and
+// anything the proxy doesn't cover still gets next.config.ts's static
+// fallback CSP. Must stay a literal (statically analyzed at build time).
 export const config = {
   matcher: [
     {
-      source: "/((?!api/|_next/static|_next/image|favicon.ico|.*\\.[a-zA-Z0-9]+$).*)",
+      source:
+        "/((?!api/|_next/static/|_next/image|img/|fonts/|favicon\\.ico$|icon\\.png$|robots\\.txt$|sitemap\\.xml$).*)",
       missing: [
         { type: "header", key: "next-router-prefetch" },
         { type: "header", key: "purpose", value: "prefetch" },

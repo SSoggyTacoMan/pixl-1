@@ -10,7 +10,9 @@ const BUY_ERRORS: Record<string, string> = {
   not_for_sale: "That one isn't for sale.",
   sold_out: "That option just sold out, pick another.",
   unavailable: "That item isn't available right now.",
-  locked: "That item is still locked for you.",
+  // 403 from buy: the item is gated behind a Beacon nomination or an
+  // approved Trial project.
+  locked: "That item is still locked for you. It unlocks with a Beacon nomination or an approved Trial project.",
   wrong_region: "That item doesn't ship to your region.",
   not_eligible: "Not yet, you haven't reached the XP for this trophy.",
 };

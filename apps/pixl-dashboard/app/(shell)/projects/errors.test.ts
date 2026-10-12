@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hcaRecheckCopy, projectErrorWith, trialHoursCopy } from "./errors";
+import { hcaRecheckCopy, projectError, projectErrorWith, trialHoursCopy } from "./errors";
 
 describe("project error details", () => {
   test("journal copy uses need/have/hours", () => {
@@ -19,5 +19,13 @@ describe("project error details", () => {
     expect(hcaRecheckCopy("needs_submission").title).toBe("Finish verifying");
     expect(hcaRecheckCopy("__proto__").title).toBe("Verify with Hack Club Auth");
     expect(hcaRecheckCopy(undefined).title).toBe("Verify with Hack Club Auth");
+  });
+});
+
+describe("server security codes", () => {
+  test("off-CDN images, busy uploads and removed collaborators get friendly copy", () => {
+    expect(projectError("invalid_image_url")).toBe("Images must be uploaded through Pixl (re-upload this image).");
+    expect(projectError("busy")).toBe("Uploads are busy, try again in a moment.");
+    expect(projectError("removed")).toBe("You were removed from this project.");
   });
 });

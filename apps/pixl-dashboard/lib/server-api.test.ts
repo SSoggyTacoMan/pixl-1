@@ -59,13 +59,34 @@ describe("assertServerPath", () => {
     "/api\\x",
     "/api/x y",
     "/api/x\n",
+    // Encoded dot segments WHATWG URL collapses like literal ones.
+    "/api/projects/%2e%2e/admin",
+    "/api/projects/%2E%2E/admin",
+    "/api/projects/.%2E/admin",
+    "/api/projects/%2e./admin",
+    "/api/projects/%2e/x",
+    // Encoded separators.
+    "/api/projects/1%2f..%2fadmin",
+    "/api/projects/1%2Fadmin",
+    "/api/projects/1%5cadmin",
+    "/api/projects/1%5Cadmin",
   ]) {
     test(`rejects ${JSON.stringify(bad)}`, () => {
       expect(() => assertServerPath(bad)).toThrow();
+      expect(() => buildServerRequest(bad, { token: "t" })).toThrow();
     });
   }
   test("accepts normal paths", () => {
     expect(() => assertServerPath("/api/projects/12/journal?x=1")).not.toThrow();
+  });
+  test("encoded separators are still fine in the query string", () => {
+    const { url } = buildServerRequest("/api/x?next=%2Fshop%2F1&dot=%2e", { token: "t" });
+    expect(url).toBe("https://server.pixl.hackclub.com/api/x?next=%2Fshop%2F1&dot=%2e");
+  });
+  test("buildServerRequest refuses a path URL parsing would rewrite", () => {
+    // Raw non-ASCII gets percent-encoded by the parser, so the pathname differs.
+    expect(() => buildServerRequest("/api/players/é", { token: "t" })).toThrow();
+    expect(() => buildServerRequest("/api/players/%C3%A9", { token: "t" })).not.toThrow();
   });
 });
 

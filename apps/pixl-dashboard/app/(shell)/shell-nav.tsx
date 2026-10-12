@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { PixelIcon, ReIcon } from "@/components/pixel-icon";
+import { clearPlayerLocalState } from "@/lib/local-state";
 import { ICONS, MOBILE_PRIMARY, MORE_ICON, NAV_GROUPS, PALETTE_ICON } from "./nav-data";
 
 const THEMES = [
@@ -136,7 +137,8 @@ export function ShellNav({
           <a className="btn dark back-to-game" href={game} target="_blank" rel="noopener noreferrer">
             <span className="arrow">◄</span> PLAY THE GAME
           </a>
-          <form action="/api/auth/logout" method="post">
+          {/* Clears journal drafts and tour progress from this browser, then posts. */}
+          <form action="/api/auth/logout" method="post" onSubmit={() => clearPlayerLocalState()}>
             <button className="btn ghost w-full" type="submit" title={`Signed in as ${displayName}`}>
               LOG OUT
             </button>

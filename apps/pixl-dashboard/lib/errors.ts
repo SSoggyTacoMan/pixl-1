@@ -15,6 +15,10 @@ const MESSAGES: Record<string, string> = {
   cdn_failed: "The upload failed. Try again.",
   address_required: "Verify your address first.",
   not_eligible: "Your account isn't eligible for this yet.",
+  // apps/server only accepts images hosted on the Hack Club CDN.
+  invalid_image_url: "Images must be uploaded through Pixl (re-upload this image).",
+  busy: "Uploads are busy, try again in a moment.",
+  removed: "You were removed from this project.",
 };
 
 export function humanizeError(code: string | null | undefined): string {

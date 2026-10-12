@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Card, CardTitle, Notice, PageHeader } from "@/components/ui/primitives";
+import { accountAddressLine } from "@/lib/address-summary";
 import { serverApi } from "@/lib/server-api";
 import { FlowButton } from "./flow-button";
 
@@ -10,12 +11,11 @@ interface Eligibility {
   birthday?: string | null;
   age?: number | null;
   yswsEligible?: boolean;
-  addressLine1?: string | null;
-  addressLine2?: string | null;
+  // The server only sends city/country; street lines stay server side.
   addressCity?: string | null;
-  addressState?: string | null;
   addressCountry?: string | null;
-  addressPostal?: string | null;
+  hasAddress?: boolean;
+  hasPhone?: boolean;
 }
 
 function fmtBirthday(iso: string): string {
@@ -35,14 +35,7 @@ export default async function AccountPage({
   const data = await serverApi<Eligibility>("/api/profile/eligibility");
   const ok = !!data?.ok;
 
-  const address = ok
-    ? [
-        data!.addressLine1,
-        data!.addressLine2,
-        [data!.addressCity, data!.addressState].filter(Boolean).join(", "),
-        [data!.addressCountry, data!.addressPostal].filter(Boolean).join(" "),
-      ].filter((s): s is string => !!s)
-    : [];
+  const address = ok ? accountAddressLine(data) : null;
 
   return (
     <>
@@ -91,14 +84,10 @@ export default async function AccountPage({
             Where we&apos;d ship a physical shop order or prize, also from your Hack Club identity. You&apos;ll get a
             chance to verify it&apos;s current right before you order.
           </p>
-          {address.length ? (
-            <address className="not-italic text-ink">
-              {address.map((line, i) => (
-                <div key={i}>{line}</div>
-              ))}
-            </address>
+          {address ? (
+            <address className="not-italic text-ink">{address}</address>
           ) : (
-            <p className="italic text-muted">{NOT_ON_FILE}</p>
+            <p className="italic text-muted">No address on file. Re-sync from Hack Club Auth to pull it in.</p>
           )}
         </Card>
 

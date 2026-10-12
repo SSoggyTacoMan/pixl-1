@@ -4,7 +4,14 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/primitives";
-import { generateJoinCode, inviteCollaborator, removeCollaborator, saveCollabHackatime, searchPlayers } from "../collab-actions";
+import {
+  generateJoinCode,
+  inviteCollaborator,
+  removeCollaborator,
+  rotateJoinCode,
+  saveCollabHackatime,
+  searchPlayers,
+} from "../collab-actions";
 import type { Collaborator } from "../data";
 import { projectError } from "../errors";
 import { hours } from "../format";
@@ -65,7 +72,9 @@ export function Collaborators({
   const router = useRouter();
   const [removing, setRemoving] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const [code, setCode] = useState(joinCode);
+  // apps/server only sends the join code to the owner; collaborators get null.
+  const [code, setCode] = useState(isOwner ? joinCode : null);
+  const [rotating, setRotating] = useState(false);
   const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
 
   const done = (text: string, bad?: boolean) => {
@@ -117,10 +126,37 @@ export function Collaborators({
             <button type="button" className="btn ghost !px-2 !py-0.5 !text-xs" onClick={codeClick}>
               {code ? "COPY CODE" : "GET INVITE CODE"}
             </button>
+            {code ? (
+              <button type="button" className="btn ghost !px-2 !py-0.5 !text-xs" onClick={() => setRotating(true)}>
+                ROTATE CODE
+              </button>
+            ) : null}
           </div>
         </>
       ) : null}
       {msg ? <p className={`hint ${msg.bad ? "bad" : "ok"} mt-2`}>{msg.text}</p> : null}
+      {isOwner ? (
+        <ConfirmDialog
+          open={rotating}
+          onOpenChange={(o) => !o && setRotating(false)}
+          title="Rotate the join code?"
+          confirmLabel="Rotate"
+          danger
+          pending={pending}
+          onConfirm={async () => {
+            setPending(true);
+            const r = await rotateJoinCode({ projectId });
+            setPending(false);
+            setRotating(false);
+            if (r.ok && r.data.code) {
+              setCode(r.data.code);
+              setMsg({ text: `New code: ${r.data.code}. The old one no longer works.` });
+            } else setMsg({ text: r.ok ? "Couldn't rotate the code, try again." : projectError(r.error), bad: true });
+          }}
+        >
+          <p>The current code stops working right away. Anyone who already joined stays on the project.</p>
+        </ConfirmDialog>
+      ) : null}
       <ConfirmDialog
         open={removing !== null}
         onOpenChange={(o) => !o && setRemoving(null)}

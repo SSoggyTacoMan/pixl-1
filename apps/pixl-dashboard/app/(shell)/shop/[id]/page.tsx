@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { cityCountry } from "@/lib/address-summary";
 import { serverApi } from "@/lib/server-api";
 import { normalizeItems, type ShopItemsResponse } from "../shop-lib";
 import { earnRates } from "../../calc/estimates";
@@ -11,27 +12,17 @@ interface EligibilityResponse {
   ok?: boolean;
   hasAddress?: boolean;
   hasPhone?: boolean;
-  addressLine1?: string | null;
-  addressLine2?: string | null;
+  // apps/server only sends city/country; street lines stay server side.
   addressCity?: string | null;
-  addressState?: string | null;
   addressCountry?: string | null;
-  addressPostal?: string | null;
 }
 
-// Only what the checkout confirm needs leaves the server: a one-line
-// address summary and two flags, never the raw address fields.
+// Only what the checkout confirm needs reaches the client: a city/country
+// summary and two flags.
 function toCheckout(e: EligibilityResponse | null): CheckoutEligibility {
   if (!e || !e.ok) return { hasAddress: false, hasPhone: false, summary: "" };
-  const summary = [
-    e.addressLine1,
-    e.addressLine2,
-    [e.addressCity, e.addressState].filter(Boolean).join(", "),
-    [e.addressCountry, e.addressPostal].filter(Boolean).join(" "),
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return { hasAddress: !!e.hasAddress, hasPhone: !!e.hasPhone, summary };
+  const place = cityCountry(e);
+  return { hasAddress: !!e.hasAddress, hasPhone: !!e.hasPhone, summary: place || "your address on file" };
 }
 
 export default async function ShopItemPage({
