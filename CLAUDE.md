@@ -123,6 +123,7 @@ Pixl Dashboard renders `docs/*.md` through this package's `render()`/`buildToken
 
 ### `apps/pixorpheus` (Slack bot)
 - Bun-native TypeScript, no build step - a single Bolt v4 process organized by feature under `src/`. Slack connects over Socket Mode (`SLACK_APP_TOKEN`, required at startup), so Pixo has no public hostname; the Express app in `src/slack/app.ts` (`http`, port 3000) only serves in-cluster `/api/external/*`, `/webhooks/*` and `/healthz`. Ticket moderation lives in the internal dashboard, which resolves tickets through `src/external/ticketApi.ts`.
+- Tickets start from `SLACK_HELP_CHANNEL` messages and are answered in that thread; staff reply and resolve them from the internal dashboard's tickets page. There is no private ticket log channel, and Slack channel membership never grants a permission (helpers = `helpers` table, admins = `SLACK_ADMIN_USER_IDS`).
 - `models.json` lists the OpenRouter models available to AI features. See `apps/pixorpheus/README.md` for commands.
 - Every player DM the internal dashboard and server send goes through `POST /api/external/dm` (`src/external/dmApi.ts`, rules in `dmRelay.ts`): `EXTERNAL_API_KEY` (timing-safe, fails closed), Slack user ids only, no `<!...>` or `<scheme:...>` syntax, 3000-char cap, per-user/global/daily in-memory rate limits. Callers default to Pixo's in-cluster address `http://pixl-pixorpheus.ysws-pixl.svc.cluster.local:3000`.
 

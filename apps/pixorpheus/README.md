@@ -87,7 +87,7 @@ There is no separate dashboard process anymore - the standalone helper dashboard
 
 ### Support Team Only
 
-`/pixl-addhelper` and `/pixl-removehelper` are admin-only (`SLACK_ADMIN_USER_IDS`, nobody if unset) and every attempt is written to `audit_log`. The rest require being a helper, an admin, or a member of the ticket channel.
+`/pixl-addhelper` and `/pixl-removehelper` are admin-only (`SLACK_ADMIN_USER_IDS`, nobody if unset) and every attempt is written to `audit_log`. The rest require being a helper or an admin (`helpers` table / `SLACK_ADMIN_USER_IDS`); channel membership grants nothing.
 
 | Command | Description |
 |---|---|
@@ -213,7 +213,6 @@ Tickets that have been open for more than **5 days** with no activity are automa
 
 - A ticket qualifies if: it has been open for 5+ days AND the last message in the thread is also 5+ days old
 - At closure, Pixorpheus posts a message in the thread explaining the ticket was auto-closed due to inactivity, and tells the user to open a new ticket if the issue is still relevant
-- The ticket channel message is updated to show the resolved status
 
 Auto-close runs once at startup and once every 24 hours.
 
@@ -236,26 +235,17 @@ This is the core support system for the Pixl program.
    - Close/Skip → ticket created without a title
    - If the user ignores the ephemeral for **3 minutes**, the ticket is created automatically without a title
 
-3. **Ticket appears in the private ticket channel** with:
-   - Status line: `🔴 Open - not claimed` / `🟡 Claimed by @X` / `✅ Resolved by @X`
-   - Buttons: **Claim** (or Unclaim) + **Mark Resolved** - or **Reopen** if closed
-   - The ticket title (or the first 80 characters of the message if no title)
-   - Author mention
-   - Quoted description
-   - **View in Slack** button (direct link to the thread)
-   - Ticket number at the bottom
+3. **Ticket is listed on the Internal Dashboard's tickets page**, where staff reply and resolve it (through Pixo's `/api/external/tickets` API). There is no private ticket log channel.
 
 ### Actions Available
 
 | Where | Action | Who can do it |
 |---|---|---|
-| Help channel thread | Mark as resolved (button) | Ticket author, helpers, support team |
+| Help channel thread | Mark as resolved (button) | Ticket author, helpers |
 | Help channel thread | `?resolve` or `?close` macro | Helpers only |
 | Help channel thread | `?faq` macro | Helpers only - posts FAQ link and resolves |
 | Help channel thread | `?reopen` macro | Helpers only |
-| Ticket channel | Claim / Unclaim | Helpers and support team |
-| Ticket channel | Mark Resolved | Helpers and support team |
-| Ticket channel | Reopen | Helpers and support team |
+| Help channel thread | Reopen (button on the resolved note) | Ticket author, helpers |
 | Dashboard | Reply to thread | Helpers (appears as their name) |
 | Dashboard | Mark Resolved | Helpers |
 
@@ -263,7 +253,7 @@ Thread macros are typed as the **first word** in a thread reply (e.g. `?resolve`
 
 ### Status Updates
 
-When a ticket is resolved or reopened, the message in the ticket channel is automatically updated with the new status and buttons. The help channel thread always gets a notification message.
+When a ticket is resolved or reopened, the help channel thread gets a notification message.
 
 Reactions on the original message: 🤔 = open, ✅ = resolved.
 
@@ -328,7 +318,7 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 | Column | Type | Description |
 |---|---|---|
 | `msg_ts` | TEXT (PK) | Slack timestamp of the original help message |
-| `ticket_msg_ts` | TEXT | Slack timestamp of the ticket channel message |
+| `ticket_msg_ts` | TEXT | Unused (was the private ticket channel message; that channel is gone) |
 | `description` | TEXT | Full text of the original message |
 | `title` | TEXT | Optional title set by the user |
 | `status` | TEXT | `open` or `closed` |
@@ -349,7 +339,6 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 | `SLACK_BOT_TOKEN` | Slack bot OAuth token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | App-level token (`xapp-...`, scope `connections:write`) for Socket Mode. **Required** - Pixo refuses to start without it |
 | `SLACK_HELP_CHANNEL` | Channel ID of the help channel where users post questions |
-| `SLACK_TICKET_CHANNEL` | Channel ID of the private ticket channel for the support team |
 | `SLACK_FAQ_URL` | URL to the FAQ (linked in the "Someone will be here soon!" message) |
 | `SLACK_ADMIN_USER_IDS` | Comma-separated Slack user IDs of admins: manage helpers, read others' memory, style training. Empty means no admins (fail closed) |
 | `SLACK_USER_TOKEN` | User token (`xoxp-...`) for deleting macro messages in threads |

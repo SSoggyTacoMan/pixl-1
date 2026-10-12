@@ -2,26 +2,6 @@ import { db } from "@/lib/db";
 import { isValidTicketTs } from "./requestGuards";
 import { externalTicketsUrl } from "./pixo";
 
-// Mirrors apps/pixorpheus/src/slack/escape.ts's escapeMrkdwn exactly - kept
-// as a separate copy since this app builds/deploys independently and
-// doesn't share code with pixorpheus. A ticket's title/description are
-// typed by the player who opened it, not staff, so they must be escaped
-// before landing in this staff-facing card's mrkdwn text, or a player could
-// mass-ping via <!channel>/<!here> or render a forged link under the bot.
-function escapeMrkdwn(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function escapeMrkdwnWithin(text: string, max: number): string {
-  let out = "";
-  for (const ch of text) {
-    const escaped = escapeMrkdwn(ch);
-    if (out.length + escaped.length > max) break;
-    out += escaped;
-  }
-  return out;
-}
-
 export interface TicketStats {
   total: number;
   open: number;
@@ -46,7 +26,6 @@ export interface FullTicketRow {
   claimed_by_slack_id: string | null;
   closed_by_slack_id: string | null;
   permalink: string | null;
-  ticket_msg_ts: string | null;
   ticket_number: number | null;
   title_prompt_ts: string | null;
 }
@@ -331,76 +310,6 @@ export interface ResolveResult {
   alreadyClosed?: boolean;
 }
 
-// Mirrors Pixorpheus's own `ticketBlocks(ticket)` so the ticket-channel card
-// looks and behaves identically no matter which side resolved it.
-export function ticketBlocks(ticket: FullTicketRow) {
-  const { description, title, opened_by_slack_id, status, claimed_by_slack_id, closed_by_slack_id, ticket_number, permalink } = ticket;
-  const msg_ts = ticket.msg_ts == null ? "" : String(ticket.msg_ts);
-  const rawDescription = description || "";
-  const safeDescription = escapeMrkdwnWithin(rawDescription, 2900);
-  const truncatedDescription = rawDescription.length > 80 ? rawDescription.substring(0, 80) + "..." : rawDescription;
-  const displayTitle = escapeMrkdwn(title || truncatedDescription || "(no description)");
-
-  let statusText: string;
-  if (status === "closed") statusText = closed_by_slack_id ? `✅ Resolved by <@${closed_by_slack_id}>` : "✅ Resolved";
-  else if (claimed_by_slack_id) statusText = `🟡 Claimed by <@${claimed_by_slack_id}>`;
-  else statusText = "🔴 Open - not claimed";
-
-  const actionElements =
-    status === "closed"
-      ? [
-          {
-            type: "button",
-            text: { type: "plain_text", text: "Reopen" },
-            action_id: "reopen_ticket",
-            value: msg_ts,
-          },
-        ]
-      : [
-          {
-            type: "button",
-            text: { type: "plain_text", text: claimed_by_slack_id ? "↩️ Unclaim" : "🙋 Claim" },
-            action_id: "claim_ticket",
-            value: msg_ts,
-          },
-          {
-            type: "button",
-            text: { type: "plain_text", text: "Mark Resolved" },
-            style: "primary",
-            action_id: "resolve_from_ticket_channel",
-            value: msg_ts,
-          },
-        ];
-
-  const blocks: Record<string, unknown>[] = [
-    { type: "section", text: { type: "mrkdwn", text: statusText } },
-    { type: "actions", elements: actionElements },
-    { type: "divider" },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `*${displayTitle}*\nby <@${opened_by_slack_id}>` },
-    },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: `>${safeDescription.replace(/\n/g, "\n>")}` },
-    },
-  ];
-
-  if (permalink) {
-    blocks.push({
-      type: "actions",
-      elements: [{ type: "button", text: { type: "plain_text", text: "View in Slack" }, action_id: "view_thread", url: permalink }],
-    });
-  }
-
-  const numericTicket = Number(ticket_number);
-  if (Number.isInteger(numericTicket) && numericTicket > 0) {
-    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: `Ticket ${numericTicket}` }] });
-  }
-
-  return blocks;
-}
-
 // Resolve a ticket via Pixorpheus's bot instead of the dashboard's own Slack
 // app , the dashboard's bot isn't reliably a member of the help channel (and
 // lacks the scope to self-join), so posting the resolved message straight
@@ -488,19 +397,6 @@ export async function resolveTicketFromDash(
       });
     } catch (e) {
       console.error(`resolveTicketFromDash: failed to post resolved note for ${ts}:`, e);
-    }
-
-    if (ticketRow.ticket_msg_ts) {
-      try {
-        await slackCall("chat.update", {
-          channel: process.env.SLACK_TICKET_CHANNEL,
-          ts: ticketRow.ticket_msg_ts,
-          text: `Ticket resolved by <@${actor.slackId}>`,
-          blocks: ticketBlocks(ticketRow),
-        });
-      } catch (e) {
-        console.error(`resolveTicketFromDash: failed to update ticket-channel card for ${ts}:`, e);
-      }
     }
 
     try {

@@ -6,7 +6,7 @@ import { getSafeFacts, getSafeTraits, getDisplayName, GARBAGE_PATTERNS } from ".
 import { isSlackAdmin } from "../slack/admins.js";
 import { audit } from "../audit.js";
 import { programMemory, addProgramFact, removeProgramFact } from "../memory/program.js";
-import { checkIsHelper, checkIsInTicketChannel } from "../tickets/service.js";
+import { checkIsHelper } from "../tickets/service.js";
 
 // Program facts are injected into every prompt Pixo builds, for everyone,
 // so writing them is an admin-only power (SLACK_ADMIN_USER_IDS): not helpers,
@@ -53,11 +53,9 @@ app.command("/pixl-forget", async ({ command, ack, respond }) => {
   await respond({ text: `forgot: _${removed}_` });
 });
 
-app.command("/pixl-memories", async ({ command, ack, respond, client }) => {
+app.command("/pixl-memories", async ({ command, ack, respond }) => {
   await ack();
-  const isAdmin = await checkIsHelper(command.user_id);
-  const isInTicketChannel = await checkIsInTicketChannel(command.user_id, client);
-  if (!isAdmin && !isInTicketChannel) {
+  if (!(await checkIsHelper(command.user_id))) {
     await respond({
       text: "Only support team members can view stored memories.",
     });
