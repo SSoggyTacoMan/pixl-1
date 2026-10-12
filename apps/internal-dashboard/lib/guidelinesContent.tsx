@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 // Snapshot of the YSWS Project Submission Guidelines, rendered inline in the
 // review onboarding gate. The final page is a recap of the highest-stakes rules
 // (written for reviewers, not copied from the source). Keep in sync with
-// https://hackclub.gitbook.io/ysws-project-submission-guidelines and bump
+// https://hackclub.gitbook.io/ysws-project-submission-guidelines/BLBRN8LIfoCZhFV6oMNR and bump
 // GUIDELINES_VERSION in guidelines.ts when it changes.
 
 export interface GuidelinePage {

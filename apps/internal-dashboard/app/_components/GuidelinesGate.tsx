@@ -74,7 +74,7 @@ export function GuidelinesGate() {
         <p className="hc-caption text-xs">
           This is a snapshot for convenience. The official, always-current version lives at{" "}
           <TextLink href={GUIDELINES_LIVE_URL} external>
-            hackclub.gitbook.io/ysws-project-submission-guidelines
+            hackclub.gitbook.io/ysws-project-submission-guidelines/BLBRN8LIfoCZhFV6oMNR
           </TextLink>
         </p>
       </div>

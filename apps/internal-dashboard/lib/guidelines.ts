@@ -8,10 +8,10 @@
 // updates them, refresh guidelinesContent.tsx and bump GUIDELINES_VERSION so
 // every reviewer is forced to read the changes again.
 //
-// Source (latest, live): https://hackclub.gitbook.io/ysws-project-submission-guidelines
+// Source (latest, live): https://hackclub.gitbook.io/ysws-project-submission-guidelines/BLBRN8LIfoCZhFV6oMNR
 export const GUIDELINES_VERSION = 1;
 
 export const MIN_SECONDS_PER_PAGE = 10;
 
 export const GUIDELINES_LIVE_URL =
-  "https://hackclub.gitbook.io/ysws-project-submission-guidelines";
+  "https://hackclub.gitbook.io/ysws-project-submission-guidelines/BLBRN8LIfoCZhFV6oMNR";
