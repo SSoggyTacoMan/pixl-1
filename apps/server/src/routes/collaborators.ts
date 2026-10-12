@@ -6,6 +6,8 @@ import { fetchTrackedSecondsSince } from "../hackatime/api.js";
 import { z } from "zod";
 import { validate, v, optStr, params } from "../http/validate.js";
 import { auditRequest } from "../audit.js";
+import { rateLimit } from "../rateLimit.js";
+import { requestIpKey } from "../clientIp.js";
 
 const router = Router();
 
@@ -395,7 +397,19 @@ router.post("/api/projects/:id/collaborators/code/rotate", validate({ query: v.n
 // Any player redeems a code to join that project as an accepted
 // collaborator immediately, the code itself is the invitation, so there's
 // no separate pending/accept step like the name-search invite has.
-router.post("/api/collaborators/redeem", validate({ query: v.noQuery, body: z.object({ code: optStr(64) }) }), async (req, res) => {
+// Redeeming is the only thing between a guesser and joining someone's
+// project, so it gets its own limit on top of the global one: per player
+// (a guess costs a signed-in account) and, more loosely, per IP (so a pile
+// of alts behind one address doesn't multiply it).
+const redeemPerUser = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 10,
+  name: "collab_redeem_user",
+  key: (req) => req.session?.userId ?? requestIpKey(req),
+});
+const redeemPerIp = rateLimit({ windowMs: 15 * 60_000, max: 40, name: "collab_redeem_ip" });
+
+router.post("/api/collaborators/redeem", redeemPerUser, redeemPerIp, validate({ query: v.noQuery, body: z.object({ code: optStr(64) }) }), async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 

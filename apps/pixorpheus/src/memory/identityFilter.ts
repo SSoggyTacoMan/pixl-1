@@ -12,8 +12,8 @@
 // from his brother" is fine, leaking a kid's city is not.
 
 const IDENTITY_PATTERNS: RegExp[] = [
-  // names (the display-name fact "name is X" is stored separately by
-  // ensureUserName and read only through getDisplayName, never as a fact)
+  // names (display names come from the Slack profile via getDisplayName;
+  // a legacy "name is X" fact is dropped like any other name)
   /\b(real|full|first|last|legal|sur|given|middle|birth|maiden)\s*-?\s*name\b/i,
   /\b(my|their|his|her|the author'?s?)\s+name\b/i,
   /\bname\s+is\b/i,
@@ -22,22 +22,41 @@ const IDENTITY_PATTERNS: RegExp[] = [
   /\b\d{1,3}\s*-?\s*(years?|yrs?|y\/?o|yo)\b/i,
   /\b(age|aged|ages)\b/i,
   /\b(is|am|turning|turned)\s+\d{1,2}\b/i,
+  /\b(i['’]?m|im|i\s+am)\s+\d{1,2}\b/i,
+  /\bturns?\s+\d{1,2}\b/i,
+  /\b\d{1,3}\s*y\.\s*o\b\.?/i,
   /\b(birthday|bday|b-day|born|birth|birthdate|dob)\b/i,
   /\b\d{1,2}(st|nd|rd|th)\s+grade(r)?\b/i,
   /\bgrade\s*\d{1,2}\b/i,
   /\b(year|yr)\s*\d{1,2}\b/i,
   /\b(freshman|sophomore|teen|teenager|minor|underage|preteen|tween)\b/i,
+  /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth)\s+grade(rs?)?\b/i,
+  /\b(junior|senior)\s+(high|year)\b/i,
   // location and nationality
   /\b(lives?|living|based|located|resides?|residing|moved|moving|relocat\w*)\b/i,
   /\b(is|am|are|comes?|came|originally|hails?)\s+from\b/i,
-  /\bfrom\s+(the\s+)?[A-Z][a-z]+/,
+  // Any case: "from ohio" leaks as much as "from Ohio". Over-eager on
+  // purpose ("switched from python" goes too), see the header.
+  /\bfrom\s+(the\s+)?[a-z]{2,}/i,
+  /\bgrew\s+up\b/i,
+  /\b(speaks?|speaking|fluent\s+in|native\s+speaker|mother\s+tongue|first\s+language)\b/i,
   /\b(city|town|country|state|province|county|village|hometown|region|suburb|neighbou?rhood|district)\b/i,
   /\b(nationality|national|citizen|citizenship|ethnicity|ethnic|immigrant|passport)\b/i,
   /\b(address|street|avenue|zip|zipcode|postcode|postal)\b/i,
   /\b(time\s*zone|timezone|utc|gmt|[ecmp][sd]t|ist|cet|cest|bst|aest)\b/i,
   /\b(american|british|english|scottish|welsh|irish|canadian|mexican|brazilian|argentin\w*|french|german|dutch|belgian|swiss|austrian|italian|spanish|portuguese|polish|ukrainian|russian|swedish|norwegian|danish|finnish|greek|turkish|indian|pakistani|bangladeshi|nepali|sri\s*lankan|chinese|japanese|korean|vietnamese|thai|filipin[oa]|indonesian|malaysian|singaporean|australian|kiwi|nigerian|kenyan|ghanaian|egyptian|moroccan|south\s*african|israeli|iranian|saudi|emirati)\b/i,
   /\b(usa|u\.s\.a?|uk|u\.k|america|britain|england|canada|india|france|germany|brazil|australia|china|japan|philippines|nigeria|pakistan|london|paris|new\s*york|california|texas|toronto|mumbai|delhi|bangalore|bengaluru|sydney|berlin)\b/i,
+  // Spanish / French / Portuguese age and location phrasing
+  /\b(tengo|tiene|tienes|cumpl[eoií]\w*)\s+\d{1,2}\b/i,
+  /\b\d{1,2}\s*(a[ñn]os|ans|anos)\b/i,
+  /\b(vivo|vive|vives|viven|vivimos|moro|mora)\s+en\b/i,
+  /\b(vivo|vive|moro|mora)\s+(em|no|na)\b/i,
+  /\b(soy|eres|es|sou)\s+de\b/i,
+  /\bj['’]?\s*(habite|ai\s+\d{1,2})\b/i,
+  /\bhabit(e|es|ent|ons|ez|er)\s+(à|a|au|en)(?![a-z])/i,
+  /\b(je\s+viens|il\s+vient|elle\s+vient)\s+d/i,
   // school
+  /\b\w*school(ers?|ing|ed)\b/i,
   /\b(school|highschool|high-school|college|university|uni|academy|campus|homeschool\w*|classmates?|teachers?|principal|class\s+of|semester|gcse|a-levels?)\b/i,
   // pronouns, gender, orientation
   /\bpronouns?\b/i,

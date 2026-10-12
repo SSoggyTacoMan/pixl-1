@@ -1,5 +1,4 @@
 import { app } from "../slack/app.js";
-import { GABIN_ID } from "../constants.js";
 import { aiPost } from "../ai/client.js";
 import { sanitizeAIOutput } from "../ai/outputFilter.js";
 import { checkAiRateLimit, AI_RATE_LIMIT_MESSAGE } from "../ai/rateLimit.js";
@@ -9,12 +8,15 @@ import { audit } from "../audit.js";
 import { programMemory, addProgramFact, removeProgramFact } from "../memory/program.js";
 import { checkIsHelper, checkIsInTicketChannel } from "../tickets/service.js";
 
-app.command("/pixl-remember", async ({ command, ack, respond, client }) => {
+// Program facts are injected into every prompt Pixo builds, for everyone,
+// so writing them is an admin-only power (SLACK_ADMIN_USER_IDS): not helpers,
+// not ticket-channel members, and no hardcoded per-person bypass.
+app.command("/pixl-remember", async ({ command, ack, respond }) => {
   await ack();
-  const isAdmin = await checkIsHelper(command.user_id);
-  const isInTicketChannel = await checkIsInTicketChannel(command.user_id, client);
-  if (!isAdmin && !isInTicketChannel && command.user_id !== GABIN_ID) {
-    await respond({ text: "Only support team members can add to my memory." });
+  const admin = isSlackAdmin(command.user_id);
+  if (!admin) {
+    await audit({ action: "program_memory.add", slackId: command.user_id, result: "denied" }, false);
+    await respond({ text: "Only Pixl admins can add to my memory." });
     return;
   }
   const fact = command.text?.trim();
@@ -23,15 +25,15 @@ app.command("/pixl-remember", async ({ command, ack, respond, client }) => {
     return;
   }
   await addProgramFact(fact);
+  await audit({ action: "program_memory.add", slackId: command.user_id, result: "ok" }, true);
   await respond({ text: `got it, i'll remember: _${fact}_` });
 });
 
-app.command("/pixl-forget", async ({ command, ack, respond, client }) => {
+app.command("/pixl-forget", async ({ command, ack, respond }) => {
   await ack();
-  const isAdmin = await checkIsHelper(command.user_id);
-  const isInTicketChannel = await checkIsInTicketChannel(command.user_id, client);
-  if (!isAdmin && !isInTicketChannel) {
-    await respond({ text: "Only support team members can modify my memory." });
+  if (!isSlackAdmin(command.user_id)) {
+    await audit({ action: "program_memory.remove", slackId: command.user_id, result: "denied" }, false);
+    await respond({ text: "Only Pixl admins can modify my memory." });
     return;
   }
   if (!programMemory.length) {
@@ -47,6 +49,7 @@ app.command("/pixl-forget", async ({ command, ack, respond, client }) => {
   }
   const removed = programMemory[idx];
   await removeProgramFact(idx);
+  await audit({ action: "program_memory.remove", slackId: command.user_id, result: "ok" }, true);
   await respond({ text: `forgot: _${removed}_` });
 });
 

@@ -36,7 +36,14 @@ const SESSION_TTL_SEC = 14 * 24 * 3600;
 // opts.expiresAtSec re-issues a token that ends when the one it replaces
 // would have (e.g. after a rename), so re-issuing never extends a session.
 // It can't be later than a fresh token's own 14 days.
-export function issueSessionToken(payload: SessionPayload, opts: { expiresAtSec?: number } = {}): string {
+// opts.issuedAtSec carries the replaced token's iat over, so a re-issued
+// token is revoked by exactly the revocations that revoke the original: a
+// fresh iat would let a token re-issued moments after a revocation (from a
+// still-cached "not revoked" lookup) outlive it. Never later than now.
+export function issueSessionToken(
+  payload: SessionPayload,
+  opts: { expiresAtSec?: number; issuedAtSec?: number } = {},
+): string {
   if (!isSessionClient(payload.client)) throw new Error("issueSessionToken: unknown client");
   const claims: SessionPayload = {
     userId: payload.userId,
@@ -44,13 +51,19 @@ export function issueSessionToken(payload: SessionPayload, opts: { expiresAtSec?
     client: payload.client,
   };
   if (payload.slackId) claims.slackId = payload.slackId;
+  const now = Math.floor(Date.now() / 1000);
+  let iat: number | undefined;
+  if (opts.issuedAtSec !== undefined) {
+    if (!(Number.isFinite(opts.issuedAtSec) && opts.issuedAtSec > 0)) throw new Error("issueSessionToken: bad issuedAtSec");
+    iat = Math.min(Math.floor(opts.issuedAtSec), now);
+  }
+  const withIat = iat === undefined ? claims : { ...claims, iat };
   if (opts.expiresAtSec !== undefined) {
-    const now = Math.floor(Date.now() / 1000);
     const exp = Math.min(Math.floor(opts.expiresAtSec), now + SESSION_TTL_SEC);
     if (!(exp > now)) throw new Error("issueSessionToken: expiry already passed");
-    return jwt.sign({ ...claims, exp }, JWT_SECRET, { algorithm: "HS256" });
+    return jwt.sign({ ...withIat, exp }, JWT_SECRET, { algorithm: "HS256" });
   }
-  return jwt.sign(claims, JWT_SECRET, { algorithm: "HS256", expiresIn: SESSION_TTL_SEC });
+  return jwt.sign(withIat, JWT_SECRET, { algorithm: "HS256", expiresIn: SESSION_TTL_SEC });
 }
 
 // A token without a valid `client` claim (everything issued before the

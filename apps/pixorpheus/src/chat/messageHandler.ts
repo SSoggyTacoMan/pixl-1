@@ -4,6 +4,7 @@ import { checkAiRateLimit, AI_RATE_LIMIT_MESSAGE } from "../ai/rateLimit.js";
 import { config, hasLaunched, launchDateLabel } from "../config.generated.js";
 import { botIdentity } from "../slack/identity.js";
 import { aiPost } from "../ai/client.js";
+import { sanitizeAIOutput } from "../ai/outputFilter.js";
 import { getAIReply } from "../ai/persona.js";
 import { streamedAICall, NO_CREDITS } from "../ai/client.js";
 import { shouldChimeIn, extractSearchQuery, braveSearch } from "../ai/search.js";
@@ -241,7 +242,9 @@ app.message(async ({ message, client }) => {
           max_tokens: 300,
         });
 
-        const summary = res.data.choices?.[0]?.message?.content?.trim();
+        // Model output summarizing player messages: same output filter as
+        // every other AI reply ("" means it was dropped whole).
+        const summary = sanitizeAIOutput(res.data.choices?.[0]?.message?.content?.trim() || "").trim();
         await client.chat.postEphemeral({
           channel: m.channel,
           user: m.user,

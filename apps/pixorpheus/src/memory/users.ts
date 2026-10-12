@@ -23,7 +23,8 @@ export function parseFacts(raw: unknown): string[] {
  * The stored facts about a user that are safe to show or feed to a model.
  * Every reader goes through this (never userMemory.get directly), so legacy
  * rows saved before the identity filter existed are dropped at read time.
- * The display-name fact is excluded too: it is read only via getDisplayName.
+ * Legacy "name is X" facts are excluded too (isIdentityFact matches them);
+ * display names come only from the Slack profile, see getDisplayName.
  */
 export function getSafeFacts(userId: string | null | undefined): string[] {
   if (!userId) return [];
@@ -76,17 +77,28 @@ export async function saveUserMemory(userId: string, facts: string[]): Promise<v
   }
 }
 
+// Slack display names, cached in memory only. This used to be stored as a
+// "name is X" fact in user_memory and read back from there, but legacy rows
+// written by the old extractor can hold a "name is <real name>" fact too,
+// and reading the name back from memory would surface it. The display name
+// now always comes from the user's Slack profile (what they chose to show
+// the workspace), never from stored memory.
+const DISPLAY_NAME_TTL_MS = 6 * 3600_000;
+const displayNames = new Map<string, { name: string; at: number }>();
+
 export async function ensureUserName(userId: string, client: WebClient): Promise<void> {
-  const existing = parseFacts(userMemory.get(userId));
-  if (existing.some((f) => f.startsWith("name is"))) return;
+  const cached = displayNames.get(userId);
+  if (cached && Date.now() - cached.at < DISPLAY_NAME_TTL_MS) return;
   try {
     const info = await client.users.info({ user: userId });
     // Display name only, never real_name: the display name is what the user
     // chose to show the workspace, the real name is identity data.
-    const name = info.user?.profile?.display_name;
-    if (!name) return;
-    const updated = [`name is ${name}`, ...existing];
-    await saveUserMemory(userId, updated.slice(-100));
+    const name = (info.user?.profile?.display_name || "").trim();
+    if (!name) {
+      displayNames.delete(userId);
+      return;
+    }
+    displayNames.set(userId, { name: name.slice(0, 80), at: Date.now() });
   } catch (e) {
     // best-effort
   }
@@ -94,9 +106,7 @@ export async function ensureUserName(userId: string, client: WebClient): Promise
 
 export function getDisplayName(userId: string | null | undefined): string | null {
   if (!userId) return null;
-  const facts = parseFacts(userMemory.get(userId));
-  const nameFact = facts.find((f) => f.startsWith("name is "));
-  return nameFact ? nameFact.replace("name is ", "") : null;
+  return displayNames.get(userId)?.name ?? null;
 }
 
 export function resolveUserMentions(text: string): string {
@@ -162,8 +172,8 @@ RULES:
       .filter((f) => !isIdentityFact(f));
     if (!newFacts.length) return;
     // Rewriting the row also drops any legacy identity facts stored before
-    // this filter existed (the display-name fact is kept, it's not extracted).
-    const existing = parseFacts(userMemory.get(userId)).filter((f) => f.startsWith("name is ") || !isIdentityFact(f));
+    // this filter existed, including old "name is X" display-name facts.
+    const existing = parseFacts(userMemory.get(userId)).filter((f) => !isIdentityFact(f));
     const deduped = newFacts.filter((nf) => {
       const nfWords = nf.toLowerCase().split(" ").slice(0, 3).join(" ");
       return !existing.some((ef) => ef.toLowerCase().split(" ").slice(0, 3).join(" ") === nfWords);

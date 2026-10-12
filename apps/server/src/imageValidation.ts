@@ -11,6 +11,12 @@ sharp.concurrency(1);
 export const MAX_INPUT_PIXELS = 40_000_000;
 export const MAX_IMAGE_SIDE = 10_000;
 
+// A decode that takes longer than this is aborted by libvips itself
+// (sharp's timeout()), so a pathological file can't hold one of the
+// MAX_CONCURRENT slots below forever. Real uploads under the pixel cap
+// decode in well under a second.
+export const DECODE_TIMEOUT_SEC = 15;
+
 // At most MAX_CONCURRENT decodes at once, at most MAX_WAITING queued behind
 // them; past that an upload is told to retry instead of piling up.
 const MAX_CONCURRENT = 2;
@@ -85,7 +91,9 @@ export async function sanitizeImage(buf: Buffer, mime: string): Promise<Sanitize
       const opts = { failOn: "error" as const, limitInputPixels: MAX_INPUT_PIXELS };
       const meta = await sharp(buf, opts).metadata();
       if (meta.format !== expected || !declaredSizeOk(meta)) return { ok: false };
-      const { data, info } = await sharp(buf, opts).toBuffer({ resolveWithObject: true });
+      const { data, info } = await sharp(buf, opts)
+        .timeout({ seconds: DECODE_TIMEOUT_SEC })
+        .toBuffer({ resolveWithObject: true });
       if (info.format !== expected) return { ok: false };
       return { ok: true, buffer: data };
     } catch {

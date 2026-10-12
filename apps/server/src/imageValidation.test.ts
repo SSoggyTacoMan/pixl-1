@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { deflateSync } from "node:zlib";
 import sharp from "sharp";
-import { declaredSizeOk, isRealImage, sanitizeImage, sniffFormat, withSanitizeSlot, BUSY } from "./imageValidation.js";
+import { declaredSizeOk, isRealImage, sanitizeImage, sniffFormat, withSanitizeSlot, BUSY, MAX_INPUT_PIXELS } from "./imageValidation.js";
 
 function pixel() {
   return { create: { width: 2, height: 2, channels: 3 as const, background: { r: 1, g: 2, b: 3 } } };
@@ -94,6 +95,35 @@ async function pngDeclaring(width: number, height: number): Promise<Buffer> {
   return buf;
 }
 
+// A complete, valid, all-black 1-bit grayscale PNG of any size, built by
+// hand (zlib + CRCs) so the test doesn't have to encode it with sharp. All
+// zero rows deflate to almost nothing, so a 9000x9000 image is a few KB on
+// the wire - a real compressed bomb, not just a forged header, so a decoder
+// with no pixel limit would happily inflate it.
+function zeroPng(width: number, height: number): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(Bun.hash.crc32(body) >>> 0);
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 1; // bit depth
+  ihdr[9] = 0; // grayscale
+  // Each row: filter byte 0 + ceil(width / 8) bytes of zero bits.
+  const raw = Buffer.alloc((1 + Math.ceil(width / 8)) * height);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 9 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
 describe("decompression bombs", () => {
   test("a tiny PNG declaring 100000x100000 pixels is refused", async () => {
     const bomb = await pngDeclaring(100_000, 100_000);
@@ -101,8 +131,23 @@ describe("decompression bombs", () => {
     expect(await isRealImage(bomb, "image/png")).toBe(false);
   });
 
-  test("a PNG declaring 9000x9000 (under the side cap, over the pixel cap) is refused", async () => {
-    expect(await isRealImage(await pngDeclaring(9000, 9000), "image/png")).toBe(false);
+  test("the hand-built PNG is a valid image sharp decodes when it's under our cap", async () => {
+    const small = zeroPng(3000, 3000);
+    const meta = await sharp(small).metadata();
+    expect(meta.width).toBe(3000);
+    expect(meta.height).toBe(3000);
+    expect((await sanitizeImage(small, "image/png")).ok).toBe(true);
+  });
+
+  test("a valid, highly compressed 9000x9000 PNG (over our 40M pixel cap, under sharp's own default) is refused", async () => {
+    const bomb = zeroPng(9000, 9000);
+    expect(bomb.length).toBeLessThan(200_000);
+    expect(9000 * 9000).toBeGreaterThan(MAX_INPUT_PIXELS);
+    // Under sharp's built-in 268M-pixel default, so only our limit refuses it:
+    // with no options sharp reads it as a perfectly normal image.
+    expect(9000 * 9000).toBeLessThan(0x3fff * 0x3fff);
+    expect((await sharp(bomb).metadata()).width).toBe(9000);
+    expect(await isRealImage(bomb, "image/png")).toBe(false);
   });
 
   test("declared size limits", () => {

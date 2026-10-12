@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { checkLoginRedirect, checkRedirect, CLIENT_STATE_RE, createLoginCodeStore, LOGIN_CODE_TTL_MS } from "./loginCodes.js";
+import {
+  checkLoginRedirect,
+  checkRedirect,
+  CLIENT_STATE_RE,
+  createLoginCodeStore,
+  LOGIN_CODE_TTL_MS,
+  loginClientForRedirect,
+} from "./loginCodes.js";
 
-const grant = { userId: "u1", displayName: "P", slackId: "U123", isNew: false, needsLegalName: false };
+const grant = { userId: "u1", displayName: "P", slackId: "U123", isNew: false, needsLegalName: false, client: "game" as const };
 
 describe("login codes", () => {
   test("a code is 32 random bytes, base64url", () => {
@@ -99,5 +106,22 @@ describe("checkLoginRedirect", () => {
       42,
     ])
       expect(checkLoginRedirect(bad)).toBeNull();
+  });
+});
+
+describe("loginClientForRedirect", () => {
+  test("the Pixl Dashboard's callback is web, the game's root is game", () => {
+    expect(loginClientForRedirect("https://pixl.hackclub.com/api/auth/callback")).toBe("web");
+    expect(loginClientForRedirect("https://play.pixl.hackclub.com/")).toBe("game");
+  });
+
+  test("anything that isn't a login redirect has no client", () => {
+    expect(loginClientForRedirect("https://play.pixl.hackclub.com/other")).toBeNull();
+    expect(loginClientForRedirect("https://evil.example/")).toBeNull();
+  });
+
+  test("the grant's client survives the round trip through the store", () => {
+    const store = createLoginCodeStore();
+    expect(store.redeem(store.issue({ ...grant, client: "web" }))?.client).toBe("web");
   });
 });

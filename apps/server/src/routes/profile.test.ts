@@ -58,6 +58,19 @@ describe("POST /api/profile/name token re-issue", () => {
     expect(fresh?.exp).toBe(exp);
   });
 
+  test("a re-issued token keeps the old iat, so a revocation of the old one covers it", async () => {
+    const { isSessionRevoked } = await import("../auth/revocation.js");
+    const iat = Math.floor(Date.now() / 1000) - 600;
+    const exp = iat + 3600;
+    const old = jwt.sign({ userId: "u-name", displayName: "Old Name", client: "game", iat, exp }, process.env.JWT_SECRET!, { algorithm: "HS256" });
+    const r = await call("POST", "/api/profile/name", old, { name: "Newer Name" });
+    expect(r.status).toBe(200);
+    const fresh = verifySessionToken(String(r.body.token));
+    expect(fresh?.iat).toBe(iat);
+    // Revoked 5 minutes ago (after the old token was issued, before the rename).
+    expect(isSessionRevoked(fresh!, (iat + 300) * 1000)).toBe(true);
+  });
+
   test("saving the same name hands back no new token", async () => {
     const token = issueSessionToken({ client: "game", userId: "u-name", displayName: "Same Name" });
     const r = await call("POST", "/api/profile/name", token, { name: "Same Name" });

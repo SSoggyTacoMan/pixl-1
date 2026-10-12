@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { config } from "../config.generated.js";
+import type { SessionClient } from "./session.js";
 
 // Single-use login codes for the code-exchange login (spec section 2,
 // "Login without tokens in URLs"). The OAuth callback mints one and puts it
@@ -16,6 +17,12 @@ export interface LoginGrant {
   slackId: string | null;
   isNew: boolean;
   needsLegalName: boolean;
+  // Which app the login was started for, derived from the login redirect
+  // (loginClientForRedirect). /auth/exchange only redeems the code for a
+  // caller of that same kind, so a code minted for the Pixl Dashboard's
+  // callback can't be traded by the game's origin for a game token (or the
+  // other way round).
+  client: SessionClient;
 }
 
 export function createLoginCodeStore(now: () => number = Date.now) {
@@ -87,6 +94,15 @@ export const LOGIN_REDIRECTS: readonly string[] = Object.freeze([
 export function checkLoginRedirect(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   return LOGIN_REDIRECTS.includes(raw) ? raw : null;
+}
+
+// The session client a login redirect belongs to: the Pixl Dashboard's
+// callback is "web", the game's root is "game". Anything else isn't a login
+// redirect at all (null).
+export function loginClientForRedirect(redirect: string): SessionClient | null {
+  if (redirect === `${config.urls.site}/api/auth/callback`) return "web";
+  if (redirect === `${config.urls.play}/`) return "game";
+  return null;
 }
 
 // `state` is opaque to the server, the client binds it to a cookie or a

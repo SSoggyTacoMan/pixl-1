@@ -152,9 +152,50 @@ export async function distinctRecentReporters(targetId: string): Promise<number>
 
 // violations.kind for an AI flag: "chat" counts toward the 7-violation
 // auto-ban (moderation.ts recordChatViolation counts kind = 'chat'),
-// "ai_flag" is kept on record for reviewers but never counted.
-export function aiFlagKind(distinctReporters: number): "chat" | "ai_flag" {
-  return distinctReporters >= AI_FLAG_CORROBORATION ? "chat" : "ai_flag";
+// "ai_flag" is kept on record for reviewers but never counted. A flag only
+// counts when a second distinct reporter corroborates it AND this reporter
+// hasn't already had one counted against this target inside the window -
+// otherwise one player (plus a single alt for the corroboration) could keep
+// re-reporting and walk the target to the auto-ban on their own, since every
+// further severe verdict would count. Each distinct reporter can contribute
+// at most one counted AI violation per target per window.
+export function aiFlagKind(distinctReporters: number, reporterAlreadyCounted = 0): "chat" | "ai_flag" {
+  return distinctReporters >= AI_FLAG_CORROBORATION && reporterAlreadyCounted === 0 ? "chat" : "ai_flag";
+}
+
+// How many of this reporter's reports against this target, inside the
+// corroboration window, already produced a counted AI violation
+// (reports.ai_counted, migration 0219).
+export async function reporterCountedAiFlags(targetId: string, reporterId: string): Promise<number> {
+  const since = new Date(Date.now() - CORROBORATION_WINDOW_DAYS * 24 * 3600_000).toISOString();
+  const { data, error } = await supabase
+    .from("reports")
+    .select("id")
+    .eq("target_id", targetId)
+    .eq("reporter_id", reporterId)
+    .eq("ai_counted", true)
+    .gte("created_at", since)
+    .limit(10);
+  // Fail closed: if we can't tell, don't count it.
+  if (error) return 1;
+  return (data ?? []).length;
+}
+
+// The decide-then-record step below is check-then-act, and a reporter can
+// fire several reports at once (each analyzed concurrently, in the
+// background). Serialize it per target so two of one reporter's reports
+// can't both see "nothing counted yet" and both count.
+const aiFlagLocks = new Map<string, Promise<unknown>>();
+async function withTargetLock<T>(targetId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = aiFlagLocks.get(targetId) ?? Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  const tail = run.catch(() => {});
+  aiFlagLocks.set(targetId, tail);
+  try {
+    return await run;
+  } finally {
+    if (aiFlagLocks.get(targetId) === tail) aiFlagLocks.delete(targetId);
+  }
 }
 
 export async function runReportAnalysis(
@@ -162,6 +203,7 @@ export async function runReportAnalysis(
   targetId: string,
   targetName: string,
   reason: string,
+  reporterId: string,
 ): Promise<ReportAiResult | null> {
   const chat = await fetchTargetChat(targetId);
   const result = await analyzeReport(targetName, reason, chat);
@@ -178,19 +220,28 @@ export async function runReportAnalysis(
 
     // Auto-action on a high-confidence severe verdict: warn the player and log
     // a violation (which only feeds the auto-ban escalation once a second
-    // distinct reporter corroborates it, see aiFlagKind). We never
-    // auto-ban straight off an AI call, a human still confirms in the queue.
+    // distinct reporter corroborates it, and at most once per reporter, see
+    // aiFlagKind). We never auto-ban straight off an AI call, a human still
+    // confirms in the queue.
     // Also require actual transcript evidence: a reporter's `reason` alone is
     // attacker-controlled free text, so a "severe" verdict with no real chat
     // to back it up is exactly the shape a prompt-injection attempt takes,
     // skip auto-action (a human reviewer still sees the AI verdict) rather
     // than punish someone based purely on what another player claimed.
     if (result.verdict.toLowerCase() === "severe" && result.score >= 80 && chat.length > 0) {
-      const kind = aiFlagKind(await distinctRecentReporters(targetId));
-      await supabase.from("violations").insert({
-        user_id: targetId,
-        kind,
-        content: `[AI auto-flag ${result.score}/100] ${result.summary}`.slice(0, 500),
+      await withTargetLock(targetId, async () => {
+        const kind = aiFlagKind(
+          await distinctRecentReporters(targetId),
+          await reporterCountedAiFlags(targetId, reporterId),
+        );
+        if (kind === "chat") {
+          await supabase.from("reports").update({ ai_counted: true }).eq("id", reportId);
+        }
+        await supabase.from("violations").insert({
+          user_id: targetId,
+          kind,
+          content: `[AI auto-flag ${result.score}/100] ${result.summary}`.slice(0, 500),
+        });
       });
       await supabase.from("notifications").insert({
         user_id: targetId,

@@ -55,7 +55,10 @@ router.post("/api/profile/name", validate({ query: v.noQuery, body: z.object({ n
   // from there), so a real change re-issues the token for the same client -
   // but only on a change, and ending exactly when the old one would have:
   // renaming must never be a way to keep a session alive past its 14 days.
-  if (name === session.displayName || session.exp === undefined) return res.json({ ok: true, name });
+  // It also keeps the old token's iat: a fresh one would let a token
+  // re-issued just after a revocation (while the revocation lookup is still
+  // cached as "not revoked") outlive that revocation.
+  if (name === session.displayName || session.exp === undefined || !session.iat) return res.json({ ok: true, name });
   const fresh = issueSessionToken(
     {
       userId: session.userId,
@@ -63,7 +66,7 @@ router.post("/api/profile/name", validate({ query: v.noQuery, body: z.object({ n
       client: session.client,
       ...(session.slackId ? { slackId: session.slackId } : {}),
     },
-    { expiresAtSec: session.exp },
+    { expiresAtSec: session.exp, issuedAtSec: session.iat },
   );
   res.json({ ok: true, name, token: fresh });
 });

@@ -111,28 +111,75 @@ describe("AI flags and the auto-ban", () => {
     expect(aiFlagKind(5)).toBe("chat");
   });
 
-  function chain(result: { data: unknown; error: unknown }, onInsert?: (row: unknown) => void) {
+  test("a reporter who already had a counted flag on this target never counts again", () => {
+    expect(aiFlagKind(2, 1)).toBe("ai_flag");
+    expect(aiFlagKind(5, 3)).toBe("ai_flag");
+    expect(aiFlagKind(2, 0)).toBe("chat");
+  });
+
+  // A tiny in-memory stand-in for the reports/violations tables, enough for
+  // runReportAnalysis: reports rows carry reporter_id + ai_counted.
+  type ReportRow = { id: number; reporter_id: string; ai_counted: boolean };
+
+  function chain(
+    resolve: (filters: Record<string, unknown>) => { data: unknown; error: unknown },
+    hooks: { onInsert?: (row: unknown) => void; onUpdate?: (patch: Record<string, unknown>, filters: Record<string, unknown>) => void } = {},
+  ) {
+    const filters: Record<string, unknown> = {};
+    let patch: Record<string, unknown> | null = null;
     const c: Record<string, unknown> = {};
-    for (const m of ["select", "eq", "gte", "order", "limit", "update", "maybeSingle", "single"]) c[m] = () => c;
-    c.insert = (row: unknown) => {
-      onInsert?.(row);
+    for (const m of ["select", "gte", "order", "limit", "maybeSingle", "single"]) c[m] = () => c;
+    c.eq = (col: string, val: unknown) => {
+      filters[col] = val;
       return c;
     };
-    c.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
-      Promise.resolve(result).then(resolve, reject);
+    c.update = (p: Record<string, unknown>) => {
+      patch = p;
+      return c;
+    };
+    c.insert = (row: unknown) => {
+      hooks.onInsert?.(row);
+      return c;
+    };
+    c.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => {
+      if (patch) {
+        hooks.onUpdate?.(patch, filters);
+        return Promise.resolve({ data: null, error: null }).then(res, rej);
+      }
+      return Promise.resolve(resolve(filters)).then(res, rej);
+    };
     return c;
   }
 
-  async function severeReportWith(reporterIds: string[]) {
+  // Runs one severe report (id = reportId, filed by reporterId) against a
+  // reports table that already holds `reports` (the new one included).
+  async function severeReport(reports: ReportRow[], reportId: number, reporterId: string) {
     const violations: Record<string, unknown>[] = [];
     const realFrom = db.from;
     const realKey = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = "test";
     db.from = ((table: string) => {
-      if (table === "chat_messages") return chain({ data: [{ text: "mean words", created_at: "2026-10-01" }], error: null });
-      if (table === "reports") return chain({ data: reporterIds.map((reporter_id) => ({ reporter_id })), error: null });
-      if (table === "violations") return chain({ data: null, error: null }, (row) => violations.push(row as Record<string, unknown>));
-      return chain({ data: null, error: null });
+      if (table === "chat_messages")
+        return chain(() => ({ data: [{ text: "mean words", created_at: "2026-10-01" }], error: null }));
+      if (table === "reports")
+        return chain(
+          (f) => ({
+            data: reports.filter(
+              (r) =>
+                (f.reporter_id === undefined || r.reporter_id === f.reporter_id) &&
+                (f.ai_counted === undefined || r.ai_counted === f.ai_counted),
+            ),
+            error: null,
+          }),
+          {
+            onUpdate: (p, f) => {
+              if ("ai_counted" in p) for (const r of reports) if (r.id === f.id) r.ai_counted = Boolean(p.ai_counted);
+            },
+          },
+        );
+      if (table === "violations")
+        return chain(() => ({ data: null, error: null }), { onInsert: (row) => violations.push(row as Record<string, unknown>) });
+      return chain(() => ({ data: null, error: null }));
     }) as unknown as typeof db.from;
     globalThis.fetch = (async () =>
       new Response(
@@ -140,7 +187,7 @@ describe("AI flags and the auto-ban", () => {
         { status: 200 },
       )) as unknown as typeof fetch;
     try {
-      await runReportAnalysis(1, "target", "Ada", "reason");
+      await runReportAnalysis(reportId, "target", "Ada", "reason", reporterId);
     } finally {
       db.from = realFrom;
       if (realKey === undefined) delete process.env.OPENROUTER_API_KEY;
@@ -150,13 +197,62 @@ describe("AI flags and the auto-ban", () => {
   }
 
   test("a severe verdict from a single reporter logs an uncounted ai_flag", async () => {
-    const v = await severeReportWith(["r1", "r1"]);
+    const reports = [
+      { id: 1, reporter_id: "r1", ai_counted: false },
+      { id: 2, reporter_id: "r1", ai_counted: false },
+    ];
+    const v = await severeReport(reports, 2, "r1");
     expect(v).toHaveLength(1);
     expect(v[0].kind).toBe("ai_flag");
+    expect(reports.some((r) => r.ai_counted)).toBe(false);
   });
 
   test("a severe verdict corroborated by a second reporter logs a counted chat violation", async () => {
-    const v = await severeReportWith(["r1", "r2"]);
+    const reports = [
+      { id: 1, reporter_id: "r1", ai_counted: false },
+      { id: 2, reporter_id: "r2", ai_counted: false },
+    ];
+    const v = await severeReport(reports, 2, "r2");
     expect(v[0].kind).toBe("chat");
+    expect(reports.find((r) => r.id === 2)?.ai_counted).toBe(true);
+  });
+
+  test("one reporter plus one alt can't stack counted violations by re-reporting", async () => {
+    // r1 (the main account) and r2 (the alt) corroborate each other; r1 then
+    // keeps re-reporting. Only the first counted flag per reporter counts.
+    const reports: ReportRow[] = [{ id: 1, reporter_id: "r2", ai_counted: false }];
+    const kinds: unknown[] = [];
+    let id = 1;
+    for (const reporter of ["r1", "r1", "r1", "r1", "r1", "r1", "r1", "r1"]) {
+      reports.push({ id: ++id, reporter_id: reporter, ai_counted: false });
+      kinds.push((await severeReport(reports, id, reporter))[0].kind);
+    }
+    reports.push({ id: ++id, reporter_id: "r2", ai_counted: false });
+    kinds.push((await severeReport(reports, id, "r2"))[0].kind);
+    reports.push({ id: ++id, reporter_id: "r2", ai_counted: false });
+    kinds.push((await severeReport(reports, id, "r2"))[0].kind);
+
+    expect(kinds.filter((k) => k === "chat")).toHaveLength(2);
+    expect(kinds.filter((k) => k === "ai_flag")).toHaveLength(8);
+  });
+
+  test("concurrent reports from the same reporter still count at most once", async () => {
+    const reports: ReportRow[] = [
+      { id: 1, reporter_id: "r2", ai_counted: false },
+      { id: 2, reporter_id: "r1", ai_counted: false },
+      { id: 3, reporter_id: "r1", ai_counted: false },
+      { id: 4, reporter_id: "r1", ai_counted: false },
+    ];
+    // Each severeReport swaps db.from and restores what it found, so
+    // overlapping calls would leave a mock installed - restore by hand.
+    const realFrom = db.from;
+    let all: Record<string, unknown>[][];
+    try {
+      all = await Promise.all([severeReport(reports, 2, "r1"), severeReport(reports, 3, "r1"), severeReport(reports, 4, "r1")]);
+    } finally {
+      db.from = realFrom;
+    }
+    const kinds = all.flat().map((v) => v.kind);
+    expect(kinds.filter((k) => k === "chat")).toHaveLength(1);
   });
 });

@@ -1,5 +1,6 @@
 import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { supabase } from "../db/client.js";
+import { censorChat, containsBlocked } from "../moderation.js";
 
 export interface Lobby {
   id: string;
@@ -66,7 +67,8 @@ export async function loadLobbies() {
   for (const r of data ?? []) {
     lobbies.set(r.id as string, {
       id: r.id as string,
-      name: r.name as string,
+      // Names saved before cleanLobbyName existed get cleaned on the way in.
+      name: cleanLobbyName(r.name) || `Lobby ${r.id as string}`,
       isPublic: !!r.is_public,
       password: (r.password as string) ?? "",
       capacity: LOBBY_CAPACITY,
@@ -145,6 +147,28 @@ function genLobbyCode(len = 5): string {
   return code;
 }
 
+export const LOBBY_NAME_MAX = 30;
+
+// A lobby name is shown to every player browsing the public list, so it gets
+// the same treatment as chat: control/format characters (incl. zero-width
+// and bidi overrides) and brackets (BBCode in the Godot client's rich text)
+// go, then the chat profanity filter stars out anything blocked. A name the
+// censor can't make clean comes back "" and the caller keeps its fallback.
+export function cleanLobbyName(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const stripped = raw
+    .replace(/[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/gu, " ")
+    .replace(/[[\]{}<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, LOBBY_NAME_MAX)
+    .trim();
+  if (!stripped) return "";
+  const censored = censorChat(stripped);
+  if (containsBlocked(censored)) return "";
+  return censored.replace(/^[*\s]+$/, "");
+}
+
 export function createLobby(opts: {
   isPublic: boolean;
   name?: string;
@@ -153,7 +177,7 @@ export function createLobby(opts: {
   if (lobbies.size >= MAX_LOBBIES) return null;
   const id = genLobbyCode();
   const name =
-    (typeof opts.name === "string" ? opts.name.trim().slice(0, 30) : "") ||
+    cleanLobbyName(opts.name) ||
     (opts.isPublic ? `Lobby ${id}` : `Private ${id}`);
   const lobby: Lobby = {
     id,
@@ -172,7 +196,7 @@ export function createLobby(opts: {
 }
 
 export function renameLobby(l: Lobby, name: string) {
-  const clean = name.trim().slice(0, 30);
+  const clean = cleanLobbyName(name);
   if (clean) l.name = clean;
   persistLobby(l);
 }

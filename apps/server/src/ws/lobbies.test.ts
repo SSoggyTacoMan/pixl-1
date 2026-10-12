@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   LOBBY_PASSWORD_LENGTH,
+  cleanLobbyName,
+  createLobby,
+  lobbies,
+  renameLobby,
   genLobbyPassword,
   isStrongLobbyPassword,
   lobbyPasswordMatches,
@@ -68,5 +72,51 @@ describe("lobbyPasswordMatches", () => {
   test("a lobby with no secret never matches, not even an empty guess", () => {
     expect(lobbyPasswordMatches("", "")).toBe(false);
     expect(lobbyPasswordMatches("anything", "")).toBe(false);
+  });
+});
+
+describe("lobby names", () => {
+  test("blocked words are censored like chat", () => {
+    const out = cleanLobbyName("fuck this lobby");
+    expect(out).not.toMatch(/fuck/i);
+    expect(out).toContain("lobby");
+  });
+
+  test("a name that's nothing but a blocked word falls back", () => {
+    expect(cleanLobbyName("fuck")).toBe("");
+    expect(cleanLobbyName("fuuuck")).toBe("");
+  });
+
+  test("brackets (rich-text tags) are stripped", () => {
+    expect(cleanLobbyName("[color=red]Free Pixels[/color]")).toBe("color=redFree Pixels/color");
+    expect(cleanLobbyName("[url=https://x]hi[/url]")).not.toContain("[");
+    expect(cleanLobbyName("<b>hi</b>")).not.toMatch(/[<>]/);
+  });
+
+  test("control, zero-width and bidi characters are stripped", () => {
+    expect(cleanLobbyName("hi\u0000\u0007there")).toBe("hi there");
+    expect(cleanLobbyName("a\u200Bb")).toBe("a b");
+    expect(cleanLobbyName("\u202Eevil")).toBe("evil");
+    expect(cleanLobbyName("line\nbreak")).toBe("line break");
+  });
+
+  test("ordinary names pass through, capped", () => {
+    expect(cleanLobbyName("  Ada's Village  ")).toBe("Ada's Village");
+    expect(cleanLobbyName("x".repeat(80))).toHaveLength(30);
+    expect(cleanLobbyName(42)).toBe("");
+  });
+
+  test("createLobby and renameLobby use the cleaned name", () => {
+    const lobby = createLobby({ isPublic: true, name: "[b]fuck[/b]", ownerId: "u1" });
+    expect(lobby).not.toBeNull();
+    expect(lobby!.name).not.toMatch(/fuck|[[]]/i);
+    const fallback = createLobby({ isPublic: true, name: "fuck", ownerId: "u1" });
+    expect(fallback!.name).toBe(`Lobby ${fallback!.id}`);
+    lobbies.delete(fallback!.id);
+    renameLobby(lobby!, "shit\u200B lobby");
+    expect(lobby!.name).not.toMatch(/shit/i);
+    renameLobby(lobby!, "fuck");
+    expect(lobby!.name).not.toMatch(/fuck/i);
+    lobbies.delete(lobby!.id);
   });
 });

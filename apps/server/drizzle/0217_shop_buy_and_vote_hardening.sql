@@ -6,6 +6,14 @@
 --      choice. Before, an empty p_stock_choice skipped the stock block
 --      entirely, so the order went through without decrementing (or
 --      checking) any stock.
+--      Configurator items (config_options) are the exception: the player
+--      site never sends a stockChoice for them (it sends only `config`, and
+--      stock pools are keyed by the plain `options` picks it hides for a
+--      configurator). For those the choice is derived from the resolved
+--      single-select config picks when one of them names a stock pool row;
+--      if none does, the pool isn't keyed by the configurator and the
+--      purchase proceeds without stock, as before. Requiring a choice there
+--      would make every such item fail with invalid_config.
 --    * L3: the Beacon-unlock availability check moves inside the function,
 --      after the users row is locked FOR UPDATE. The route's check in
 --      shop.ts ran outside any lock, so two parallel purchases could both
@@ -18,8 +26,9 @@
 --    delete-then-insert in the handler that two parallel requests could
 --    interleave. round_id is filled by a trigger from the entry, so a server
 --    that doesn't send it (the one deployed before this) still works, and
---    a client can't claim a different round. Existing duplicates are
---    deduped first, keeping each voter's newest vote in the round.
+--    a client can't claim a different round. Votes pointing at an entry
+--    that no longer exists are deleted, then existing duplicates are
+--    deduped, keeping each voter's newest vote in the round.
 --
 -- Apply BEFORE deploying the server that upserts on (round_id, user_id); that
 -- server falls back to the old delete+insert if the constraint is missing.
@@ -47,6 +56,7 @@ declare
   v_discount integer;
   v_beacons integer;
   v_beacon_owned integer;
+  v_config_picks text[] := '{}';
 begin
   select * into v_item from shop_items where id = p_item_id;
   if not found or not v_item.active then
@@ -120,6 +130,7 @@ begin
               coalesce((v_choice->>'price')::integer, 0) * (100 - v_discount) / 100.0
             )::integer;
             v_found := true;
+            v_config_picks := v_config_picks || (v_choice->>'label');
           end if;
         end loop;
         if not v_found then
@@ -131,6 +142,9 @@ begin
           v_unit_price := v_unit_price + round(
             coalesce((v_choice->>'price')::integer, 0) * (100 - v_discount) / 100.0
           )::integer;
+          if v_choice->>'label' is not null then
+            v_config_picks := v_config_picks || (v_choice->>'label');
+          end if;
         end if;
       end if;
     end loop;
@@ -138,9 +152,23 @@ begin
 
   v_price := v_unit_price * v_qty;
 
+  -- A configurator item is bought with `config` only, never a stockChoice:
+  -- take the stock choice from its resolved single-select picks when one of
+  -- them is a stock pool row. No match means the pool isn't keyed by the
+  -- configurator, and the order goes through without stock, as before 0217.
+  if v_item.config_options is not null and coalesce(p_stock_choice, '') = '' then
+    select s.choice into p_stock_choice
+      from shop_option_stock s
+     where s.item_id = p_item_id and s.choice = any (v_config_picks)
+     order by array_position(v_config_picks, s.choice)
+     limit 1;
+    p_stock_choice := coalesce(p_stock_choice, '');
+  end if;
+
   -- An item with a per-choice stock pool must name the choice: without one
   -- the order used to go through with no stock decremented at all.
-  if exists (select 1 from shop_option_stock where item_id = p_item_id) then
+  if exists (select 1 from shop_option_stock where item_id = p_item_id)
+     and (v_item.config_options is null or p_stock_choice <> '') then
     if coalesce(p_stock_choice, '') = '' then
       return json_build_object('ok', false, 'error', 'invalid_config', 'group', 'stock');
     end if;
@@ -225,6 +253,14 @@ $function$;
 
 ALTER TABLE show_n_tell_votes
   ADD COLUMN IF NOT EXISTS round_id integer REFERENCES show_n_tell_rounds(id) ON DELETE CASCADE;
+
+-- A vote whose entry no longer exists has no round to fill in, and would
+-- make the SET NOT NULL below abort the whole migration (and with it the
+-- buy_shop_item fix). The FK's ON DELETE CASCADE should mean there are none,
+-- but a database whose table predates that constraint may still hold some,
+-- and such a vote counts for nothing anyway: drop them first.
+DELETE FROM show_n_tell_votes v
+ WHERE NOT EXISTS (SELECT 1 FROM show_n_tell_entries e WHERE e.id = v.entry_id);
 
 UPDATE show_n_tell_votes v
    SET round_id = e.round_id

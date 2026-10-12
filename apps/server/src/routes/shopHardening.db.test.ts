@@ -37,11 +37,26 @@ if (!adminUrl) {
     return row.id;
   }
 
-  async function buy(userId: string, itemId: number, stockChoice = "") {
+  async function buy(userId: string, itemId: number, stockChoice = "", config: Record<string, unknown> | null = null) {
     const [row] = await db<{ r: { ok: boolean; error?: string } }[]>`
       select buy_shop_item(p_user_id => ${userId}::uuid, p_item_id => ${itemId}::int, p_option => '',
+        p_config => ${config === null ? null : JSON.stringify(config)}::jsonb,
         p_stock_choice => ${stockChoice}::text) as r`;
     return row.r;
+  }
+
+  // A configurator item: the player site sends only `config` for these,
+  // never a stockChoice.
+  async function createConfigItem(): Promise<number> {
+    const id = await createItem();
+    const options = { base_price: 100, groups: [{ name: "Signer", type: "single", choices: [{ label: "Ridit" }, { label: "Gabin" }] }] };
+    await db`update shop_items set config_options = ${JSON.stringify(options)}::jsonb where id = ${id}`;
+    return id;
+  }
+
+  async function remaining(itemId: number, choice: string): Promise<number> {
+    const [s] = await db<{ remaining: number }[]>`select remaining from shop_option_stock where item_id = ${itemId} and choice = ${choice}`;
+    return s.remaining;
   }
 
   beforeAll(async () => {
@@ -70,6 +85,26 @@ if (!adminUrl) {
       expect(ok.ok).toBe(true);
       const [s] = await db<{ remaining: number }[]>`select remaining from shop_option_stock where item_id = ${item}`;
       expect(s.remaining).toBe(4);
+    });
+
+    test("a configurator item takes its stock choice from the config picks", async () => {
+      const user = await createUser();
+      const item = await createConfigItem();
+      await db`insert into shop_option_stock (item_id, choice, total, remaining) values (${item}, 'Ridit', 5, 5), (${item}, 'Gabin', 5, 5)`;
+      expect((await buy(user, item, "", { Signer: "Gabin" })).ok).toBe(true);
+      expect(await remaining(item, "Gabin")).toBe(4);
+      expect(await remaining(item, "Ridit")).toBe(5);
+      // No pick at all resolves to the group's first choice, like the price does.
+      expect((await buy(user, item, "", {})).ok).toBe(true);
+      expect(await remaining(item, "Ridit")).toBe(4);
+    });
+
+    test("a configurator item whose pool isn't keyed by its config still sells", async () => {
+      const user = await createUser();
+      const item = await createConfigItem();
+      await db`insert into shop_option_stock (item_id, choice, total, remaining) values (${item}, 'Unrelated', 5, 5)`;
+      expect((await buy(user, item, "", { Signer: "Ridit" })).ok).toBe(true);
+      expect(await remaining(item, "Unrelated")).toBe(5);
     });
   });
 

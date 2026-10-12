@@ -61,6 +61,7 @@ router.post("/api/reports", validate({ query: v.noQuery, body: z.object({ target
       targetId,
       target.display_name,
       reason,
+      session.userId,
     );
     await postReportToSlack(reportId, target.display_name, reason, ai);
   })().catch(console.error);

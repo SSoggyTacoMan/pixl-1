@@ -58,6 +58,30 @@ describe("isIdentityFact", () => {
     "has adhd",
     // job
     "works at a grocery store",
+    // phrasings the first version missed
+    "i'm 14",
+    "im 14",
+    "I am 13",
+    "turns 14 next month",
+    "13 y.o.",
+    "is a middle schooler",
+    "highschooler",
+    "in eighth grade",
+    "Eighth Grade",
+    "from ohio",
+    "grew up in a small town in kerala",
+    "speaks hindi",
+    "speaks Tagalog at home",
+    "tengo 14 años",
+    "tiene 13 anos",
+    "vive en Madrid",
+    "vivo en bogota",
+    "soy de mexico",
+    "habite à Lyon",
+    "j'habite a lyon",
+    "j'ai 14 ans",
+    "14 ans",
+    "mora em São Paulo",
   ];
   for (const f of identity) {
     test(`drops: ${f}`, () => expect(isIdentityFact(f)).toBe(true));

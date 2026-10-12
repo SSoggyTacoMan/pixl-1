@@ -71,6 +71,19 @@ describe("POST /api/collaborators/redeem", () => {
     );
     expect(r.status).toBe(200);
   });
+
+  test("redeem attempts are rate limited per player", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 11; i++) {
+      const r = await call({ projects: { data: null, error: null } }, "/api/collaborators/redeem", { code: "ZZZ-ZZZ" }, "code-guesser");
+      statuses.push(r.status);
+    }
+    expect(statuses.slice(0, 10).every((s) => s !== 429)).toBe(true);
+    expect(statuses[10]).toBe(429);
+    // Another player isn't affected by the first one's bucket.
+    const other = await call({ projects: { data: null, error: null } }, "/api/collaborators/redeem", { code: "ZZZ-ZZZ" }, "someone-else");
+    expect(other.status).not.toBe(429);
+  });
 });
 
 describe("POST /api/projects/:id/collaborators/code/rotate", () => {

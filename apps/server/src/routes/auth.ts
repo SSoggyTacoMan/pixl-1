@@ -5,7 +5,14 @@ import { supabase, type UserRow } from "../db/client.js";
 import type { PgError } from "../db/pgCompat.js";
 import { issueSessionToken, type SessionClient } from "../auth/session.js";
 import { forgetCachedRevocation, revokeUserSessions } from "../auth/revocation.js";
-import { checkLoginRedirect, checkRedirect, CLIENT_STATE_RE, createLoginCodeStore, type LoginGrant } from "../auth/loginCodes.js";
+import {
+  checkLoginRedirect,
+  checkRedirect,
+  CLIENT_STATE_RE,
+  createLoginCodeStore,
+  loginClientForRedirect,
+  type LoginGrant,
+} from "../auth/loginCodes.js";
 import { lookupActiveBan } from "../moderation.js";
 import { fetchSlackAvatar, fetchSlackDisplayName } from "../slackAvatar.js";
 import { enrollSlackPlayerInPixl } from "../pixlSlack.js";
@@ -309,20 +316,34 @@ router.post(
   },
   validate({ query: v.noQuery, body: z.object({ code: z.string().min(16).max(128) }) }),
   (req, res) => {
-    // The token's client kind comes only from who is calling, never from
-    // the body: the Pixl Dashboard's service key -> "web", the game's
-    // origin -> "game".
-    const client: SessionClient = req.service === "pixl-dashboard" ? "web" : "game";
+    // The token's client kind comes from the grant, which was bound to the
+    // login redirect when the code was minted, never from the body. The
+    // caller must be that same kind: the Pixl Dashboard's service key for a
+    // "web" grant, the game's origin for a "game" one. A mismatch spends the
+    // code (redeem already deleted it) and is refused.
+    const caller: SessionClient = req.service === "pixl-dashboard" ? "web" : "game";
     const grant = loginCodes.redeem(String(req.body.code));
     if (!grant) {
       auditRequestThrottled(req, {
         action: "auth.exchange",
         target: "POST /auth/exchange",
         result: "denied",
-        meta: { reason: "invalid_code", via: req.service ?? "game", client },
+        meta: { reason: "invalid_code", via: req.service ?? "game", client: caller },
       });
       return res.status(400).json({ ok: false, error: "invalid_code" });
     }
+    if (grant.client !== caller) {
+      auditRequestThrottled(req, {
+        actorType: "player",
+        actorId: grant.userId,
+        action: "auth.exchange",
+        target: "POST /auth/exchange",
+        result: "denied",
+        meta: { reason: "client_mismatch", via: req.service ?? "game", client: caller, grantClient: grant.client },
+      });
+      return res.status(400).json({ ok: false, error: "invalid_code" });
+    }
+    const client: SessionClient = grant.client;
 
     const token = issueSessionToken({
       userId: grant.userId,
@@ -838,12 +859,20 @@ router.get(
     // logging back in is already (or deliberately isn't) in the channel.
     if (isNewUser && identity.slack_id) void enrollSlackPlayerInPixl(identity.slack_id);
 
+    // The login was started with one of LOGIN_REDIRECTS, so this always
+    // resolves; refuse rather than guess if it somehow doesn't.
+    const loginClient = loginClientForRedirect(pending.redirect);
+    if (!loginClient) {
+      loginFailed(req, "bad_redirect", { actorId: userId });
+      return res.status(400).json({ ok: false, error: "invalid_redirect" });
+    }
     const grant: LoginGrant = {
       userId,
       displayName,
       slackId: identity.slack_id ?? null,
       isNew: isNewUser,
       needsLegalName,
+      client: loginClient,
     };
     const loginCode = loginCodes.issue(grant);
     audit({

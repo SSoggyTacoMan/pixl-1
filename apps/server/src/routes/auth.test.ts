@@ -7,6 +7,7 @@ import { db } from "../db/pgCompat.js";
 import authRouter from "./auth.js";
 
 const STATE = "client-state-0123456789";
+const DASHBOARD_CALLBACK = "https://pixl.hackclub.com/api/auth/callback";
 const DASHBOARD_KEY = "d".repeat(48);
 const INTERNAL_KEY = "i".repeat(48);
 process.env.SERVICE_KEY_PIXL_DASHBOARD = DASHBOARD_KEY;
@@ -709,7 +710,7 @@ describe("code exchange login", () => {
       // The internal dashboard's key is a real key but not allowed here.
       expect((await post({ "x-pixl-service-key": INTERNAL_KEY })).status).toBe(401);
       // None of those spent the code.
-      expect((await post({ "x-pixl-service-key": DASHBOARD_KEY })).status).toBe(200);
+      expect((await post({ Origin: "https://play.pixl.hackclub.com" })).status).toBe(200);
     } finally {
       users.restore();
       hca.restore();
@@ -717,12 +718,15 @@ describe("code exchange login", () => {
     }
   });
 
-  test("the token's client comes from the caller: service key -> web, game origin -> game; the body can't override it", async () => {
+  test("the token's client comes from the login's redirect, matched by the caller; the body can't override it", async () => {
     const users = mockUsersTable([]);
     const hca = mockHcaFetch({ id: "hca-client-identity", first_name: "Client", last_name: "Kind" });
     const app = await startTestApp();
-    const freshCode = async () =>
-      new URL((await driveHcaCallback(app.baseUrl)).headers.get("location")!).searchParams.get("code")!;
+    const freshCode = async (redirect = "https://play.pixl.hackclub.com/") =>
+      new URL(
+        (await driveHcaCallback(app.baseUrl, `?redirect=${encodeURIComponent(redirect)}&state=${STATE}`)).headers.get("location")!,
+      ).searchParams.get("code")!;
+    const webCode = () => freshCode(DASHBOARD_CALLBACK);
     const post = async (headers: Record<string, string>, body: Record<string, unknown>) => {
       const res = await fetch(`${app.baseUrl}/auth/exchange`, {
         method: "POST",
@@ -733,15 +737,49 @@ describe("code exchange login", () => {
       return verifySessionToken(((await res.json()) as { token: string }).token);
     };
     try {
-      expect((await post({ "x-pixl-service-key": DASHBOARD_KEY }, { code: await freshCode() }))?.client).toBe("web");
+      expect((await post({ "x-pixl-service-key": DASHBOARD_KEY }, { code: await webCode() }))?.client).toBe("web");
       expect((await post({ Origin: "https://play.pixl.hackclub.com" }, { code: await freshCode() }))?.client).toBe("game");
       // A client field in the body is stripped, never honored.
       expect(
         (await post({ Origin: "https://play.pixl.hackclub.com" }, { code: await freshCode(), client: "web" }))?.client,
       ).toBe("game");
       expect(
-        (await post({ "x-pixl-service-key": DASHBOARD_KEY }, { code: await freshCode(), client: "game" }))?.client,
+        (await post({ "x-pixl-service-key": DASHBOARD_KEY }, { code: await webCode(), client: "game" }))?.client,
       ).toBe("web");
+    } finally {
+      users.restore();
+      hca.restore();
+      await app.close();
+    }
+  });
+
+  test("a login code only redeems for the client its login was started for", async () => {
+    const users = mockUsersTable([]);
+    const hca = mockHcaFetch({ id: "hca-bound-identity", first_name: "Bound", last_name: "Code" });
+    const app = await startTestApp();
+    const freshCode = async (redirect: string) =>
+      new URL(
+        (await driveHcaCallback(app.baseUrl, `?redirect=${encodeURIComponent(redirect)}&state=${STATE}`)).headers.get("location")!,
+      ).searchParams.get("code")!;
+    const post = (headers: Record<string, string>, code: string) =>
+      fetch(`${app.baseUrl}/auth/exchange`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ code }),
+      });
+    try {
+      // A game login's code, traded by the Pixl Dashboard's backend: refused,
+      // and spent (the game can't use it afterwards either).
+      const gameCode = await freshCode("https://play.pixl.hackclub.com/");
+      expect((await post({ "x-pixl-service-key": DASHBOARD_KEY }, gameCode)).status).toBe(400);
+      expect((await post({ Origin: "https://play.pixl.hackclub.com" }, gameCode)).status).toBe(400);
+      // A Pixl Dashboard login's code, traded from the game's origin: refused.
+      const webCode = await freshCode(DASHBOARD_CALLBACK);
+      expect((await post({ Origin: "https://play.pixl.hackclub.com" }, webCode)).status).toBe(400);
+      // The matching caller works.
+      const ok = await post({ "x-pixl-service-key": DASHBOARD_KEY }, await freshCode(DASHBOARD_CALLBACK));
+      expect(ok.status).toBe(200);
+      expect(verifySessionToken(((await ok.json()) as { token: string }).token)?.client).toBe("web");
     } finally {
       users.restore();
       hca.restore();
