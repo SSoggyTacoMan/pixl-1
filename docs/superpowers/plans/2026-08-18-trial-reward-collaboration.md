@@ -6,7 +6,7 @@
 
 **Architecture:** Mirror the existing owner-side mechanism (`projects.trial_reward_choice`/`trial_held_px`/`trial_prize_px` + the `POST /api/projects/:id/trial-reward` settlement route) onto `project_collaborators`, reusing the exact prize/pixel-slice math the owner path already uses. No new tables, no change to the owner's existing flow.
 
-**Tech Stack:** Bun/Express server (`apps/server`), Next.js dashboard (`apps/dashboard`, Next 16/React 19), plain HTML/JS web-shell (`apps/game/web`), Postgres via a Supabase-shaped `pgCompat` client. No automated test suite exists for `apps/server`/`apps/dashboard` (confirmed, CLAUDE.md: "no root-level test suite"), so verification steps use `bunx tsc --noEmit` / `tsc --noEmit` typechecks plus manual end-to-end checks against a local dev server, not a fabricated test framework.
+**Tech Stack:** Bun/Express server (`apps/server`), Next.js dashboard (`apps/dashboard`, Next 16/React 19), plain HTML/JS web-shell (`apps/game/web`), Postgres via the chainable `pgCompat` query builder. No automated test suite exists for `apps/server`/`apps/dashboard` (confirmed, CLAUDE.md: "no root-level test suite"), so verification steps use `bunx tsc --noEmit` / `tsc --noEmit` typechecks plus manual end-to-end checks against a local dev server, not a fabricated test framework.
 
 Spec: `docs/superpowers/specs/2026-08-18-trial-reward-collaboration-design.md`
 
@@ -60,7 +60,7 @@ create index if not exists project_collaborators_trial_reward_choice_idx
 
 Run: `grep -n "project_collaborators" /home/ridit/Documents/Pixl/apps/server/src/db/schema.ts`
 
-If it returns matches, add the three new columns to that table definition, matching the existing style for the other columns on that table (e.g. `approvedHours: integer("approved_hours")` pattern, check the exact style used for `hackatime_seconds`/`approved_hours` on the same table and copy it exactly, don't guess a different casing/type convention). If it returns nothing, `project_collaborators` isn't Drizzle-declared (queries go through `pgCompat`'s Supabase-shaped `.from()` builder instead) and this step is a no-op, skip to Step 3.
+If it returns matches, add the three new columns to that table definition, matching the existing style for the other columns on that table (e.g. `approvedHours: integer("approved_hours")` pattern, check the exact style used for `hackatime_seconds`/`approved_hours` on the same table and copy it exactly, don't guess a different casing/type convention). If it returns nothing, `project_collaborators` isn't Drizzle-declared (queries go through `pgCompat`'s chainable `.from()` builder instead) and this step is a no-op, skip to Step 3.
 
 - [ ] **Step 3: Apply the migration**
 
@@ -341,7 +341,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   if (choice !== "item" && choice !== "pixels")
     return res.status(400).json({ ok: false, error: "bad_choice" });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select(
       "id, name, status, approved_hours, sidequest_id, user_id, trial_reward_choice, trial_held_px, trial_prize_px",
@@ -361,7 +361,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
     trial_prize_px: number;
   } | null = null;
   if (!isOwner) {
-    const { data } = await supabase
+    const { data } = await db
       .from("project_collaborators")
       .select("id, trial_reward_choice, trial_held_px, trial_prize_px")
       .eq("project_id", id)
@@ -379,7 +379,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   // A Trial can be deleted out from under an approved ship (it has happened,
   // see [[trial-npc-link-drift]]). That must not strand the player's pixels,
   // so only the prize branch actually needs the row.
-  const { data: trial } = await supabase
+  const { data: trial } = await db
     .from("sidequests")
     .select("id, name, reward, prize_shop_item_id")
     .eq("id", project.sidequest_id as number)
@@ -393,7 +393,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   // no rows and we stop before paying anything out.
   const table = isOwner ? "projects" : "project_collaborators";
   const matchId = isOwner ? id : collabRow!.id;
-  const { data: claimed } = await supabase
+  const { data: claimed } = await db
     .from(table)
     .update({ trial_reward_choice: choice })
     .eq("id", matchId)
@@ -410,7 +410,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   const beyondPx = Math.max(heldPx - prizePx, 0);
 
   if (choice === "pixels") {
-    const { error } = await supabase.rpc("credit_project_pixels", {
+    const { error } = await db.rpc("credit_project_pixels", {
       p_user_id: session.userId,
       p_project_id: id,
       p_amount: heldPx,
@@ -419,7 +419,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
     });
     if (error) {
       console.error("[projects] trial pixels payout failed", error);
-      await supabase.from(table).update({ trial_reward_choice: "pending" }).eq("id", matchId);
+      await db.from(table).update({ trial_reward_choice: "pending" }).eq("id", matchId);
       return res.status(500).json({ ok: false });
     }
     void addNotification(
@@ -438,7 +438,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   let itemId: number | null = null;
   let itemName = (trial!.reward as string) || (trial!.name as string);
   if (trial!.prize_shop_item_id) {
-    const { data: prizeItem } = await supabase
+    const { data: prizeItem } = await db
       .from("shop_items")
       .select("id, name")
       .eq("id", trial!.prize_shop_item_id)
@@ -448,7 +448,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
       itemName = prizeItem.name as string;
     }
   }
-  const { data: order, error: orderError } = await supabase
+  const { data: order, error: orderError } = await db
     .from("shop_orders")
     .insert({
       user_id: session.userId,
@@ -462,17 +462,17 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
     .single();
   if (orderError || !order) {
     console.error("[projects] trial prize order failed", orderError);
-    await supabase.from(table).update({ trial_reward_choice: "pending" }).eq("id", matchId);
+    await db.from(table).update({ trial_reward_choice: "pending" }).eq("id", matchId);
     return res.status(500).json({ ok: false });
   }
   // trial_prize_order_id only exists on `projects` (owner-only column) ,
   // nothing currently reads it back for a collaborator, and the order is
   // already correctly attributed via shop_orders.user_id regardless of who
   // claimed it, so no equivalent column was added to project_collaborators.
-  if (isOwner) await supabase.from("projects").update({ trial_prize_order_id: order.id }).eq("id", id);
+  if (isOwner) await db.from("projects").update({ trial_prize_order_id: order.id }).eq("id", id);
   // Keeping the prize still pays out the pixels for hours past the minimum.
   if (beyondPx > 0) {
-    const { error: pxError } = await supabase.rpc("credit_project_pixels", {
+    const { error: pxError } = await db.rpc("credit_project_pixels", {
       p_user_id: session.userId,
       p_project_id: id,
       p_amount: beyondPx,
@@ -516,7 +516,7 @@ git commit -m "projects: let a collaborator settle their own trial reward, not j
 Find:
 
 ```ts
-  const { data: collabRows } = await supabase
+  const { data: collabRows } = await db
     .from("project_collaborators")
     .select("project_id")
     .eq("user_id", session.userId)
@@ -527,7 +527,7 @@ Find:
 Replace with:
 
 ```ts
-  const { data: collabRows } = await supabase
+  const { data: collabRows } = await db
     .from("project_collaborators")
     .select("project_id, trial_reward_choice, trial_held_px, trial_prize_px")
     .eq("user_id", session.userId)

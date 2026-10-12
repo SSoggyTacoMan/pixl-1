@@ -25,7 +25,7 @@
 -- exactly what it does today.
 --
 -- Safe to run more than once (idempotent UPDATE keyed on name + created_by +
--- region). Run this in the Supabase SQL editor.
+-- region). Run this with psql against the Orchard database.
 
 UPDATE shop_items s
 SET config_options = jsonb_build_object(

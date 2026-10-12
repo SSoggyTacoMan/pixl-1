@@ -6,7 +6,7 @@
 
 **Architecture:** After a first-pass verdict, the project moves to a new `fraud_review` status and is POSTed to Joe. Joe's fraud team scores it; the outcome arrives either by webhook or by an hourly reconcile job, which moves the project on to `second_review` for the human third pass. A fraud rejection is advisory: it flags the project red but never blocks approval. When `JOE_EVENT_ID`/`JOE_API_KEY` are unset, the whole thing is bypassed and the pipeline behaves exactly as it does today.
 
-**Tech Stack:** Next.js 16 (App Router) in `apps/dashboard`, TypeScript, `bun test`, Orchard Postgres via the Supabase-shaped `lib/pgCompat` wrapper, Orchard Jobs for scheduling.
+**Tech Stack:** Next.js 16 (App Router) in `apps/dashboard`, TypeScript, `bun test`, Orchard Postgres via the chainable `lib/pgCompat` query builder, Orchard Jobs for scheduling.
 
 **Spec:** `docs/superpowers/specs/2026-08-15-joe-fraud-review-pass-design.md`
 
@@ -16,7 +16,7 @@
 
 Read these before starting. They override generic habits.
 
-- **`db` is not Supabase.** `apps/dashboard/lib/db.ts:7` re-exports `db` from `./pgCompat`, a Supabase-API-shaped wrapper over Orchard Postgres. `db.from("x").select(...)` works; anything outside that compat surface may not.
+- **`db` is a compat wrapper, not a full client.** `apps/dashboard/lib/db.ts:7` re-exports `db` from `./pgCompat`, a chainable query-builder wrapper over Orchard Postgres. `db.from("x").select(...)` works; anything outside that compat surface may not.
 - **No em dashes, no `" - "` in prose, no emojis** in code, comments, UI copy or commit messages. Use commas or colons. Existing files use `,` where an em dash would go.
 - **Commit messages are plain and casual**, not Conventional Commits. `add the joe client`, not `feat(joe): add client`. No `Co-Authored-By` trailer.
 - **Comments are sparse** and explain non-obvious *why*, never *what*.

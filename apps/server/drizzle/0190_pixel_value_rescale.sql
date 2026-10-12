@@ -50,8 +50,7 @@
 -- ⚠️  NOT idempotent - re-running compounds the rescale (0.7 on top of 0.7).
 --     Run it EXACTLY ONCE, and only once packages/config/pixl.json's
 --     pixelValueUsd is actually deployed as 0.10 everywhere.
--- Run in psql against the orchard/CNPG database (the DB of record - NOT
--- Supabase, that stack is retired).
+-- Run in psql against the orchard/CNPG database (the DB of record).
 
 BEGIN;
 

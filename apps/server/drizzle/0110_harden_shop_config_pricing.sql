@@ -29,7 +29,7 @@
 --    direct-RPC surface should any anon API layer ever be exposed on this DB.
 --
 -- Target: the orchard/CNPG database (ysws_pixl_pixl_primary), the DB of record.
--- NOT run against Supabase — that stack is being retired.
+-- Not run against any other database.
 --
 -- Idempotent: CREATE OR REPLACE + REVOKE. Safe to run more than once.
 

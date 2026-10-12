@@ -1,6 +1,6 @@
 # Build context is apps/dashboard (own bun.lock, no workspace deps).
 #
-# Every env var this app reads is server-side (Supabase service key, Slack, HCA
+# Every env var this app reads is server-side (DATABASE_URL, Slack, HCA
 # secrets), so none of it is baked into the image - it is all injected at run
 # time. Locally the app runs on 4900; in the container it follows PORT so it
 # lines up with the other three services.

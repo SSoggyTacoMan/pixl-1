@@ -4,7 +4,7 @@
 -- pixl.rsvp currently has no live deployment, and the game shell is what
 -- actually serves /collectibles/ anyway.
 --
--- Run in the Supabase SQL editor. Safe to re-run.
+-- Run with psql against the Orchard database. Safe to re-run.
 
 UPDATE collectibles
 SET image_url = 'https://pixl.hackclub.com/img/bronze-builder-badge.png'

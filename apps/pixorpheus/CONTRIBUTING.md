@@ -11,7 +11,7 @@ Thanks for wanting to help. Here's how things work.
 
 You'll need:
 - A Slack app with the right permissions (see the event subscriptions and slash commands listed in the README)
-- A Supabase project (shared with the rest of the monorepo)
+- A Postgres database (shared with the rest of the monorepo, via `DATABASE_URL`)
 - An OpenRouter API key for AI features
 - Optionally: a Brave Search key (web search), a GitHub webhook secret (push/merge notifications)
 

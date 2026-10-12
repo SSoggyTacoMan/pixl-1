@@ -84,7 +84,7 @@ Prizes are swappable for equivalent value. Shipping something entirely of your o
 
 ## Repository Structure
 
-Bun + Turborepo monorepo. Every app talks to the same [Supabase](https://supabase.com/) (Postgres) project directly rather than through a shared internal API, plus Hack Club Auth / Slack OAuth for identity. Deployed on [Orchard](https://orchard.my) (Kubernetes).
+Bun + Turborepo monorepo. Every app talks to the same Postgres database (on Orchard) directly rather than through a shared internal API, plus Hack Club Auth / Slack OAuth for identity. Deployed on [Orchard](https://orchard.my) (Kubernetes).
 
 ```
 pixl/
@@ -106,7 +106,7 @@ pixl/
 
 | App | Stack | Description |
 |---|---|---|
-| [`server`](apps/server) | Bun, Express, `ws`, Drizzle ORM, Supabase | Game server - auth, player state, real-time multiplayer, projects, shop, economy |
+| [`server`](apps/server) | Bun, Express, `ws`, Drizzle ORM, Postgres | Game server - auth, player state, real-time multiplayer, projects, shop, economy |
 | [`game`](apps/game) | Godot 4 (GDScript) | The 2D multiplayer world players see and play in |
 | [`landing`](apps/landing) | Next.js 16, React 19, Tailwind 4 | Marketing site and apex proxy at [pixl.hackclub.com](https://pixl.hackclub.com), localized in English, French, Spanish, Portuguese |
 | [`web-shell`](apps/web-shell) | Next.js 16, React 19 | Player-facing pages being migrated off `apps/game/web`'s static HTML - docs, and a growing shell (`/dashboard`, `/form/*`) |
@@ -174,7 +174,7 @@ The Shop carousel mirrors the real in-game shop 1:1 - item name, description, im
 
 <img alt="Server icon" src=".github/readme-assets/icon-server.png" width="72" align="left">
 
-`apps/server` is the authoritative backend: a **Bun** process running **Express** for HTTP routes and raw **WebSocket** (`ws`) for real-time game state, with **Drizzle ORM** over a **Supabase** (Postgres) database.
+`apps/server` is the authoritative backend: a **Bun** process running **Express** for HTTP routes and raw **WebSocket** (`ws`) for real-time game state, with **Drizzle ORM** over a **Postgres** database on Orchard.
 
 <br clear="left">
 
@@ -285,7 +285,7 @@ It's maintained as its own repository with a more detailed README (slash command
 
 - [Bun](https://bun.com) >= 1.3
 - [Godot 4](https://godotengine.org/) (only if you're working on `apps/game`)
-- A [Supabase](https://supabase.com/) project (shared Postgres database)
+- A Postgres database (shared across apps, reached via `DATABASE_URL`)
 
 ### Install
 
@@ -297,7 +297,7 @@ bun install
 
 Each app has its own `.env` (see `.env.example` in `apps/server`, `apps/dashboard`, `apps/web-shell`). Bun auto-loads `.env` files. Common vars shared across apps:
 
-- `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` - same Supabase project everywhere
+- `DATABASE_URL` - the same Postgres database everywhere
 - `JWT_SECRET` - signs game server sessions; must match exactly between `server`, `dashboard`, and `web-shell`
 - Hack Club Auth (`HCA_CLIENT_ID` / `HCA_CLIENT_SECRET` / redirect URI) - identity provider for `server` and `dashboard`
 - Slack tokens - for `pixorpheus` and dashboard notifications

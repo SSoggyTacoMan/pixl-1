@@ -2,7 +2,7 @@
 
 Backend server for **Pixl**, a multiplayer 2D game (the client is built in Godot).
 
-`pixl-server` powers authentication, realtime multiplayer, social features, and coding-time integrations over HTTP and WebSockets. It is written in TypeScript, runs on Node.js as an ESM application, and uses Supabase for persistence.
+`pixl-server` powers authentication, realtime multiplayer, social features, and coding-time integrations over HTTP and WebSockets. It is written in TypeScript, runs on Node.js as an ESM application, and uses Postgres (on Orchard) for persistence.
 
 ## Features
 
@@ -20,7 +20,7 @@ Backend server for **Pixl**, a multiplayer 2D game (the client is built in Godot
 - **Language:** TypeScript (ESM) on Node.js
 - **HTTP:** [Express 4](https://expressjs.com/)
 - **Realtime:** [`ws`](https://github.com/websockets/ws) WebSocket server
-- **Data:** [Supabase](https://supabase.com/) via `@supabase/supabase-js`, using the `service_role` key (server-only; bypasses RLS)
+- **Data:** Postgres on Orchard via [`postgres`](https://github.com/porsager/postgres) (postgres.js), behind the chainable query builder in `src/db/pgCompat.ts`
 - **Dev runtime:** [`tsx`](https://github.com/privatenumber/tsx) for watch/dev; `tsc` build to `dist/`, run with `node`
 - **Package managers:** works with npm or Bun (both lockfiles are present)
 
@@ -31,7 +31,7 @@ src/
 ├── index.ts                 # Entry point (Express + WS bootstrap)
 ├── auth/session.ts          # JWT session issue/verify
 ├── auth/revocation.ts       # Per-user session revocation (HTTP middleware + helpers)
-├── db/client.ts             # Supabase service client + row types
+├── db/client.ts             # Postgres query builder export + row types
 ├── social.ts                # Friend-pair helpers
 ├── moderation.ts            # Profanity filter, violation log, ban checks
 ├── hackatime/api.ts         # Hackatime API client
@@ -52,7 +52,7 @@ src/
 ### Prerequisites
 
 - Node.js (with npm) or [Bun](https://bun.sh/)
-- A Supabase project (URL + `service_role` key)
+- A Postgres database (`DATABASE_URL`)
 
 ### Install
 
@@ -99,8 +99,6 @@ The server listens on `PORT` (default `3000`).
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `SUPABASE_URL` | Supabase project URL | - |
-| `SUPABASE_SERVICE_KEY` | Supabase `service_role` key (server-only) | - |
 | `JWT_SECRET` | Signing secret for session tokens | - |
 | `HCA_CLIENT_ID` | Hack Club OAuth client ID | - |
 | `HCA_CLIENT_SECRET` | Hack Club OAuth client secret | - |
@@ -115,7 +113,7 @@ The server listens on `PORT` (default `3000`).
 | `SERVICE_KEY_PIXO` | `x-pixl-service-key` for Pixo; may call only the `/api/admin/*` routes listed in `PIXO_ADMIN_ROUTES` (currently none) | - |
 | `EXTERNAL_API_KEY` | Shared key used to authenticate server-to-Pixorpheus requests | - |
 | `PIXORPHEUS_URL` | Base URL for Pixorpheus; enrolls Slack-linked players in `#pixl` after Hack Club login | - |
-| `DATABASE_URL` | Postgres URL used by the Drizzle tooling | - |
+| `DATABASE_URL` | Postgres connection string, used at runtime and by the Drizzle tooling | - |
 | `PORT` | Port the server listens on | `3000` |
 
 ## HTTP API
@@ -208,7 +206,7 @@ Binary frames are relayed as proximity voice.
 
 ## Database
 
-Persistence is provided by Supabase. Runtime queries use the Supabase client directly (no ORM at runtime).
+Persistence is Postgres on Orchard. Runtime queries go through the postgres.js-backed query builder in `src/db/pgCompat.ts` (no ORM at runtime).
 
 Tables referenced:
 
@@ -235,8 +233,7 @@ Tables referenced:
 
 ## Notes / Known Limitations
 
-- The `service_role` key bypasses Supabase Row Level Security and must never be exposed to clients - keep it server-side only.
-- Drizzle tooling (`drizzle-orm` / `drizzle-kit`, `drizzle.config.ts`, and the `db:*` scripts) is scaffolded and points at `./src/db/schema.ts`, but that schema file does not exist yet. As a result the migration tooling is **not functional as-is**. Authoring `src/db/schema.ts` is a planned follow-up; until then, runtime persistence relies entirely on the Supabase client.
+- Drizzle tooling (`drizzle-orm` / `drizzle-kit`, `drizzle.config.ts`, and the `db:*` scripts) is scaffolded and points at `./src/db/schema.ts`, but that schema file does not exist yet. As a result the migration tooling is **not functional as-is**. Authoring `src/db/schema.ts` is a planned follow-up; until then, runtime persistence relies entirely on the pgCompat query builder.
 
 ## License
 

@@ -7,7 +7,7 @@
 -- text, only that it doesn't yet mention fulfillment time. Idempotent via the
 -- NOT LIKE guard.
 --
--- Run this in the Supabase SQL editor. Safe to run more than once.
+-- Run this with psql against the Orchard database. Safe to run more than once.
 
 UPDATE shop_items
 SET description = description || ' Note: these are custom-designed, so orders can take a bit longer to fulfil while we design and print a new batch.'

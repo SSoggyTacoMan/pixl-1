@@ -295,13 +295,13 @@ Requires at least 5 messages. The extracted style overwrites the previous style 
 
 ## Dashboard
 
-Helper/admin ticket moderation now lives in `apps/dashboard` (the Next.js admin dashboard elsewhere in this monorepo), not in this app. It talks to the same Supabase database directly and calls `POST /api/external/tickets/:ts/resolve` on this bot (see `src/external/ticketApi.ts`) to resolve tickets through Slack, since this bot is reliably a member of the help channel.
+Helper/admin ticket moderation now lives in `apps/dashboard` (the Next.js admin dashboard elsewhere in this monorepo), not in this app. It talks to the same Postgres database directly and calls `POST /api/external/tickets/:ts/resolve` on this bot (see `src/external/ticketApi.ts`) to resolve tickets through Slack, since this bot is reliably a member of the help channel.
 
 ---
 
 ## Database
 
-Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory`, `polls`, `style_memory`) are created via Supabase migrations, not at runtime.
+Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory`, `polls`, `style_memory`) are created via the SQL migrations in `apps/server/drizzle/`, not at runtime.
 
 | Table | Purpose |
 |---|---|
@@ -342,7 +342,7 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 | `SLACK_FAQ_URL` | URL to the FAQ (linked in the "Someone will be here soon!" message) |
 | `SLACK_ADMIN_USER_IDS` | Comma-separated Slack user IDs of admins: manage helpers, read others' memory, style training. Empty means no admins (fail closed) |
 | `SLACK_USER_TOKEN` | User token (`xoxp-...`) for deleting macro messages in threads |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Supabase project URL + service key (shared with the other apps in this monorepo) |
+| `DATABASE_URL` | Postgres connection string (shared with the other apps in this monorepo) |
 | `OPENROUTER_API_KEY` | OpenRouter API key (main AI + utility models) |
 | `PIXO_MODEL` | Overrides the default OpenRouter model (`google/gemini-3.1-flash-lite:nitro`) |
 | `BRAVE_SEARCH_KEY` | Brave Search API key (auto web search in replies) |
@@ -351,7 +351,7 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 | `PIXL_LOGS_CHANNEL_ID` | Skips the `#pixl-logs` channel-name scan (see `src/slack/logs.ts`) |
 | `GITHUB_WEBHOOK_SECRET` | HMAC secret for the `/webhooks/github` route. **Required** - without it the route returns 503 and processes nothing |
 | `GITHUB_NOTIFY_CHANNEL` | Channel ID to post GitHub push/merge notifications to |
-| `SHOP_WEBHOOK_SECRET` | Shared secret for the `/webhooks/shop` route, sent by Supabase as the `x-shop-webhook-secret` header. **Required** - without it the route returns 503 and processes nothing |
+| `SHOP_WEBHOOK_SECRET` | Shared secret for the `/webhooks/shop` route, sent by the internal dashboard as the `x-shop-webhook-secret` header. **Required** - without it the route returns 503 and processes nothing |
 | `SHOP_NOTIFY_CHANNEL` | Channel ID to post shop item change notifications to (defaults to `#shop-changes`) |
 | `EXTERNAL_API_KEY` | Shared key `apps/dashboard` and `apps/server` use for Pixorpheus external APIs |
 | `PORT` | Port for the in-cluster HTTP server (`/api/external/*`, `/webhooks/*`, `/healthz`; default 3000). Slack traffic never uses it |

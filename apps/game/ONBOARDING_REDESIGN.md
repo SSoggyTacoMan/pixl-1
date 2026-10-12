@@ -298,10 +298,10 @@ also **seeds the three canon Chapter-I starters** (Raise your Builder Page / Fir
 Contact / The Progress Beacon) at difficulty 1/2/3.
 
 **Migration note:** this repo has no live `schema.ts`, Drizzle output lives as raw SQL
-in `apps/server/drizzle/*.sql`, applied by hand in the Supabase SQL editor (see the
+in `apps/server/drizzle/*.sql`, applied by hand with psql (see the
 header of every existing file, e.g. `0046_onboarding_step.sql`). So there is **no
 `db:generate` to run**; just apply `0050_trial_recommendation.sql`. (`db:migrate`
-exists in `package.json` but the recent migrations are all "run this in Supabase".)
+exists in `package.json` but the recent migrations are all applied by hand.)
 
 ### Selection logic (server, new route)
 

@@ -7,8 +7,8 @@ bans that the game server enforces.
 ## Setup
 
 1. `bun install`
-2. Apply `PixlServer/drizzle/0006_moderation.sql` to the Supabase project
-   (SQL editor) , it adds `violations`, `bans`, `mod_actions` and `users.slack_id`.
+2. Apply `PixlServer/drizzle/0006_moderation.sql` to the Postgres database
+   (e.g. with psql) , it adds `violations`, `bans`, `mod_actions` and `users.slack_id`.
 3. Create a Slack app at https://api.slack.com/apps:
    - **OAuth & Permissions → Redirect URLs**: `<BASE_URL>/api/auth/callback`
    - **Bot Token Scopes**: `chat:write`, `im:write`
