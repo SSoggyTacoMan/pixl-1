@@ -85,11 +85,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   <img src="/logo.png" alt="Pixl" width={28} height={28} />
                   <span className="hc-heading">Pixl</span>
                 </Link>
-                <div className="min-w-0 flex-1">
-                  <TopNav nav={nav} counts={counts} />
+                <TopNav nav={nav} counts={counts} />
+                <div className="flex min-w-48 flex-1 justify-center">
+                  <CommandPalette nav={nav} />
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
-                  <CommandPalette nav={nav} />
                   <form action={setLiveMode} className="flex items-center gap-2">
                     <input type="hidden" name="on" value={live ? "0" : "1"} />
                     {live && <span className="hc-live-pill">LIVE, PII hidden</span>}

@@ -17,11 +17,13 @@ function NavLink({ item, count }: { item: NavItem; count?: number }) {
   );
 }
 
-function NavMenu({ group, counts }: { group: NavGroup; counts: Record<string, number> }) {
+// Everything that isn't an everyday link, one section per group.
+function MoreMenu({ groups, counts }: { groups: NavGroup[]; counts: Record<string, number> }) {
   const pathname = usePathname();
   const ref = useRef<HTMLDetailsElement>(null);
-  const active = group.items.some((item) => isNavActive(pathname, item.href));
-  const total = group.items.reduce((sum, item) => sum + (counts[item.href] ?? 0), 0);
+  const items = groups.flatMap((g) => g.items);
+  const active = items.some((item) => isNavActive(pathname, item.href));
+  const total = items.reduce((sum, item) => sum + (counts[item.href] ?? 0), 0);
 
   // Close on navigation, outside click and Escape.
   useEffect(() => {
@@ -45,31 +47,36 @@ function NavMenu({ group, counts }: { group: NavGroup; counts: Record<string, nu
   return (
     <details ref={ref} className="hc-nav-menu" data-active={active ? true : undefined}>
       <summary className="hc-nav-link">
-        <Icon glyph={group.glyph} size={20} aria-hidden />
-        {group.label}
+        <Icon glyph="menu" size={20} aria-hidden />
+        More
         {total > 0 && <span className="hc-nav-count">{total}</span>}
         <Icon glyph="down-caret" size={16} aria-hidden />
       </summary>
-      <ul className="hc-nav-menu-panel">
-        {group.items.map((item) => (
-          <li key={item.href}>
-            <NavLink item={item} count={counts[item.href]} />
-          </li>
+      <div className="hc-nav-menu-panel hc-nav-mega">
+        {groups.map((group) => (
+          <section key={group.label}>
+            <p className="hc-eyebrow px-2 pt-1 pb-1">{group.label}</p>
+            <ul>
+              {group.items.map((item) => (
+                <li key={item.href}>
+                  <NavLink item={item} count={counts[item.href]} />
+                </li>
+              ))}
+            </ul>
+          </section>
         ))}
-      </ul>
+      </div>
     </details>
   );
 }
 
 export default function TopNav({ nav, counts }: { nav: NavModel; counts: Record<string, number> }) {
   return (
-    <nav className="flex flex-wrap items-center gap-1">
+    <nav className="flex items-center gap-1">
       {nav.primary.map((item) => (
         <NavLink key={item.href} item={item} count={counts[item.href]} />
       ))}
-      {nav.groups.map((group) => (
-        <NavMenu key={group.label} group={group} counts={counts} />
-      ))}
+      {nav.groups.length > 0 && <MoreMenu groups={nav.groups} counts={counts} />}
     </nav>
   );
 }

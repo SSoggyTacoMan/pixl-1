@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Icon from "@hackclub/icons";
+import Icon, { type GlyphName } from "@hackclub/icons";
 import type { NavModel } from "./nav";
 
 interface PlayerHit {
@@ -19,6 +19,7 @@ interface Hit {
   label: string;
   sub?: string;
   group: string;
+  glyph: GlyphName;
 }
 
 // Ctrl/Cmd+K: jump to a page, player or project.
@@ -82,11 +83,11 @@ export default function CommandPalette({ nav }: { nav: NavModel }) {
     ...nav.groups.flatMap((g) => g.items.map((item) => ({ ...item, group: g.label }))),
   ]
     .filter((item) => !ql || item.label.toLowerCase().includes(ql))
-    .map(({ href, label, group }) => ({ href, label, group }));
+    .map(({ href, label, group, glyph }) => ({ href, label, group, glyph }));
   const hits: Hit[] = [
     ...pages,
-    ...players.map((p) => ({ href: `/players/${p.id}`, label: p.label, sub: p.sub, group: "Players" })),
-    ...projects.map((p) => ({ href: `/projects/${p.id}`, label: p.label, group: "Projects" })),
+    ...players.map((p) => ({ href: `/players/${p.id}`, label: p.label, sub: p.sub, group: "Players", glyph: "person" as const })),
+    ...projects.map((p) => ({ href: `/projects/${p.id}`, label: p.label, group: "Projects", glyph: "rep" as const })),
   ];
 
   function go(href: string) {
@@ -96,30 +97,27 @@ export default function CommandPalette({ nav }: { nav: NavModel }) {
 
   return (
     <>
-      <button type="button" className="hc-btn hc-btn-outline hc-btn-sm" onClick={open}>
+      <button type="button" className="hc-search-trigger" onClick={open}>
         <Icon glyph="search" size={18} aria-hidden />
-        Search
-        <span className="hc-kbd">Ctrl K</span>
+        <span className="flex-1 truncate text-left">Search pages, players, projects...</span>
+        <span className="flex shrink-0 gap-1">
+          <kbd className="hc-kbd">Ctrl</kbd>
+          <kbd className="hc-kbd">K</kbd>
+        </span>
       </button>
 
       <dialog
         ref={dialog}
-        className="hc-dialog m-auto mt-[12vh]"
+        className="hc-dialog hc-search-dialog"
         onClose={() => setQ("")}
         onClick={(e) => {
           if (e.target === dialog.current) close();
         }}
       >
-        <div className="relative border-b border-[var(--border)] p-3">
-          <Icon
-            glyph="search"
-            size={20}
-            className="hc-muted pointer-events-none absolute top-1/2 left-5 -translate-y-1/2"
-            aria-hidden
-          />
+        <div className="hc-search-input">
+          <Icon glyph="search" size={20} className="hc-muted shrink-0" aria-hidden />
           <input
             autoFocus
-            className="hc-input hc-input-search"
             placeholder="Search pages, players, projects..."
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -136,27 +134,41 @@ export default function CommandPalette({ nav }: { nav: NavModel }) {
               }
             }}
           />
+          <button type="button" className="hc-kbd" onClick={close}>
+            Esc
+          </button>
         </div>
-        <ul className="max-h-[50vh] overflow-y-auto p-1">
-          {hits.length === 0 && <li className="hc-caption p-4 text-center text-sm">No results.</li>}
+        <ul className="hc-search-results">
+          {hits.length === 0 && <li className="hc-caption p-6 text-center text-sm">No results found.</li>}
           {hits.map((hit, i) => (
             <li key={`${hit.group}:${hit.href}`}>
-              {(i === 0 || hits[i - 1].group !== hit.group) && (
-                <p className="hc-eyebrow px-2 pt-3 pb-1">{hit.group}</p>
-              )}
+              {(i === 0 || hits[i - 1].group !== hit.group) && <p className="hc-search-group">{hit.group}</p>}
               <button
                 type="button"
-                className="hc-select-option"
+                className="hc-search-item"
                 aria-selected={i === cursor}
-                onMouseEnter={() => setCursor(i)}
+                ref={i === cursor ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+                onMouseMove={() => setCursor(i)}
                 onClick={() => go(hit.href)}
               >
+                <Icon glyph={hit.glyph} size={18} aria-hidden />
                 <span className="truncate">{hit.label}</span>
-                {hit.sub && <span className="hc-muted truncate text-xs">{hit.sub}</span>}
+                {hit.sub && <span className="hc-muted ml-auto truncate text-xs">{hit.sub}</span>}
               </button>
             </li>
           ))}
         </ul>
+        <div className="hc-search-footer">
+          <span>
+            <kbd className="hc-kbd">↑</kbd> <kbd className="hc-kbd">↓</kbd> to move
+          </span>
+          <span>
+            <kbd className="hc-kbd">Enter</kbd> to open
+          </span>
+          <span>
+            <kbd className="hc-kbd">Esc</kbd> to close
+          </span>
+        </div>
       </dialog>
     </>
   );

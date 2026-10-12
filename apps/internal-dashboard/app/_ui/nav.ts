@@ -13,7 +13,8 @@ export interface NavGroup {
   items: NavItem[];
 }
 
-// What the top bar shows: a few direct links, then grouped dropdowns.
+// What the top bar shows: a few direct links, then one More menu with a
+// section per group.
 export interface NavModel {
   primary: NavItem[];
   groups: NavGroup[];
@@ -31,17 +32,27 @@ export function buildNav(access: AdminAccess, live: boolean): NavModel {
   const owner = access.isOwner;
   const reviewer = owner || access.isReviewer;
 
+  // Owners get the four everyday links; their queues sit under More. Helpers
+  // and fulfillers see so little that their queue is a direct link instead.
   const primary = pick([
     [owner, { href: "/", label: "Overview", glyph: "dashboard-meter" }],
     [!owner && access.isReviewer, { href: "/review/stats", label: "My stats", glyph: "dashboard-meter" }],
     [reviewer, { href: "/review", label: "Review", glyph: "view" }],
     [reviewer, { href: "/projects", label: "Projects", glyph: "rep" }],
     [owner, { href: "/players", label: "Players", glyph: "people-3" }],
-    [access.isHelper, { href: "/tickets", label: "Tickets", glyph: "support" }],
-    [!live && access.isFulfiller, { href: "/fulfillment", label: "Fulfillment", glyph: "package" }],
+    [!owner && access.isHelper, { href: "/tickets", label: "Tickets", glyph: "support" }],
+    [!owner && !live && access.isFulfiller, { href: "/fulfillment", label: "Fulfillment", glyph: "package" }],
   ]);
 
   const all: NavGroup[] = [
+    {
+      label: "Queues",
+      glyph: "list",
+      items: pick([
+        [owner && access.isHelper, { href: "/tickets", label: "Tickets", glyph: "support" }],
+        [owner && !live && access.isFulfiller, { href: "/fulfillment", label: "Fulfillment", glyph: "package" }],
+      ]),
+    },
     {
       label: "Economy",
       glyph: "bank",
