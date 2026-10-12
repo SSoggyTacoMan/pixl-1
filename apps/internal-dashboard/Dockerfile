@@ -1,4 +1,4 @@
-# Build context is apps/dashboard (own bun.lock, no workspace deps).
+# Build context is apps/internal-dashboard (own bun.lock, no workspace deps).
 #
 # Every env var this app reads is server-side (DATABASE_URL, Slack, HCA
 # secrets), so none of it is baked into the image - it is all injected at run
@@ -8,11 +8,8 @@
 FROM oven/bun:1.3.13 AS deps
 WORKDIR /app
 
-# Not --frozen-lockfile: this app's bun.lock predates sharp being added to
-# package.json, so a frozen install refuses to run. Regenerating the lockfile
-# would be the real fix.
 COPY package.json bun.lock ./
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # next build runs under Node, not Bun - Bun 1.3.13 crashes with SIGILL partway
 # through this app's build. Dependencies are still installed with Bun above;

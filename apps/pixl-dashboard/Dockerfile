@@ -9,9 +9,14 @@ WORKDIR /repo
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY package.json bun.lock ./
+# The root bun.lock covers every workspace, so a frozen install needs every
+# workspace manifest present, not just this app's.
+COPY apps/server/package.json apps/server/
+COPY apps/internal-dashboard/package.json apps/internal-dashboard/
+COPY apps/pixorpheus/package.json apps/pixorpheus/
 COPY packages packages
 COPY apps/pixl-dashboard apps/pixl-dashboard
-RUN bun install
+RUN bun install --frozen-lockfile
 
 COPY docs docs
 # OG preview cards (public/docs/<slug>/og.png and public/<page>/og.png) are
