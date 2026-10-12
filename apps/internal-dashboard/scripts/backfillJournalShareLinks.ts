@@ -52,7 +52,7 @@ async function main() {
       failed++;
       continue;
     }
-    const journalShareUrl = `${config.urls.play}/journals/${project.id}/${token}`;
+    const journalShareUrl = `${config.urls.site}/journals/${project.id}/${token}`;
 
     const result = await pushProjectRecord(
       { "Justification - Alternate Tracking Method": journalShareUrl },
