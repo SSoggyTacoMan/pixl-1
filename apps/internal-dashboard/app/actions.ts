@@ -79,7 +79,13 @@ import { REVIEW_REWARD_COOKIE, REVIEW_REWARD_MAX_AGE } from "@/lib/reviewReward"
 import { assertSafeExternalUrl } from "@/lib/urlSafety";
 import { safeBinaryGet } from "@/lib/ssrfGuard";
 import { canFlagOrder, isOwnOrder } from "@/lib/fulfillmentAccess";
-import { canSetHold, isOwnOrCollaborator, proposedBanDecision, queueAllows } from "@/lib/reviewAccess";
+import {
+  canSetHold,
+  isOwnOrCollaborator,
+  proposedBanDecision,
+  queueAllows,
+  slackIdFromActorName,
+} from "@/lib/reviewAccess";
 import { safeRedirectPath, isSafeUrl } from "@/lib/safeUrl";
 import {
   guardedAction,
@@ -155,15 +161,22 @@ async function nextReviewPath(
 // Note: the DB column is `projects.level` but holds the tier (1-4). It predates
 // the player-facing 1-100 level and isn't worth a migration to rename.
 
-// A reviewer may never act on their own submission, nor on one they're an
-// accepted collaborator on (self-review = cheating; collaborators are paid on
-// approval too). The session carries a Slack id; every users row with that
-// slack_id counts as "me". Pass projectId so collaborators are checked too.
+// A reviewer (owners included) may never act on their own submission, nor on
+// one they're a collaborator on (self-review = cheating; collaborators are
+// paid on approval too). A PENDING invite counts: it can be accepted the
+// moment the review lands. The session carries a Slack id; every users row
+// with that slack_id counts as "me". Pass projectId so collaborators are
+// checked too.
 async function isOwnProject(access: AdminAccess, ownerUserId: string, projectId: number): Promise<boolean> {
   const { data: me } = await db.from("users").select("id").eq("slack_id", access.session.slackId);
   const myIds = ((me ?? []) as { id: string }[]).map((r) => r.id).filter(Boolean);
   if (myIds.length === 0) return false;
-  const collaborators = await acceptedCollaboratorUserIds(projectId);
+  const { data: collabs } = await db
+    .from("project_collaborators")
+    .select("user_id")
+    .eq("project_id", projectId)
+    .in("status", ["pending", "accepted"]);
+  const collaborators = (collabs ?? []).map((r) => r.user_id as string);
   return isOwnOrCollaborator(myIds, ownerUserId, collaborators);
 }
 
@@ -176,8 +189,8 @@ function denyProjectAction(back: string | null, message: string): never {
 // the action (not only by the page that renders the form):
 // - queue scope: a reviewer restricted to hardware/software (reviewQueues)
 //   may only touch projects of that kind;
-// - self-review: unless allowOwn, a non-owner reviewer may not act on a
-//   project they own or collaborate on.
+// - self-review: unless allowOwn, nobody (owners included) may act on a
+//   project they own or collaborate on (pending invites too).
 // Returns the project's owner/kind/name; denies via redirect to `back` with an
 // error (or a thrown Error when there's no page to go back to).
 async function authorizeProjectAction(
@@ -195,7 +208,7 @@ async function authorizeProjectAction(
   const row = project as { user_id: string; kind: string | null; name: string };
   if (!queueAllows(access.reviewQueues, row.kind))
     denyProjectAction(back, "This project isn't in your review queue.");
-  if (!opts.allowOwn && !access.isOwner && (await isOwnProject(access, row.user_id, projectId)))
+  if (!opts.allowOwn && (await isOwnProject(access, row.user_id, projectId)))
     denyProjectAction(back, opts.ownMessage ?? "You can't review a project you own or collaborate on.");
   return row;
 }
@@ -1031,13 +1044,18 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   if (!queueAllows(access.reviewQueues, (current as { kind?: string | null }).kind ?? null))
     redirect(`${back}?error=${encodeURIComponent("This project isn't in your review queue.")}`);
   const own = await isOwnProject(access, current.user_id, projectId);
+  // Self-review is denied for everyone, owners included. The only carve-out is
+  // a self_review_exceptions row, and only at first pass (see
+  // hasSelfReviewException); a spot check / final verdict on your own project
+  // is never allowed.
   if (
     stage === "shipped" &&
-    !access.isOwner &&
     own &&
     !(await hasSelfReviewException(access.session.slackId))
   )
     redirect(`${back}?error=${encodeURIComponent("You can't first-pass your own project , another reviewer has to take it.")}`);
+  if (stage === "second_review" && own)
+    redirect(`${back}?error=${encodeURIComponent("You can't give the final verdict on a project you own or collaborate on.")}`);
   if (stage !== "shipped" && stage !== "second_review")
     redirect(`${back}?error=${encodeURIComponent("This project isn't awaiting review anymore.")}`);
   // A first-pass reviewer proposing a ban is a separate, older flow the fraud
@@ -3106,12 +3124,6 @@ export const setShowReviewerNames = guardedAction("setShowReviewerNames", "staff
   revalidatePath("/", "layout");
 });
 
-// Extracts the Slack id from an actorName()-formatted string ("Name (SlackID)"),
-// used to tell whether the caller is the same reviewer who set a hold.
-function slackIdFromActorName(label: string): string {
-  return label.match(/\(([^)]+)\)\s*$/)?.[1] ?? "";
-}
-
 export const releaseReviewHold = guardedAction("releaseReviewHold", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);
@@ -5135,12 +5147,18 @@ export const markOrderCredited = guardedAction("markOrderCredited", "fulfiller",
   }
   const { data: order } = await db
     .from("shop_orders")
-    .select("status, claimed_by_slack, item_id")
+    .select("status, claimed_by_slack, item_id, user_id")
     .eq("id", id)
     .maybeSingle();
   if (!order || order.status !== "ordered" || !ownsOrder(access, order.claimed_by_slack)) {
     revalidatePath("/fulfillment");
     return;
+  }
+  // Self-dealing, same as claimOrder/shipOrder/reassignOrder: checked on every
+  // step, not just the claim, so no path (an old claim, a direct form post)
+  // lets someone credit their own order.
+  if (isOwnOrder({ player_slack: await buyerSlackFor(order.user_id as string) }, access.session.slackId)) {
+    throw new Error("You can't fulfill your own shop order.");
   }
   const { error } = await db
     .from("shop_orders")

@@ -109,7 +109,7 @@ export default async function ReviewerPage({
 
   const [stats, audits, handle, playerNames] = await Promise.all([
     reviewerStatsBySlackId(),
-    listReviewAudits(100, slackId),
+    listReviewAudits(100, slackId, { realNames: true }),
     slackHandle(slackId),
     displayNamesBySlackId([slackId]),
   ]);

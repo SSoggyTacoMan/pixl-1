@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
+import { canSeeBuilderPII } from "@/lib/reviewAccess";
 import {
   listShippedProjects,
   listSecondReviewProjects,
@@ -62,7 +63,7 @@ export default async function ReviewListPage({
     access.isOwner
       ? listSpotCheckProjects(viewer, kind, { includeClaimed: true })
       : Promise.resolve([]),
-    listReviewAudits(5, viewer),
+    listReviewAudits(5, viewer, { realNames: canSeeBuilderPII(access) }),
     listShippedProjects(viewer, kind, { includeClaimed: true }),
     listBlackoutQueueProjectIds(),
   ]);

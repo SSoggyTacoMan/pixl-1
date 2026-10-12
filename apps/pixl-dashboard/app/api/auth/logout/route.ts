@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { sameOrigin, siteOrigin } from "@/lib/auth-flow";
 import { serverFetch } from "@/lib/server-api-core";
 import { verifySessionToken } from "@/lib/session";
-import { SESSION_COOKIE, cookieBase } from "@/lib/session-cookie";
+import { SESSION_COOKIE, cookieBase, sessionCookiesToClear } from "@/lib/session-cookie";
 
 // POST only, same-origin only: a cross-site form can't sign a player out.
 export async function POST(req: NextRequest) {
@@ -27,7 +27,8 @@ export async function POST(req: NextRequest) {
     }),
   );
   const res = NextResponse.redirect(new URL("/", siteOrigin(req.nextUrl.origin)), 303);
-  res.cookies.set(SESSION_COOKIE, "", { ...cookieBase(), maxAge: 0 });
+  // The legacy non-__Host- pixl_session too (see sessionCookiesToClear).
+  for (const name of sessionCookiesToClear()) res.cookies.set(name, "", { ...cookieBase(), maxAge: 0 });
   res.headers.set("cache-control", "no-store");
   return res;
 }

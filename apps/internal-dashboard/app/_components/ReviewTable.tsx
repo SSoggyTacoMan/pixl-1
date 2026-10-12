@@ -112,10 +112,11 @@ export function ReviewTable({
         </TableHeader>
         <TableBody>
           {rows.map((p) => {
+            // Never the legal name: these rows are client props, and the
+            // queue queries don't select real_name (see QUEUE_SELECT, lib/db.ts).
             const maker = live
               ? "Builder"
-              : p.users?.real_name ||
-                (p.users?.slack_id && handles.get(p.users.slack_id)) ||
+              : (p.users?.slack_id && handles.get(p.users.slack_id)) ||
                 p.users?.display_name ||
                 p.users?.slack_id ||
                 p.user_id;

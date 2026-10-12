@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { LOGIN_STATE_COOKIE, SESSION_COOKIE, cookieBase, cookieNames } from "./session-cookie";
+import { LOGIN_STATE_COOKIE, SESSION_COOKIE, cookieBase, cookieNames, sessionCookiesToClear } from "./session-cookie";
 
 describe("session cookie names", () => {
   test("production uses the __Host- prefix for both cookies", () => {
@@ -15,6 +15,10 @@ describe("session cookie names", () => {
   test("plain names only in development and test", () => {
     expect(cookieNames("development")).toEqual({ session: "pixl_session", loginState: "pixl_login_state" });
     expect(cookieNames("test")).toEqual({ session: "pixl_session", loginState: "pixl_login_state" });
+  });
+  test("sign-out also clears the legacy plain pixl_session cookie", () => {
+    expect(sessionCookiesToClear("production")).toEqual(["__Host-pixl_session", "pixl_session"]);
+    expect(sessionCookiesToClear("development")).toEqual(["pixl_session"]);
   });
   test("the exported constants follow the current NODE_ENV (test here)", () => {
     expect(SESSION_COOKIE).toBe("pixl_session");

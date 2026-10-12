@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requirePage, can } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { listProjects, collaboratorsByProject } from "@/lib/db";
+import { builderNameFor, redactBuilderUser } from "@/lib/reviewAccess";
 import { StatusBadge, BeaconBadge } from "@/app/_components/ProjectBadges";
 import { Badge } from "@/components/ui/badge";
 import { slackHandles } from "@/lib/slack";
@@ -31,10 +32,14 @@ export default async function ProjectsPage({
   const isAdmin = can(access, "owner");
   const { q, view } = await searchParams;
   const archived = view === "archived";
-  const projects = await listProjects(q, {
-    archived,
-    includeArchived: !archived && isAdmin,
-  });
+  // Legal names are for owners/final reviewers only (lib/reviewAccess.ts),
+  // stripped here before anything renders.
+  const projects = (
+    await listProjects(q, {
+      archived,
+      includeArchived: !archived && isAdmin,
+    })
+  ).map((p) => ({ ...p, users: redactBuilderUser(access, p.users) }));
   // Live mode shows no player names at all here (not even in-game ones) and
   // no Hackatime projects, so the Slack handle lookup is skipped too.
   const handles = live
@@ -109,10 +114,9 @@ export default async function ProjectsPage({
                     <Link href={`/players/${p.user_id}`} className="font-bold hover:text-brand">
                       {live
                         ? "Builder"
-                        : p.users.real_name ||
-                          (p.users.slack_id && handles.get(p.users.slack_id)) ||
-                          p.users.display_name ||
-                          p.users.slack_id}
+                        : builderNameFor(access, p.users, {
+                            handle: p.users.slack_id ? handles.get(p.users.slack_id) : null,
+                          })}
                     </Link>
                   ) : (
                     <span className="text-muted-foreground">{live ? "Builder" : p.user_id}</span>

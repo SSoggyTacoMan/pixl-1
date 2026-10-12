@@ -20,17 +20,25 @@ export function queueAllows(scope: ReviewQueueScope, kind: string | null | undef
 }
 
 // Self-review: the viewer (every users row carrying their Slack id) owns the
-// project, or is an ACCEPTED collaborator on it. Either way they're paid when
-// it's approved, so they may not review it.
+// project, or is a collaborator on it - accepted, or invited and still
+// pending (they could accept right after the verdict). Either way they'd be
+// paid when it's approved, so they may not review it. Applies to owners too.
 export function isOwnOrCollaborator(
   viewerUserIds: readonly string[],
   ownerUserId: string | null | undefined,
-  acceptedCollaboratorUserIds: readonly string[],
+  collaboratorUserIds: readonly string[],
 ): boolean {
   if (viewerUserIds.length === 0) return false;
   const mine = new Set(viewerUserIds.filter(Boolean));
   if (ownerUserId && mine.has(ownerUserId)) return true;
-  return acceptedCollaboratorUserIds.some((id) => mine.has(id));
+  return collaboratorUserIds.some((id) => mine.has(id));
+}
+
+// Extracts the Slack id from an actorName()-formatted string ("Name (SlackID)").
+// Compare reviewers by this, never by the whole label: the display-name half
+// changes whenever someone edits their Slack profile.
+export function slackIdFromActorName(label: string | null | undefined): string {
+  return (label ?? "").match(/\(([^)]+)\)\s*$/)?.[1] ?? "";
 }
 
 // A verdict on a first-pass BAN PROPOSAL (stage second_review,
@@ -58,7 +66,11 @@ export function proposedBanDecision(
   if (opts.own) return { kind: "deny", reason: "You can't decide on a project you own or collaborate on." };
   if (!viewer.canSecondPass && !viewer.isOwner)
     return { kind: "deny", reason: "You don't have second-pass review access." };
-  if (!viewer.isOwner && opts.proposedBy === opts.actor)
+  // By Slack id: the same person under a renamed display name is still the
+  // same reviewer. An unparseable proposer label is treated as a match (deny).
+  const proposerId = slackIdFromActorName(opts.proposedBy);
+  const actorId = slackIdFromActorName(opts.actor) || viewer.session.slackId;
+  if (!viewer.isOwner && (!proposerId || proposerId === actorId))
     return { kind: "deny", reason: "A different reviewer must confirm or overturn this ban proposal." };
   if (verdict === "needs_changes") return { kind: "needs_changes" };
   if (viewer.isOwner) return { kind: "final" };
@@ -89,6 +101,37 @@ export function canSetHold(
 // never the values themselves.
 export function canSeeBuilderPII(viewer: { isOwner: boolean; canSecondPass: boolean }): boolean {
   return viewer.isOwner || viewer.canSecondPass;
+}
+
+// The name to show for a builder (project owner or collaborator) anywhere a
+// reviewer sees one: the legal name (users.real_name) for owners and final
+// reviewers only; everyone else gets the Slack handle / in-game display_name /
+// Slack id, never real_name, whatever the row carries.
+export interface BuilderNameSource {
+  real_name?: string | null;
+  display_name?: string | null;
+  slack_id?: string | null;
+}
+
+export function builderNameFor(
+  viewer: { isOwner: boolean; canSecondPass: boolean },
+  user: BuilderNameSource | null | undefined,
+  opts: { handle?: string | null; fallback?: string } = {},
+): string {
+  const legal = canSeeBuilderPII(viewer) ? (user?.real_name ?? "").trim() : "";
+  return (legal || opts.handle || user?.display_name || user?.slack_id || opts.fallback || "").trim();
+}
+
+// Drops real_name from a joined users row unless the viewer may see it, so a
+// legal name never reaches a page payload (or a client component's props)
+// for a first-pass reviewer even where it isn't rendered.
+export function redactBuilderUser<T extends BuilderNameSource>(
+  viewer: { isOwner: boolean; canSecondPass: boolean },
+  user: T | null | undefined,
+): T | null | undefined {
+  if (!user || canSeeBuilderPII(viewer) || !("real_name" in user)) return user;
+  const { real_name: _hidden, ...rest } = user;
+  return rest as T;
 }
 
 export interface BuilderRaw {

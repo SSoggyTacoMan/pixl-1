@@ -27,6 +27,13 @@ export function cookieNames(env: Env = process.env.NODE_ENV) {
 }
 
 export const SESSION_COOKIE = cookieNames().session;
+
+// Every session cookie name to expire on sign-out: the current one plus the
+// plain pre-__Host- pixl_session a browser may still hold from before the
+// rename (it would otherwise keep a valid JWT around until it expires).
+export function sessionCookiesToClear(env: Env = process.env.NODE_ENV): string[] {
+  return [...new Set([cookieNames(env).session, cookieNames("development").session])];
+}
 export const LOGIN_STATE_COOKIE = cookieNames().loginState;
 
 // 14 days, matches apps/server's issueSessionToken expiry so the cookie

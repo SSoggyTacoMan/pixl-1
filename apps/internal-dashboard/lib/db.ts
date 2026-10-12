@@ -4,6 +4,7 @@ import { decryptPII } from "./crypto";
 import { reForProject } from "@/app/_generated/config";
 import { parseAuditNote } from "./auditNote";
 import { reviewerName } from "./liveMode";
+import { slackIdFromActorName } from "./reviewAccess";
 
 // Orchard Postgres over DATABASE_URL. pgCompat connects lazily, so this module
 // stays importable while Next prerenders static pages (e.g. /_not-found)
@@ -601,7 +602,16 @@ export async function ensureJournalShareToken(projectId: number): Promise<string
   return token;
 }
 
-export interface ShippedProject extends ProjectWithUser {
+// The review queues (first pass, Awaiting Robert, Spot check, Proposed bans,
+// Reviewed) render through ReviewTable, a client component, so every row is
+// serialized into the browser payload. They never select real_name: a
+// first-pass reviewer must not receive a builder's legal name (see
+// canSeeBuilderPII in lib/reviewAccess.ts), and the queue shows the Slack
+// handle / display name to everyone anyway.
+const QUEUE_SELECT = "*, users(id, display_name, slack_id)";
+
+export interface ShippedProject extends Omit<ProjectWithUser, "users"> {
+  users?: Pick<UserRow, "id" | "display_name" | "slack_id"> | null;
   hours: number;
   hackatimeHours: number;
   journalHours: number;
@@ -703,7 +713,7 @@ export async function listShippedProjects(
 ): Promise<ShippedProject[]> {
   let q = db
     .from("projects")
-    .select("*, users(id, display_name, real_name, slack_id)")
+    .select(QUEUE_SELECT)
     .eq("status", "shipped")
     .is("archived_at", null)
     .is("rejected_at", null)
@@ -772,7 +782,7 @@ export async function listSecondReviewProjects(
 ): Promise<ShippedProject[]> {
   let q = db
     .from("projects")
-    .select("*, users(id, display_name, real_name, slack_id)")
+    .select(QUEUE_SELECT)
     .eq("status", "fraud_review")
     // A first-pass "ban" verdict is only a proposal (see reviewProject) -
     // it belongs in the dedicated Proposed bans tab (listProposedBanProjects),
@@ -825,7 +835,8 @@ export async function nextReviewId(opts: {
   // super admin - they'd have to release the hold first, a separate action -
   // so it must never be what "next" jumps a reviewer onto.
   const firstPass = (await listShippedProjects(viewer, kind)).filter(
-    (p) => p.id !== excludeId && !p.hold_at && (isSuper || !p.own),
+    // Nobody, owners included, is advanced onto their own submission.
+    (p) => p.id !== excludeId && !p.hold_at && !p.own,
   );
   const finalPass =
     spotCheck && isSuper
@@ -837,7 +848,9 @@ export async function nextReviewId(opts: {
             (p) =>
               p.id !== excludeId &&
               !p.hold_at &&
-              (isSuper || (p.users?.slack_id !== viewer && p.first_pass_by !== by)),
+              p.users?.slack_id !== viewer &&
+              // By Slack id, not the "Name (SlackID)" label (renames).
+              (isSuper || slackIdFromActorName(p.first_pass_by) !== viewer),
           )
         : [];
 
@@ -934,7 +947,7 @@ export async function projectPixelTotal(projectId: number, userId: string): Prom
 export async function listReviewedProjects(): Promise<ShippedProject[]> {
   const { data, error } = await db
     .from("projects")
-    .select("*, users(id, display_name, real_name, slack_id)")
+    .select(QUEUE_SELECT)
     .in("status", ["approved", "needs_changes"])
     .is("archived_at", null)
     .order("shipped_at", { ascending: false })
@@ -1054,7 +1067,7 @@ export async function listSpotCheckProjects(
 ): Promise<ShippedProject[]> {
   let q = db
     .from("projects")
-    .select("*, users(id, display_name, real_name, slack_id)")
+    .select(QUEUE_SELECT)
     .eq("status", "second_review")
     .eq("second_pass_verdict", "not_fraud")
     .is("archived_at", null)
@@ -1101,7 +1114,7 @@ export async function countSpotCheckProjects(): Promise<number> {
 export async function listProposedBanProjects(kind?: "software" | "hardware"): Promise<ShippedProject[]> {
   let q = db
     .from("projects")
-    .select("*, users(id, display_name, real_name, slack_id)")
+    .select(QUEUE_SELECT)
     .eq("status", "second_review")
     .eq("first_pass_verdict", "banned")
     .is("archived_at", null)
@@ -1198,9 +1211,13 @@ export interface ReviewAuditRow {
   project_name: string;
 }
 
+// player_name is the builder's legal name only with opts.realNames (owners and
+// final reviewers, canSeeBuilderPII in lib/reviewAccess.ts); otherwise their
+// display_name. Defaults to the safe side so a new caller can't leak it.
 export async function listReviewAudits(
   limit = 50,
   reviewerSlackId?: string,
+  opts: { realNames?: boolean } = {},
 ): Promise<ReviewAuditRow[]> {
   let q = db
     .from("review_audits")
@@ -1218,16 +1235,24 @@ export async function listReviewAudits(
   const projectIds = [...new Set(rows.map((r) => r.project_id))];
   const [users, projects] = await Promise.all([
     userIds.length > 0
-      ? db.from("users").select("id, display_name, real_name").in("id", userIds)
+      ? db
+          .from("users")
+          .select(opts.realNames ? "id, display_name, real_name" : "id, display_name")
+          .in("id", userIds)
       : Promise.resolve({ data: [] }),
     projectIds.length > 0
       ? db.from("projects").select("id, name").in("id", projectIds)
       : Promise.resolve({ data: [] }),
   ]);
-  const names = new Map((users.data ?? []).map((u) => [u.id as string, (u.real_name || u.display_name) as string]));
+  const names = new Map(
+    ((users.data ?? []) as { id: string; display_name?: string | null; real_name?: string | null }[]).map((u) => [
+      u.id,
+      ((opts.realNames ? u.real_name : "") || u.display_name || "") as string,
+    ]),
+  );
   const projectNames = new Map((projects.data ?? []).map((p) => [p.id as number, p.name as string]));
   for (const r of rows) {
-    r.player_name = names.get(r.user_id) ?? r.user_id;
+    r.player_name = names.get(r.user_id) || r.user_id;
     r.project_name = projectNames.get(r.project_id) ?? `#${r.project_id}`;
   }
   return rows;
@@ -2786,7 +2811,8 @@ export async function listActivityFeed(opts: {
     opts.team
       ? listTeamLog(limit).then((data) => ({ data }))
       : Promise.resolve({ data: [] }),
-    opts.review ? listReviewAudits(limit) : Promise.resolve([]),
+    // Only owners reach the activity feed (app/page.tsx, app/audit/page.tsx).
+    opts.review ? listReviewAudits(limit, undefined, { realNames: true }) : Promise.resolve([]),
     opts.pixels
       ? db
           .from("pixel_transactions")
@@ -3075,7 +3101,8 @@ export async function collaboratorsByProject(
   if (projectIds.length === 0) return map;
   const { data, error } = await db
     .from("project_collaborators")
-    .select("*, users(id, display_name, real_name, slack_id)")
+    // No real_name: list views only show a count / handle (see QUEUE_SELECT).
+    .select("*, users(id, display_name, slack_id)")
     .in("project_id", projectIds)
     .eq("status", "accepted");
   if (error) {

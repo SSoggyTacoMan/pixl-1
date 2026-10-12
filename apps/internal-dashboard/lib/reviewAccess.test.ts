@@ -2,10 +2,13 @@ import { describe, expect, test } from "bun:test";
 import {
   builderDetailsView,
   canSeeBuilderPII,
+  builderNameFor,
   canSetHold,
   isOwnOrCollaborator,
   proposedBanDecision,
   queueAllows,
+  redactBuilderUser,
+  slackIdFromActorName,
   type ReviewViewer,
 } from "./reviewAccess";
 
@@ -48,6 +51,21 @@ describe("M1: decisions on a first-pass ban proposal", () => {
     expect(d.kind).toBe("deny");
   });
 
+  test("the proposer is matched by Slack id, not the display-name label", () => {
+    const d = proposedBanDecision(viewer({ canSecondPass: true }), "approved", {
+      ...opts,
+      proposedBy: "Rev Old Name (UREV)",
+      actor: "Rev (UREV)",
+    });
+    expect(d.kind).toBe("deny");
+    // A label with no parseable Slack id can't prove it's someone else.
+    expect(proposedBanDecision(viewer({ canSecondPass: true }), "approved", { ...opts, proposedBy: "Alice" }).kind).toBe(
+      "deny",
+    );
+    expect(slackIdFromActorName("A (B) Name (U123)")).toBe("U123");
+    expect(slackIdFromActorName(null)).toBe("");
+  });
+
   test("own or collaborator project is refused for everyone, owners included", () => {
     for (const v of [viewer({ canSecondPass: true }), viewer({ isOwner: true, canSecondPass: true })])
       for (const verdict of ["approved", "ban", "needs_changes"])
@@ -65,9 +83,38 @@ describe("M2: self-review covers accepted collaborators", () => {
   test("unrelated reviewer", () => {
     expect(isOwnOrCollaborator(["u5"], "owner", ["u3"])).toBe(false);
   });
+  test("a pending collaborator invite counts (the caller passes pending + accepted ids)", () => {
+    expect(isOwnOrCollaborator(["u7"], "owner", ["u7"])).toBe(true);
+  });
   test("a reviewer with no users row is never 'own' (and empty ids never match)", () => {
     expect(isOwnOrCollaborator([], "owner", ["owner"])).toBe(false);
     expect(isOwnOrCollaborator([""], "", [""])).toBe(false);
+  });
+});
+
+describe("builder names: legal name for owners/final reviewers only", () => {
+  const user = { real_name: "Jane Legal Doe", display_name: "janey", slack_id: "UJANE" };
+  const firstPass = { isOwner: false, canSecondPass: false };
+
+  test("a first-pass reviewer never gets real_name, whatever the row carries", () => {
+    const name = builderNameFor(firstPass, user, { handle: "@jane" });
+    expect(name).toBe("@jane");
+    expect(name).not.toContain("Legal");
+    expect(builderNameFor(firstPass, user)).toBe("janey");
+    expect(builderNameFor(firstPass, { real_name: "Jane Legal Doe" }, { fallback: "uid-1" })).toBe("uid-1");
+  });
+
+  test("owners and final reviewers get the legal name first", () => {
+    for (const who of [{ isOwner: true, canSecondPass: false }, { isOwner: false, canSecondPass: true }])
+      expect(builderNameFor(who, user, { handle: "@jane" })).toBe("Jane Legal Doe");
+  });
+
+  test("redactBuilderUser strips real_name from the payload for first-pass reviewers only", () => {
+    const stripped = redactBuilderUser(firstPass, user);
+    expect(stripped && "real_name" in stripped).toBe(false);
+    expect(stripped?.display_name).toBe("janey");
+    expect(redactBuilderUser({ isOwner: true, canSecondPass: false }, user)?.real_name).toBe("Jane Legal Doe");
+    expect(redactBuilderUser(firstPass, null)).toBeNull();
   });
 });
 

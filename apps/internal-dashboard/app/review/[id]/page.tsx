@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { decryptPII } from "@/lib/crypto";
-import { builderDetailsView, canSeeBuilderPII } from "@/lib/reviewAccess";
+import { builderDetailsView, builderNameFor, canSeeBuilderPII } from "@/lib/reviewAccess";
 import {
   getProject,
   listShippedProjects,
@@ -167,12 +167,14 @@ export default async function ReviewDetail({
   // robertSync.ts), so spotCheckStage is the only thing isFinalStage can
   // mean here besides a proposed ban.
   const spotCheckStage = isFinalStage && p.second_pass_verdict === "not_fraud";
-  // Owner of the project, or an accepted collaborator on it (both are paid on
-  // approval, so neither may review it). Mirrors isOwnProject in app/actions.ts.
+  // Owner of the project, or a collaborator on it, pending invites included
+  // (all are paid on approval, so none may review it - owners included).
+  // Mirrors isOwnProject in app/actions.ts.
   const isOwn =
-    !access.isOwner &&
-    ((!!p.users?.slack_id && p.users.slack_id === viewer) ||
-      allCollaborators.some((c) => c.status === "accepted" && !!c.users?.slack_id && c.users.slack_id === viewer));
+    (!!p.users?.slack_id && p.users.slack_id === viewer) ||
+    allCollaborators.some(
+      (c) => (c.status === "accepted" || c.status === "pending") && !!c.users?.slack_id && c.users.slack_id === viewer,
+    );
   const isHeld = !!p.hold_at;
   // hold_by is stored as "Name (SlackID)" (see holdReview in app/actions.ts) -
   // parse the id back out to tell whether this viewer is the one who set it,
@@ -182,7 +184,7 @@ export default async function ReviewDetail({
     !isHeld &&
     ((p.status === "shipped" && !isOwn) ||
       (isProposedBan && canSecondPass && !isOwn) ||
-      (spotCheckStage && access.isOwner));
+      (spotCheckStage && access.isOwner && !isOwn));
   // Reviewer-side unship (see unshipProject): available to final reviewers at
   // second pass or fraud review regardless of who could submit a verdict, and
   // never on your own project or while a hold is set.
@@ -283,7 +285,7 @@ export default async function ReviewDetail({
     return {
       id: c.id,
       userId: c.user_id,
-      name: displayName(c.user_id, c.users?.real_name || c.users?.display_name || c.users?.slack_id || c.user_id),
+      name: displayName(c.user_id, builderNameFor(access, c.users, { fallback: c.user_id })),
       hackatimeHours: cHackatimeHours,
       journalHours: cJournalHours,
       claimedHours: cHackatimeHours > 0 ? cHackatimeHours : cJournalHours,
@@ -314,7 +316,8 @@ export default async function ReviewDetail({
               : null,
           people: blackoutEntry.contributors.map((c) => ({
             userId: c.userId,
-            name: displayName(c.userId, c.name),
+            // Legal name for owners/final reviewers only.
+            name: displayName(c.userId, canSeeBuilderPII(access) ? c.name : (c.publicName ?? "player")),
             role: c.role,
             hackatimeBaseSeconds: c.hackatimeBaseSeconds,
             journalBaseSeconds: c.journalBaseSeconds,
@@ -418,10 +421,9 @@ export default async function ReviewDetail({
     hackatimeReportPromise,
     p.bom_url ? fetchBomRows(p.bom_url) : Promise.resolve(null),
   ]);
-  const ownerName = displayName(
-    p.user_id,
-    p.users?.real_name || ownerHandle || p.users?.display_name || p.users?.slack_id || p.user_id,
-  );
+  // Legal name for owners/final reviewers only (builderNameFor); a first-pass
+  // reviewer sees the Slack handle or display name.
+  const ownerName = displayName(p.user_id, builderNameFor(access, p.users, { handle: ownerHandle, fallback: p.user_id }));
   // Per-person time, only meaningful once there's more than one contributor.
   // The "Logged hours" card pools everyone together, so on a collaborative
   // ship it can't answer "who actually did what" on its own.
@@ -710,7 +712,7 @@ export default async function ReviewDetail({
                 with{" "}
                 {acceptedCollaborators
                   .map((c) =>
-                    displayName(c.user_id, c.users?.real_name || c.users?.display_name || c.users?.slack_id || c.user_id),
+                    displayName(c.user_id, builderNameFor(access, c.users, { fallback: c.user_id })),
                   )
                   .join(", ")}
               </div>
@@ -998,10 +1000,9 @@ export default async function ReviewDetail({
                 This is your own submission , another reviewer has to do the first pass.
               </Card>
             )}
-            {isOwn && isFinalStage && canReview && (
+            {isOwn && isFinalStage && (
               <Card className="p-4 text-xs gap-0 ring-amber-300 dark:ring-amber-500/30 text-amber-700 dark:text-amber-300">
-                Your own submission , someone else first-passed it, so you may finalize. This is
-                logged.
+                Your own submission , another owner has to give the final verdict.
               </Card>
             )}
 

@@ -23,6 +23,26 @@ describe("isBlockedIp", () => {
   }
 
   test("rejects a non-IP string rather than guessing", () => expect(isBlockedIp("not-an-ip")).toBe(true));
+
+  // Ranges the first version missed: every spelling of an internal address,
+  // not just the common prefix.
+  const alsoBlocked = [
+    // IPv6 link-local is fe80::/10 (fe80-febf), site-local fec0::/10
+    "fe90::1", "febf::1", "fec0::1", "feff::1",
+    // NAT64, 6to4, Teredo and IPv4-compatible/-mapped spellings of loopback
+    "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "2002:7f00:1::1", "2001:0:4136:e378::1",
+    "::7f00:1", "::127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:1", "::ffff:0:7f00:1",
+    "::ffff:169.254.169.254", "fe80::1%eth0", "ff02::1",
+    // IPv4 special-purpose
+    "198.18.0.1", "198.19.255.254", "192.0.0.8", "224.0.0.1", "239.255.255.250",
+    "240.0.0.1", "255.255.255.255",
+  ];
+  for (const ip of alsoBlocked) {
+    test(`blocks ${ip}`, () => expect(isBlockedIp(ip)).toBe(true));
+  }
+  for (const ip of ["198.20.0.1", "192.0.1.1", "223.255.255.255", "2a00:1450:4001::200e", "::ffff:8.8.8.8"]) {
+    test(`still allows ${ip}`, () => expect(isBlockedIp(ip)).toBe(false));
+  }
 });
 
 describe("hostIsPublic", () => {

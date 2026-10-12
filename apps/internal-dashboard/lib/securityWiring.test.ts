@@ -42,6 +42,7 @@ describe("H2 fulfillment", () => {
   test("order actions refuse self-dealing and foreign flags", () => {
     expect(fnBody("app/actions.ts", "export const claimOrder")).toContain("isOwnOrder");
     expect(fnBody("app/actions.ts", "export const shipOrder")).toContain("isOwnOrder");
+    expect(fnBody("app/actions.ts", "export const markOrderCredited")).toContain("isOwnOrder");
     expect(fnBody("app/actions.ts", "export const flagOrderOverBudget")).toContain("canFlagOrder");
   });
 });
@@ -68,6 +69,10 @@ describe("M1/M2 reviewer actions", () => {
     "toggleProjectPeak",
     "saveReviewDraft",
     "holdReview",
+    "sendBackToFirstPass",
+    "unshipProject",
+    "updateSecondPassChecklist",
+    "addProjectNote",
   ]) {
     test(`${name} authorizes the project (queue scope + self-review)`, () => {
       expect(fnBody("app/actions.ts", `export const ${name} =`)).toContain("authorizeProjectAction(access, projectId");
@@ -77,10 +82,52 @@ describe("M1/M2 reviewer actions", () => {
     const body = fnBody("app/actions.ts", "export const setJournalHours =");
     expect(body.match(/\.eq\("project_id", projectId\)/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
   });
-  test("isOwnProject checks collaborators", () => {
+  test("isOwnProject checks collaborators, pending invites included", () => {
     const s = src("app/actions.ts");
     expect(s).toMatch(/async function isOwnProject\(access: AdminAccess, ownerUserId: string, projectId: number\)/);
     expect(s).toContain("isOwnOrCollaborator(myIds, ownerUserId, collaborators)");
+    const body = s.slice(s.indexOf("async function isOwnProject"), s.indexOf("function denyProjectAction"));
+    expect(body).toContain('.in("status", ["pending", "accepted"])');
+    const page = src("app/review/[id]/page.tsx");
+    expect(page).toContain('c.status === "pending"');
+  });
+  test("self-review applies to owners too", () => {
+    const s = src("app/actions.ts");
+    const authz = s.slice(s.indexOf("async function authorizeProjectAction"), s.indexOf("async function hasSelfReviewException"));
+    expect(authz).toContain("isOwnProject(access, row.user_id, projectId)");
+    expect(authz).not.toContain("access.isOwner");
+    const review = fnBody("app/actions.ts", "export const reviewProject");
+    expect(review).toContain('stage === "second_review" && own');
+    expect(review).not.toMatch(/stage === "shipped" &&\s*!access\.isOwner/);
+    const page = src("app/review/[id]/page.tsx");
+    expect(page).toContain("spotCheckStage && access.isOwner && !isOwn");
+    expect(page).not.toMatch(/const isOwn =\s*!access\.isOwner/);
+  });
+});
+
+describe("builder legal names (first-pass reviewers)", () => {
+  test("queue rows never carry real_name to the client ReviewTable", () => {
+    expect(src("app/_components/ReviewTable.tsx")).not.toMatch(/\.real_name/);
+    expect(src("lib/db.ts")).toContain('const QUEUE_SELECT = "*, users(id, display_name, slack_id)"');
+    for (const fn of [
+      "listShippedProjects",
+      "listSecondReviewProjects",
+      "listReviewedProjects",
+      "listSpotCheckProjects",
+      "listProposedBanProjects",
+    ])
+      expect(fnBody("lib/db.ts", `export async function ${fn}`)).toContain(".select(QUEUE_SELECT)");
+  });
+  test("review and project pages name builders through builderNameFor", () => {
+    for (const f of ["app/review/[id]/page.tsx", "app/projects/page.tsx", "app/projects/[id]/page.tsx"]) {
+      const page = src(f);
+      expect(page).toContain("builderNameFor(access");
+      expect(page).not.toMatch(/users\??\.real_name \|\|/);
+    }
+  });
+  test("reviewer-facing review audits only get legal names when privileged", () => {
+    expect(fnBody("lib/db.ts", "export async function listReviewAudits")).toContain("opts.realNames");
+    expect(src("app/review/(tabs)/page.tsx")).toContain("realNames: canSeeBuilderPII(access)");
   });
 });
 

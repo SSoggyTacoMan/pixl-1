@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
+import { canSeeBuilderPII } from "@/lib/reviewAccess";
 import { getHideReviewers } from "@/lib/liveModeServer";
 import { reviewerName } from "@/lib/liveMode";
 import { listReviewAudits } from "@/lib/db";
@@ -36,7 +37,8 @@ export default async function ReviewLogPage() {
   await requireGuidelinesAck(access);
   const hideReviewers = await getHideReviewers();
   if (!access.isOwner) redirect("/review");
-  const log = await listReviewAudits();
+  // Legal names only for owners/final reviewers.
+  const log = await listReviewAudits(undefined, undefined, { realNames: canSeeBuilderPII(access) });
 
   return (
     <div>

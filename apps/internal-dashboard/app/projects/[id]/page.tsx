@@ -5,6 +5,7 @@ import { getLiveMode } from "@/lib/liveModeServer";
 import { liveName } from "@/lib/liveMode";
 import { db, getProject, listCollaboratorsForProject, listProjectNotes } from "@/lib/db";
 import { FRAUD_SCORE_THRESHOLD } from "@/lib/robertOutcome";
+import { builderNameFor } from "@/lib/reviewAccess";
 import { fetchCommits } from "@/lib/commits";
 import {
   reReviewProject,
@@ -233,10 +234,8 @@ export default async function ProjectPage({
                   {liveName(
                     live,
                     project.users,
-                    project.users.real_name ||
-                      ownerHandle ||
-                      project.users.display_name ||
-                      project.users.slack_id,
+                    // Legal name for owners/final reviewers only.
+                    builderNameFor(access, project.users, { handle: ownerHandle }),
                   )}
                 </Link>
               ) : (
@@ -254,7 +253,7 @@ export default async function ProjectPage({
                         href={`/players/${c.user_id}`}
                         className="font-bold hover:text-brand"
                       >
-                        {liveName(live, c.users, c.users.real_name || c.users.display_name || c.users.slack_id)}
+                        {liveName(live, c.users, builderNameFor(access, c.users))}
                       </Link>
                     ) : (
                       c.user_id

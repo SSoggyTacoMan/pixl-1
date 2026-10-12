@@ -30,23 +30,65 @@ export interface SsrfGuardDeps {
   ca?: string | Buffer | Array<string | Buffer>; // test only
 }
 
-export function isBlockedIp(ip: string): boolean {
-  const v = isIP(ip);
-  if (v === 4) {
-    const [a, b] = ip.split(".").map(Number);
-    if (a === 0 || a === 10 || a === 127) return true; // this-network, private, loopback
-    if (a === 169 && b === 254) return true; // link-local + cloud metadata (169.254.169.254)
-    if (a === 172 && b >= 16 && b <= 31) return true; // private
-    if (a === 192 && b === 168) return true; // private
-    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
-    return false;
+function isBlockedIpv4(ip: string): boolean {
+  const [a, b, c] = ip.split(".").map(Number);
+  if (a === 0 || a === 10 || a === 127) return true; // this-network, private, loopback
+  if (a === 169 && b === 254) return true; // link-local + cloud metadata (169.254.169.254)
+  if (a === 172 && b >= 16 && b <= 31) return true; // private
+  if (a === 192 && b === 168) return true; // private
+  if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+  if (a === 192 && b === 0 && c === 0) return true; // IETF protocol assignments (192.0.0.0/24)
+  if (a === 192 && b === 0 && c === 2) return true; // TEST-NET-1
+  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking (198.18.0.0/15)
+  if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3
+  if (a >= 224) return true; // multicast (224/4), reserved (240/4), broadcast 255.255.255.255
+  return false;
+}
+
+// "::7f00:1", "::ffff:127.0.0.1", "fe80::1%eth0" -> eight 16-bit groups, or
+// null if it doesn't parse. Prefix checks on the raw string miss the many
+// spellings of one address, so every IPv6 rule below works on the numbers.
+function ipv6Groups(ip: string): number[] | null {
+  let s = ip.toLowerCase().split("%")[0];
+  // A dotted IPv4 tail ("::ffff:1.2.3.4") becomes its two groups.
+  const tail = s.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (tail) {
+    const o = tail.slice(1).map(Number);
+    if (o.some((n) => n > 255)) return null;
+    s = `${s.slice(0, -tail[0].length)}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`;
   }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const part = (h: string) => (h === "" ? [] : h.split(":").map((g) => parseInt(g, 16)));
+  const head = part(halves[0]);
+  const rest = halves.length === 2 ? part(halves[1]) : [];
+  const fill = 8 - head.length - rest.length;
+  if (halves.length === 1 ? head.length !== 8 : fill < 1) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? fill : 0).fill(0), ...rest];
+  return groups.every((g) => Number.isInteger(g) && g >= 0 && g <= 0xffff) ? groups : null;
+}
+
+export function isBlockedIp(ip: string): boolean {
+  const v = isIP(ip.split("%")[0]);
+  if (v === 4) return isBlockedIpv4(ip);
   if (v === 6) {
-    const s = ip.toLowerCase();
-    if (s === "::1" || s === "::") return true; // loopback / unspecified
-    if (s.startsWith("::ffff:")) return isBlockedIp(s.slice(7)); // IPv4-mapped
-    if (s.startsWith("fc") || s.startsWith("fd")) return true; // unique local
-    if (s.startsWith("fe80")) return true; // link-local
+    const g = ipv6Groups(ip);
+    if (!g) return true;
+    const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+    const zeros = (n: number) => g.slice(0, n).every((x) => x === 0);
+    if (zeros(5) && g[5] === 0xffff) return isBlockedIpv4(v4(g[6], g[7])); // IPv4-mapped ::ffff:a.b.c.d
+    if (zeros(6)) return true; // ::, ::1 and IPv4-compatible ::a.b.c.d (e.g. ::7f00:1)
+    if (zeros(4) && g[4] === 0xffff && g[5] === 0) return true; // IPv4-translated ::ffff:0:a.b.c.d
+    if (g[0] === 0x64 && g[1] === 0xff9b) return true; // NAT64 (64:ff9b::/96 and 64:ff9b:1::/48)
+    if (g[0] === 0x100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true; // discard 100::/64
+    if (g[0] === 0x2002) return true; // 6to4 (embeds an arbitrary IPv4)
+    if (g[0] === 0x2001 && g[1] === 0) return true; // Teredo (embeds an IPv4)
+    if (g[0] === 0x2001 && g[1] === 0xdb8) return true; // documentation
+    if ((g[0] & 0xfe00) === 0xfc00) return true; // unique local fc00::/7
+    if ((g[0] & 0xffc0) === 0xfe80) return true; // link-local fe80::/10 (fe80-febf)
+    if ((g[0] & 0xffc0) === 0xfec0) return true; // site-local fec0::/10 (deprecated)
+    if ((g[0] & 0xff00) === 0xff00) return true; // multicast ff00::/8
     return false;
   }
   return true; // not a parseable IP - refuse rather than guess

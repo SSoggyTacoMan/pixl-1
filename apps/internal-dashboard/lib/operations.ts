@@ -44,7 +44,11 @@ export interface OperationRow {
 
 export interface BlackoutContributor {
   userId: string;
+  // Legal name (real_name) when on file - owner pages only.
   name: string;
+  // display_name only, never real_name: what a first-pass reviewer sees on
+  // the review page (canSeeBuilderPII in lib/reviewAccess.ts).
+  publicName?: string;
   role: "owner" | "collaborator";
   hackatimeBaseSeconds: number;
   journalBaseSeconds: number;
@@ -198,6 +202,9 @@ export async function getBlackoutEntry(
       u.real_name || u.display_name || "player",
     ]),
   );
+  const publicNameOf = new Map(
+    ((users ?? []) as { id: string; display_name: string }[]).map((u) => [u.id, u.display_name || "player"]),
+  );
   return {
     id: num(row.id),
     projectId: num(row.project_id),
@@ -222,6 +229,7 @@ export async function getBlackoutEntry(
     contributors: contribRows.map((c) => ({
       userId: String(c.user_id),
       name: nameOf.get(String(c.user_id)) ?? "player",
+      publicName: publicNameOf.get(String(c.user_id)) ?? "player",
       role: c.role as "owner" | "collaborator",
       hackatimeBaseSeconds: num(c.hackatime_base_seconds),
       journalBaseSeconds: num(c.journal_base_seconds),
