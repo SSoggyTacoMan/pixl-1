@@ -31,7 +31,7 @@ import { TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { isSafeUrl } from "@/lib/safeUrl";
 import { BlackoutReviewSection, type BlackoutReviewData } from "@/app/_components/BlackoutReviewSection";
 import { Badge, Button, Callout, Checkbox, Details, Field, formatDateTime, Input, NativeSelect, Textarea } from "@/app/_ui/ui";
-import { actionErrorMessage } from "@/app/_ui/actionError";
+import { actionErrorMessage, isStaleDeployError } from "@/app/_ui/actionError";
 
 export interface BountyOption {
   id: number;
@@ -593,7 +593,7 @@ export function ReviewForm({
       .then(() => setServerSave("saved"))
       // Best-effort: the localStorage copy is unaffected either way.
       .catch((e: unknown) => {
-        const stale = /server action|deployment/i.test(e instanceof Error ? e.message : String(e));
+        const stale = isStaleDeployError(e);
         staleDeploy.current = stale;
         setServerSave(stale ? "stale" : "error");
       });
@@ -869,7 +869,14 @@ export function ReviewForm({
           setPendingVerdict(null);
           setSubmitError(bounced);
         }
-        setSubmitError(actionErrorMessage(err, "submit this verdict"));
+        // Opened before a deploy: nothing was submitted. The reload notice
+        // above the form says what to do, so don't repeat it as an error.
+        if (isStaleDeployError(err)) {
+          staleDeploy.current = true;
+          setServerSave("stale");
+        } else if (!bounced) {
+          setSubmitError(actionErrorMessage(err, "submit this verdict"));
+        }
       }
       submittedRef.current = false;
       setPendingVerdict(null);
@@ -942,8 +949,9 @@ export function ReviewForm({
         </div>
         {serverSave === "stale" && (
           <Callout tone="warning" icon="history">
-            A new version of the dashboard was deployed while this page was open. Reload before you submit: what you
-            have typed is saved in this browser and will still be here.
+            A new version of the dashboard was deployed while this page was open, so nothing can be saved or
+            submitted from it. Reload, then submit again: what you have typed is saved in this browser and will still
+            be here.
             <div className="mt-2">
               <button type="button" className="hc-btn hc-btn-outline hc-btn-sm" onClick={() => window.location.reload()}>
                 Reload now

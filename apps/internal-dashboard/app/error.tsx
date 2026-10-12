@@ -9,7 +9,7 @@ import { Button, Card, EmptyState } from "@/app/_ui/ui";
 // deploymentId catches most of these on navigation; this catches the rest by
 // reloading once (a sessionStorage flag stops a reload loop).
 // See https://nextjs.org/docs/messages/failed-to-find-server-action
-const STALE = /failed to find server action|older or newer deployment/i;
+const STALE = /failed to find server action|was not found on the server|older or newer deployment/i;
 const RELOAD_FLAG = "pixl:stale-reload";
 
 export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
