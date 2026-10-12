@@ -22,6 +22,24 @@ html:has(.pixl-landing) {
   gap: revert-layer;
 }
 
+/* The landing is always cream, whatever the shell theme, so its scrollbars
+   use the landing's fixed colors rather than the themed tokens. */
+html:has(.pixl-landing),
+.pixl-landing * {
+  scrollbar-color: #16161e #e8dfbf;
+}
+html:has(.pixl-landing)::-webkit-scrollbar-track,
+html:has(.pixl-landing)::-webkit-scrollbar-corner,
+.pixl-landing ::-webkit-scrollbar-track,
+.pixl-landing ::-webkit-scrollbar-corner {
+  background: #e8dfbf;
+}
+html:has(.pixl-landing)::-webkit-scrollbar-thumb,
+.pixl-landing ::-webkit-scrollbar-thumb {
+  background: #16161e;
+  border-color: #e8dfbf;
+}
+
 @keyframes scroll-ltr {
   from { transform: translateX(-50%); }
   to   { transform: translateX(0%); }

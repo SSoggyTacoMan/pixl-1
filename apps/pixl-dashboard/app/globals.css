@@ -1,6 +1,22 @@
 @import "tailwindcss";
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Reset lives in the base layer, like Tailwind's own preflight. Left
+   unlayered it beat every layered utility (p-6, mx-auto, mt-8, space-y-4...),
+   which silently zeroed all Tailwind spacing on the landing and in the shell. */
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+}
+
+/* Themed scrollbars: thin, square, LEDGER tokens, so they follow light/dark.
+   Chrome/Firefox use the standard properties; Safari uses ::-webkit-*. */
+@layer base {
+  * { scrollbar-width: thin; scrollbar-color: var(--dim) var(--panel-2); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--panel-2); }
+  ::-webkit-scrollbar-thumb { background: var(--dim); border: 2px solid var(--panel-2); border-radius: 0; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ink); }
+  ::-webkit-scrollbar-corner { background: var(--panel-2); }
+}
 
 html { font-size: 15px; -webkit-text-size-adjust: 100%; }
 /* /img/... is served from this app's own public/img (copied from the old

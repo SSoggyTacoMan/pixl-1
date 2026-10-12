@@ -57,7 +57,7 @@ export async function LandingPage({ locale }: { locale: Locale }) {
       <SmoothScroll>
         <div
           lang={locale}
-          className="pixl-landing flex min-h-screen flex-col overflow-x-clip bg-[#F5EED2] font-pixel text-black antialiased"
+          className="pixl-landing min-h-screen overflow-x-clip bg-[#F5EED2] font-pixel text-black antialiased"
         >
           <Menu />
           <LanguageSwitcher />
