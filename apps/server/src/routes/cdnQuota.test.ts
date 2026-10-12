@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import postgres from "postgres";
 import { db } from "../db/pgCompat.js";
 import { CDN_UPLOAD_QUOTA, reserveCdnUploadQuota, releaseCdnUploadQuota } from "./cdnQuota.js";
 
@@ -84,8 +88,35 @@ describe("releaseCdnUploadQuota (RPC wiring)", () => {
   });
 });
 
-// real Postgres, skipped without DATABASE_URL
-describe.skipIf(!process.env.DATABASE_URL)("reserveCdnUploadQuota (real Postgres)", () => {
+const adminUrl = process.env.PIXL_TEST_DATABASE_URL;
+
+describe.skipIf(!adminUrl)("reserveCdnUploadQuota (real Postgres)", () => {
+  const dbName = `pixl_cdn_quota_${randomBytes(4).toString("hex")}`;
+  let admin: postgres.Sql;
+
+  beforeAll(async () => {
+    admin = postgres(adminUrl!, { max: 1, onnotice: () => {} });
+    await admin.unsafe(`create database ${dbName}`);
+    const testUrl = new URL(adminUrl!);
+    testUrl.pathname = `/${dbName}`;
+    const migrator = postgres(testUrl.toString(), { max: 1, onnotice: () => {} });
+    const dir = join(import.meta.dirname, "..", "..", "drizzle");
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort())
+      await migrator.unsafe(readFileSync(join(dir, file), "utf8"));
+    await migrator.end();
+    const pgCompat = await import("../db/pgCompat.js");
+    await pgCompat.connectForTests(testUrl.toString());
+    const [{ name }] = await pgCompat.sql.unsafe("select current_database() as name");
+    if (name !== dbName) throw new Error(`refusing to run against ${name}`);
+  }, 120_000);
+
+  afterAll(async () => {
+    const { connectForTests } = await import("../db/pgCompat.js");
+    await connectForTests(null);
+    await admin?.unsafe(`drop database if exists ${dbName} with (force)`);
+    await admin?.end();
+  });
+
   async function uid(): Promise<string> {
     const { data } = await db
       .from("users")
