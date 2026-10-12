@@ -23,6 +23,11 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = Object.freeze([
   { method: "GET", pattern: "/api/shop/item/:id/public" },
   { method: "GET", pattern: "/api/explore/players" },
   { method: "GET", pattern: "/api/explore/players/:id/public" },
+  // The project list and a single project's page, read-only. Both return only
+  // PUBLIC_PROJECT_COLUMNS plus the owner's display name (routes/explore.ts);
+  // a session, when there is one, only fills in has_upvoted.
+  { method: "GET", pattern: "/api/explore/projects" },
+  { method: "GET", pattern: "/api/explore/projects/:id" },
   { method: "*", pattern: "/api/forms/*" },
 ] as const);
 
