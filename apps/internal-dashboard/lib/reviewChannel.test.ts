@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { buildReviewMessage, escapeMrkdwn, reviewerToTag } from "./reviewChannel";
+import { buildReviewMessage, ccReply, escapeMrkdwn, reviewerToTag } from "./reviewChannel";
 
 const base = {
   playerSlackIds: ["U0AAAAAAAA"],
@@ -29,10 +29,20 @@ test("falls back to a bold name without a link", () => {
   expect(buildReviewMessage({ ...base, kind: "changes", projectUrl: null })).toContain("*Cool &lt;Game&gt;*");
 });
 
-test("opting out of being named tags Gabin instead", () => {
+test("opting out of being named gives no reviewer id and a cc to Gabin", () => {
   expect(reviewerToTag("U0BBBBBBBB", true)).toBe("U0BBBBBBBB");
-  expect(reviewerToTag("U0BBBBBBBB", false)).toBe("U0A2SJ7B739");
-  expect(reviewerToTag("not-an-id", true)).toBe("U0A2SJ7B739");
+  expect(reviewerToTag("U0BBBBBBBB", false)).toBeNull();
+  expect(reviewerToTag("not-an-id", true)).toBeNull();
+  expect(ccReply("U0BBBBBBBB")).toBeNull();
+  expect(ccReply(null)).toBe("cc <@U0A2SJ7B739>");
+});
+
+test("an anonymous reviewer is called a reviewer, never tagged", () => {
+  for (const kind of ["changes", "first_pass", "final"] as const) {
+    const msg = buildReviewMessage({ ...base, kind, reviewerSlackId: null });
+    expect(msg).toContain("by a reviewer,");
+    expect(msg).not.toContain("U0A2SJ7B739");
+  }
 });
 
 test("escaping helpers", () => {
