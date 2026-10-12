@@ -11,6 +11,7 @@ import {
   loadTrials,
   loadWalletRe,
 } from "../data";
+import { serverGet } from "@/lib/server-api";
 import { projectEstimate, usdPerHourFor } from "../../calc/estimates";
 import { projectCutoffMs, statsPath } from "../format";
 import { isInReview } from "../types";
@@ -20,6 +21,7 @@ import { DangerZone } from "../_components/danger-zone";
 import { Journal } from "../_components/journal";
 import { linkedSeconds } from "../_components/project-list";
 import { ProjectEditor } from "../_components/project-editor";
+import { PublicView, type PublicProject } from "../_components/public-view";
 import { Timeline } from "../_components/timeline";
 import "../projects.css";
 
@@ -30,10 +32,15 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   const id = Number(raw);
   if (!Number.isSafeInteger(id) || id <= 0) notFound();
 
-  // Only projects you own or collaborate on are viewable here; the public
-  // permalink view of other players' projects is not part of this relaunch.
+  // Your own and collaborated projects get the full page; anyone else's
+  // project gets the read-only public view (the same fields Explore shows).
   const project = (await loadProjects()).find((p) => p.id === id);
-  if (!project) notFound();
+  if (!project) {
+    const pub = await serverGet<PublicProject>(`/api/explore/projects/${id}`);
+    if (pub.ok) return <PublicView data={pub.data} />;
+    if (pub.status === 404 || pub.status === 400) notFound();
+    throw new Error(`project ${id} could not be loaded (${pub.status})`);
+  }
 
   const cutoffMs = projectCutoffMs(project.hours_extended_since);
   const [trials, stats, blackout, journal, collabs, hasBirthday] = await Promise.all([
