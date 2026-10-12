@@ -1,4 +1,4 @@
-import Jimp from "jimp";
+import { Jimp, ResizeStrategy } from "jimp";
 import { app } from "../slack/app.js";
 import { PIXL_CHANNELS } from "../constants.js";
 import { botStats } from "../stats.js";
@@ -74,14 +74,14 @@ app.command("/pixl", async ({ command, ack, client }) => {
     }
 
     const image = await Jimp.read(avatarUrl);
-    const w = image.getWidth();
-    const h = image.getHeight();
+    const w = image.width;
+    const h = image.height;
 
     image
-      .resize(Math.max(1, Math.floor(w / pixelSize)), Math.max(1, Math.floor(h / pixelSize)), Jimp.RESIZE_NEAREST_NEIGHBOR)
-      .resize(w, h, Jimp.RESIZE_NEAREST_NEIGHBOR);
+      .resize({ w: Math.max(1, Math.floor(w / pixelSize)), h: Math.max(1, Math.floor(h / pixelSize)), mode: ResizeStrategy.NEAREST_NEIGHBOR })
+      .resize({ w, h, mode: ResizeStrategy.NEAREST_NEIGHBOR });
 
-    const buffer = await image.getBufferAsync(Jimp.MIME_PNG);
+    const buffer = await image.getBuffer("image/png");
 
     const uploadResult = await client.files.uploadV2({
       channel_id: command.channel_id,
