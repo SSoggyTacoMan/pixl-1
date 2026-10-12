@@ -987,65 +987,6 @@ export default async function ReviewDetail({
               </Muted>
             </div>
             <h1 className="hc-title mt-2 break-words">{p.name}</h1>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {repoUrl ? (
-                <>
-                  <ButtonLink href={repoUrl} external variant="outline" size="sm" icon="github">
-                    Repo
-                  </ButtonLink>
-                  <ButtonLink
-                    href={`${repoUrl.replace(/\/$/, "")}#readme`}
-                    external
-                    variant="outline"
-                    size="sm"
-                    icon="docs"
-                  >
-                    README
-                  </ButtonLink>
-                </>
-              ) : (
-                <Badge tone="danger">No repo</Badge>
-              )}
-              {demoUrl ? (
-                <ButtonLink href={demoUrl} external variant="outline" size="sm" icon="link">
-                  Live demo
-                </ButtonLink>
-              ) : (
-                <Badge tone="danger">No demo</Badge>
-              )}
-              {/* Final pass only: the Telescreen workbench is what a final
-                  reviewer cross-checks heartbeats against. One button per
-                  linked Hackatime project so &p= opens that project's
-                  heartbeats, or a single unscoped link when none is linked. */}
-              {!live && isFinalStage && (
-                <Suspense fallback={null}>
-                  <Await promise={hackatimeReportPromise}>
-                    {(report) => {
-                      if (!report?.hackatimeUserId) return null;
-                      const telescreenUrl = (projectName?: string) => {
-                        const url = new URL("https://telescreen.hackclub.com/workbench/hackatime/overview");
-                        url.searchParams.set("u", report.hackatimeUserId);
-                        if (projectName) url.searchParams.set("p", projectName);
-                        return url.toString();
-                      };
-                      const linked = report.projects.filter((hp) => hp.linked);
-                      if (linked.length === 0) {
-                        return (
-                          <ButtonLink href={telescreenUrl()} external size="sm" icon="view">
-                            Telescreen
-                          </ButtonLink>
-                        );
-                      }
-                      return linked.map((hp) => (
-                        <ButtonLink key={hp.name} href={telescreenUrl(hp.name)} external size="sm" icon="view">
-                          Telescreen: {hp.name}
-                        </ButtonLink>
-                      ));
-                    }}
-                  </Await>
-                </Suspense>
-              )}
-            </div>
           </div>
 
           {p.image_url && (
@@ -1095,14 +1036,32 @@ export default async function ReviewDetail({
             </NoteCallout>
           )}
           {p.ship_note && (
-            <NoteCallout tone="warning" icon="message" title="Note from the builder">
-              {p.ship_note}
-            </NoteCallout>
+            <Details
+              open
+              summary={
+                <>
+                  <Icon glyph="message" size={18} className="hc-muted" />
+                  Note from the builder
+                </>
+              }
+            >
+              <div className="whitespace-pre-wrap break-words text-sm">{p.ship_note}</div>
+            </Details>
           )}
           {p.used_ai && (
-            <NoteCallout tone="neutral" icon="code" title="AI declaration">
-              {p.ai_notes || "Player ticked “AI used” but gave no details (pre-dates the details field)."}
-            </NoteCallout>
+            <Details
+              open
+              summary={
+                <>
+                  <Icon glyph="code" size={18} className="hc-muted" />
+                  AI declaration
+                </>
+              }
+            >
+              <div className="whitespace-pre-wrap break-words text-sm">
+                {p.ai_notes || "Player ticked “AI used” but gave no details (pre-dates the details field)."}
+              </div>
+            </Details>
           )}
 
           {p.needs_funding && (
@@ -1199,8 +1158,14 @@ export default async function ReviewDetail({
             <Await promise={ownerHandlePromise}>{(handle) => ownerCard(ownerNameFor(handle))}</Await>
           </Suspense>
 
-          <Card>
-            <CardHeader title="Eligibility check" icon="checkmark" />
+          <Details
+            summary={
+              <>
+                <Icon glyph="checkmark" size={18} className="hc-muted" />
+                Eligibility check
+              </>
+            }
+          >
             <ul className="hc-caption flex list-disc flex-col gap-1 pl-5 text-sm">
               <li>
                 <strong>Not</strong> a school assignment, and <strong>not</strong> built as paid Hack Club work. Both
@@ -1229,19 +1194,82 @@ export default async function ReviewDetail({
                 />
               </Details>
             </div>
-          </Card>
+          </Details>
 
-          <p className="hc-caption text-sm">
-            Submitted {ago(p.shipped_at)} · {fmtHM(hours)} logged
-            {hackatimeProjects.length > 0 && (
-              <>
-                {" · "}
-                <a href="#hackatime" className="hc-link">
-                  Hackatime: {hackatimeProjects.join(", ")}
-                </a>
-              </>
-            )}
-          </p>
+          {/* Right above the tabs they go with: the repo, README and demo are
+              what a reviewer opens next to the commits and journals. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+            <p className="hc-caption text-sm">
+              Submitted {ago(p.shipped_at)} · {fmtHM(hours)} logged
+              {hackatimeProjects.length > 0 && (
+                <>
+                  {" · "}
+                  <a href="#hackatime" className="hc-link">
+                    Hackatime: {hackatimeProjects.join(", ")}
+                  </a>
+                </>
+              )}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {repoUrl ? (
+                <>
+                  <ButtonLink href={repoUrl} external variant="outline" size="sm" icon="github">
+                    Repo
+                  </ButtonLink>
+                  <ButtonLink
+                    href={`${repoUrl.replace(/\/$/, "")}#readme`}
+                    external
+                    variant="outline"
+                    size="sm"
+                    icon="docs"
+                  >
+                    README
+                  </ButtonLink>
+                </>
+              ) : (
+                <Badge tone="danger">No repo</Badge>
+              )}
+              {demoUrl ? (
+                <ButtonLink href={demoUrl} external variant="outline" size="sm" icon="link">
+                  Live demo
+                </ButtonLink>
+              ) : (
+                <Badge tone="danger">No demo</Badge>
+              )}
+              {/* Final pass only: the Telescreen workbench is what a final
+                  reviewer cross-checks heartbeats against. One button per
+                  linked Hackatime project so &p= opens that project's
+                  heartbeats, or a single unscoped link when none is linked. */}
+              {!live && isFinalStage && (
+                <Suspense fallback={null}>
+                  <Await promise={hackatimeReportPromise}>
+                    {(report) => {
+                      if (!report?.hackatimeUserId) return null;
+                      const telescreenUrl = (projectName?: string) => {
+                        const url = new URL("https://telescreen.hackclub.com/workbench/hackatime/overview");
+                        url.searchParams.set("u", report.hackatimeUserId);
+                        if (projectName) url.searchParams.set("p", projectName);
+                        return url.toString();
+                      };
+                      const linked = report.projects.filter((hp) => hp.linked);
+                      if (linked.length === 0) {
+                        return (
+                          <ButtonLink href={telescreenUrl()} external size="sm" icon="view">
+                            Telescreen
+                          </ButtonLink>
+                        );
+                      }
+                      return linked.map((hp) => (
+                        <ButtonLink key={hp.name} href={telescreenUrl(hp.name)} external size="sm" icon="view">
+                          Telescreen: {hp.name}
+                        </ButtonLink>
+                      ));
+                    }}
+                  </Await>
+                </Suspense>
+              )}
+            </div>
+          </div>
 
           <Suspense fallback={<CardSkeleton lines={6} />}>
             <Await
