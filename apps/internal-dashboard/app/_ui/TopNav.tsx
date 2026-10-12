@@ -4,12 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 import Icon from "@hackclub/icons";
+import { glyphStyle } from "./glyphs";
 import { activeNavHref, type NavGroup, type NavItem, type NavModel } from "./nav";
 
 function NavLink({ item, count, active }: { item: NavItem; count?: number; active: boolean }) {
   return (
     <Link href={item.href} className="hc-nav-link" data-active={active ? true : undefined}>
-      <Icon glyph={item.glyph} size={20} aria-hidden />
+      <Icon glyph={item.glyph} size={20} style={glyphStyle(item.glyph)} aria-hidden />
       {item.label}
       {count !== undefined && count > 0 && <span className="hc-nav-count">{count}</span>}
     </Link>

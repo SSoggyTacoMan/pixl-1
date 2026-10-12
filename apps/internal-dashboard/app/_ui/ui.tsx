@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { ComponentProps, ComponentPropsWithoutRef, ReactNode } from "react";
 import HcIcon, { type GlyphName } from "@hackclub/icons";
 import SubmitButton from "./SubmitButton";
+import { glyphStyle } from "./glyphs";
 
 // The dashboard's whole UI kit. Every page builds from these, styled by
 // admin.css (the hc-* classes). Ported from the Wonders admin.
@@ -79,7 +80,7 @@ export function Icon({
   size?: number;
   className?: string;
 }) {
-  return <HcIcon glyph={glyph} size={size} className={className} aria-hidden />;
+  return <HcIcon glyph={glyph} size={size} className={className} style={glyphStyle(glyph)} aria-hidden />;
 }
 
 export function Badge({

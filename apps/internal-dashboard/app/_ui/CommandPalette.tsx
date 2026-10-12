@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Icon, { type GlyphName } from "@hackclub/icons";
+import { glyphStyle } from "./glyphs";
 import type { NavModel } from "./nav";
 
 interface PlayerHit {
@@ -152,7 +153,7 @@ export default function CommandPalette({ nav }: { nav: NavModel }) {
                 onMouseMove={() => setCursor(i)}
                 onClick={() => go(hit.href)}
               >
-                <Icon glyph={hit.glyph} size={18} aria-hidden />
+                <Icon glyph={hit.glyph} size={18} style={glyphStyle(hit.glyph)} aria-hidden />
                 <span className="truncate">{hit.label}</span>
                 {hit.sub && <span className="hc-muted ml-auto truncate text-xs">{hit.sub}</span>}
               </button>
