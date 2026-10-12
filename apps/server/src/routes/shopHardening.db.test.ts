@@ -40,8 +40,8 @@ if (!adminUrl) {
   async function buy(userId: string, itemId: number, stockChoice = "", config: Record<string, unknown> | null = null) {
     const [row] = await db<{ r: { ok: boolean; error?: string } }[]>`
       select buy_shop_item(p_user_id => ${userId}::uuid, p_item_id => ${itemId}::int, p_option => '',
-        p_config => ${config === null ? null : JSON.stringify(config)}::jsonb,
-        p_stock_choice => ${stockChoice}::text) as r`;
+        p_config => ${config === null ? null : db.json(config as postgres.JSONValue)}::jsonb,
+        p_stock_choice => ${stockChoice}::text, p_buyer_region => 'US') as r`;
     return row.r;
   }
 
@@ -50,7 +50,7 @@ if (!adminUrl) {
   async function createConfigItem(): Promise<number> {
     const id = await createItem();
     const options = { base_price: 100, groups: [{ name: "Signer", type: "single", choices: [{ label: "Ridit" }, { label: "Gabin" }] }] };
-    await db`update shop_items set config_options = ${JSON.stringify(options)}::jsonb where id = ${id}`;
+    await db`update shop_items set config_options = ${db.json(options)}::jsonb where id = ${id}`;
     return id;
   }
 
@@ -61,10 +61,12 @@ if (!adminUrl) {
 
   beforeAll(async () => {
     await admin.unsafe(`create database ${dbName}`);
-    db = postgres(testUrl.toString(), { max: 4, onnotice: () => {} });
+    const migrator = postgres(testUrl.toString(), { max: 1, onnotice: () => {} });
     const dir = join(import.meta.dirname, "..", "..", "drizzle");
     for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort())
-      await db.unsafe(readFileSync(join(dir, file), "utf8"));
+      await migrator.unsafe(readFileSync(join(dir, file), "utf8"));
+    await migrator.end();
+    db = postgres(testUrl.toString(), { max: 4, onnotice: () => {} });
   }, 120_000);
 
   afterAll(async () => {

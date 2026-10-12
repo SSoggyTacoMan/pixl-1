@@ -34,10 +34,10 @@ if (!adminUrl) {
   async function createUser(opts: { country: string; region?: string; regionAuto?: boolean; pixels?: number }) {
     const [row] = await db<{ id: string }[]>`
       insert into users (oauth_provider, oauth_id, display_name, pixels, region, region_auto,
-        address_line1, address_city, address_country, address_postal)
+        address_line1, address_city, address_country, address_postal, phone)
       values ('test', ${randomBytes(6).toString("hex")}, 'tester', ${opts.pixels ?? 100000},
         ${opts.region ?? "US"}, ${opts.regionAuto ?? true},
-        '1 Test St', 'Testville', ${encrypt(opts.country)}, '12345')
+        '1 Test St', 'Testville', ${encrypt(opts.country)}, '12345', ${encrypt("+15555550123")})
       returning id`;
     return row.id;
   }
