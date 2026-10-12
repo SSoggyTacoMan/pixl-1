@@ -100,9 +100,21 @@ export function buildNav(access: AdminAccess, live: boolean): NavModel {
   return { primary, groups: all.filter((g) => g.items.length > 0) };
 }
 
-export function isNavActive(pathname: string, href: string) {
+function matches(pathname: string, href: string) {
   if (href === "/") {
     return pathname === "/";
   }
   return pathname === href || pathname.startsWith(href + "/");
+}
+
+// The one nav link to highlight: the longest href the path sits under. Longest
+// wins because some links nest ("My stats" is /review/stats, under /review),
+// and only the more specific one should light up.
+export function activeNavHref(pathname: string, nav: NavModel): string | null {
+  const hrefs = [...nav.primary, ...nav.groups.flatMap((g) => g.items)].map((item) => item.href);
+  let best: string | null = null;
+  for (const href of hrefs) {
+    if (matches(pathname, href) && (best === null || href.length > best.length)) best = href;
+  }
+  return best;
 }
