@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Commit, CommitDiff, CommitResult } from "@/lib/commits";
-import { Badge, Button, Callout, EmptyState, formatDate, Icon, Mono, Muted } from "@/app/_ui/ui";
+import { Badge, Button, Callout, EmptyState, formatDate, formatDateTime, Icon, Mono, Muted } from "@/app/_ui/ui";
 
-const PER_PAGE = 8;
+const PER_PAGE = 10;
 
 // The commit list isn't GitHub-only, so error copy names whichever host
 // actually answered instead of blaming GitHub for a Codeberg timeout.
@@ -136,17 +136,23 @@ function DiffView({ projectId, sha }: { projectId: number; sha: string }) {
 }
 
 // A commit row. Hovering the hash previews the diff in a popover; clicking the
-// message opens it inline, where it stays until closed.
+// message opens it in a row underneath, where it stays until closed.
 function CommitRow({
   commit: c,
   dump,
   gap,
   projectId,
+  columns,
+  hasStats,
+  hasTracking,
 }: {
   commit: Commit;
   dump: boolean;
   gap?: number;
   projectId?: number;
+  columns: number;
+  hasStats: boolean;
+  hasTracking: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState(false);
@@ -166,74 +172,94 @@ function CommitRow({
   );
 
   return (
-    <li className="relative border-b border-[var(--border)] text-sm last:border-b-0">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3">
-        <a
-          href={c.url}
-          target="_blank"
-          rel="noreferrer"
-          className="hc-link shrink-0"
-          onMouseEnter={canDiff && !open ? () => schedule(true, 350) : undefined}
-          onMouseLeave={canDiff ? () => schedule(false, 200) : undefined}
-        >
-          <Mono>{c.sha}</Mono>
-        </a>
-        {canDiff ? (
-          <button
-            type="button"
-            className="hc-commit-toggle min-w-0 flex-1"
-            aria-expanded={open}
-            title={open ? "Hide the diff" : "Show the diff"}
-            onClick={() => {
-              setPreview(false);
-              setOpen((o) => !o);
-            }}
+    <>
+      <tr>
+        <td className="whitespace-nowrap">
+          <Muted>
+            <Mono>{c.date ? formatDateTime(c.date) : "-"}</Mono>
+          </Muted>
+          {gap !== undefined && (
+            <span className="ml-2 text-xs tabular-nums" title="Wall-clock time since the previous commit">
+              <Muted>+{fmtGap(gap)}</Muted>
+            </span>
+          )}
+        </td>
+        <td className="relative whitespace-nowrap">
+          <a
+            href={c.url}
+            target="_blank"
+            rel="noreferrer"
+            className="hc-link"
+            onMouseEnter={canDiff && !open ? () => schedule(true, 350) : undefined}
+            onMouseLeave={canDiff ? () => schedule(false, 200) : undefined}
           >
-            <Icon glyph={open ? "down-caret" : "right-caret"} size={16} className="hc-muted shrink-0" />
-            <span className="min-w-0 break-words">{c.message}</span>
-          </button>
-        ) : (
-          <span className="min-w-0 flex-1 break-words">{c.message}</span>
+            <Mono>{c.sha}</Mono>
+          </a>
+          {canDiff && preview && !open && (
+            <div
+              className="hc-diff-popover"
+              onMouseEnter={() => schedule(true, 0)}
+              onMouseLeave={() => schedule(false, 200)}
+            >
+              <DiffView projectId={projectId} sha={c.sha} />
+            </div>
+          )}
+        </td>
+        <td className="max-w-[420px]">
+          <div className="flex flex-wrap items-center gap-2">
+            {canDiff ? (
+              <button
+                type="button"
+                className="hc-commit-toggle min-w-0"
+                aria-expanded={open}
+                onClick={() => {
+                  setPreview(false);
+                  setOpen((o) => !o);
+                }}
+              >
+                <Icon glyph={open ? "down-caret" : "right-caret"} size={16} className="hc-muted shrink-0" />
+                <span className="min-w-0 break-words">{c.message}</span>
+              </button>
+            ) : (
+              <span className="min-w-0 break-words">{c.message}</span>
+            )}
+            {c.ai && (
+              <span title="Signed by an AI tool (co-author trailer, bot author or generated-with footer). Check the AI-used disclosure.">
+                <Badge tone="purple">AI commit</Badge>
+              </span>
+            )}
+          </div>
+        </td>
+        {hasStats && (
+          <td className="whitespace-nowrap">
+            {c.additions !== undefined && (
+              <span
+                className={`hc-mono text-xs tabular-nums ${dump ? "font-bold" : ""}`}
+                title={dump ? "Huge amount of code vs almost no tracked coding time: possible paste or AI dump." : "Lines added / removed"}
+              >
+                <span className="text-[var(--hc-green)]">+{c.additions}</span>{" "}
+                <span className="text-[var(--hc-red)]">-{c.deletions ?? 0}</span>
+              </span>
+            )}
+          </td>
         )}
-        {c.ai && (
-          <span title="Signed by an AI tool (co-author trailer, bot author or generated-with footer). Check the AI-used disclosure.">
-            <Badge tone="purple">AI commit</Badge>
-          </span>
+        {hasTracking && (
+          <td className="whitespace-nowrap">
+            <TrackedBadge secs={c.tracked} />
+          </td>
         )}
-        {c.additions !== undefined && (
-          <span
-            className={`hc-mono shrink-0 text-xs tabular-nums ${dump ? "font-bold" : ""}`}
-            title={dump ? "Huge amount of code vs almost no tracked coding time: possible paste or AI dump." : "Lines added / removed"}
-          >
-            <span className="text-[var(--hc-green)]">+{c.additions}</span>{" "}
-            <span className="text-[var(--hc-red)]">-{c.deletions ?? 0}</span>
-          </span>
-        )}
-        {gap !== undefined && (
-          <span className="shrink-0 text-xs tabular-nums" title="Wall-clock time since the previous commit">
-            <Muted>+{fmtGap(gap)}</Muted>
-          </span>
-        )}
-        <TrackedBadge secs={c.tracked} />
-        <Muted className="hidden shrink-0 text-xs sm:inline">{c.author}</Muted>
-        <Muted className="shrink-0 text-xs">{c.date ? formatDate(c.date) : ""}</Muted>
-      </div>
-
+        <td>
+          <Mono>{c.author}</Mono>
+        </td>
+      </tr>
       {canDiff && open && (
-        <div className="border-t border-[var(--border)]">
-          <DiffView projectId={projectId} sha={c.sha} />
-        </div>
+        <tr className="hc-diff-row">
+          <td colSpan={columns}>
+            <DiffView projectId={projectId} sha={c.sha} />
+          </td>
+        </tr>
       )}
-      {canDiff && preview && !open && (
-        <div
-          className="hc-diff-popover"
-          onMouseEnter={() => schedule(true, 0)}
-          onMouseLeave={() => schedule(false, 200)}
-        >
-          <DiffView projectId={projectId} sha={c.sha} />
-        </div>
-      )}
-    </li>
+    </>
   );
 }
 
@@ -283,6 +309,8 @@ export function CommitList({ result, projectId }: { result: CommitResult; projec
   const start = page * PER_PAGE;
   const shown = result.commits.slice(start, start + PER_PAGE);
   const hasTracking = result.commits.some((c) => c.tracked !== undefined);
+  const hasStats = result.commits.some((c) => c.additions !== undefined);
+  const headers = ["When", "Commit", "Message", ...(hasStats ? ["Lines"] : []), ...(hasTracking ? ["Coded"] : []), "Author"];
 
   // Wall-clock gap to the previous commit, in date order.
   const gaps = new Map<string, number>();
@@ -294,43 +322,71 @@ export function CommitList({ result, projectId }: { result: CommitResult; projec
 
   return (
     <div>
-      {hasTracking && (
-        <p className="hc-caption border-b border-[var(--border)] px-4 py-3 text-sm">
-          &ldquo;coded&rdquo; = Hackatime time between commits. <Badge tone="danger">~0m coded</Badge> means code
-          landed with no tracked coding behind it, so check for pasted or AI-dumped work.
-        </p>
-      )}
-      <ul>
-        {shown.map((c) => {
-          const dump =
-            c.tracked !== undefined &&
-            c.additions !== undefined &&
-            c.additions >= 200 &&
-            c.additions / (Math.max(c.tracked, 60) / 3600) > 1500;
-          return (
-            <CommitRow key={c.sha} commit={c} dump={dump} gap={gaps.get(c.sha)} projectId={projectId} />
-          );
-        })}
-      </ul>
+      <p className="hc-caption border-b border-[var(--border)] px-4 py-3 text-sm">
+        <Mono>{result.repo}</Mono> · {total} commits
+        {asc.length > 0 && (
+          <>
+            {" "}
+            · {formatDate(asc[0].date)} to {formatDate(asc[asc.length - 1].date)}
+          </>
+        )}
+        {hasTracking && (
+          <>
+            {" "}
+            · &ldquo;Coded&rdquo; is Hackatime time since the previous commit. <Badge tone="danger">~0m coded</Badge>{" "}
+            means code landed with no tracked coding behind it.
+          </>
+        )}
+      </p>
+      <div className="hc-table-wrap">
+        <table className="hc-table">
+          <thead>
+            <tr>
+              {headers.map((h) => (
+                <th key={h}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((c) => {
+              const dump =
+                c.tracked !== undefined &&
+                c.additions !== undefined &&
+                c.additions >= 200 &&
+                c.additions / (Math.max(c.tracked, 60) / 3600) > 1500;
+              return (
+                <CommitRow
+                  key={c.sha}
+                  commit={c}
+                  dump={dump}
+                  gap={gaps.get(c.sha)}
+                  projectId={projectId}
+                  columns={headers.length}
+                  hasStats={hasStats}
+                  hasTracking={hasTracking}
+                />
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
       {pages > 1 && (
         <nav className="flex items-center justify-between gap-4 border-t border-[var(--border)] px-4 py-3">
-          <span className="hc-caption text-sm tabular-nums">
-            {start + 1}-{Math.min(start + PER_PAGE, total)} of {total}
+          <span className="hc-caption text-sm">
+            Page {page + 1} of {pages}
           </span>
           <div className="flex gap-2">
-            <Button type="button" variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-              Previous
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={page >= pages - 1}
-              onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
-            >
-              Next
-            </Button>
+            {page > 0 && (
+              <Button type="button" variant="outline" size="sm" onClick={() => setPage(page - 1)}>
+                Previous
+              </Button>
+            )}
+            {page < pages - 1 && (
+              <Button type="button" variant="outline" size="sm" onClick={() => setPage(page + 1)}>
+                Next
+              </Button>
+            )}
           </div>
         </nav>
       )}

@@ -1768,9 +1768,10 @@ html[data-density="compact"] .hc-main {
 .hc-diff-popover {
   position: absolute;
   z-index: 30;
-  top: calc(100% - 4px);
+  top: calc(100% - 6px);
   left: 12px;
-  right: 12px;
+  width: min(820px, 70vw);
+  white-space: normal;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
@@ -1779,4 +1780,61 @@ html[data-density="compact"] .hc-main {
 
 .hc-diff-popover .hc-diff {
   max-height: 46vh;
+}
+
+/* ---- Tooltip (app/_ui/Tooltips.tsx) ---- */
+
+.hc-tooltip {
+  position: fixed;
+  z-index: 100;
+  max-width: 320px;
+  padding: 6px 10px;
+  transform: translate(-50%, -100%);
+  background: var(--hc-cream);
+  color: var(--on-cream);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: center;
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: hc-tooltip-in 0.12s ease-out;
+}
+
+.hc-tooltip[data-below] {
+  transform: translate(-50%, 0);
+}
+
+.hc-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  margin-left: -5px;
+  border: 5px solid transparent;
+  border-top-color: var(--hc-cream);
+}
+
+.hc-tooltip[data-below]::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: var(--hc-cream);
+}
+
+@keyframes hc-tooltip-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* An opened diff sits in its own table row, edge to edge. The pager buttons
+   under a table stay outlined, they aren't row actions. */
+.hc-table tr.hc-diff-row > td {
+  padding: 0;
+}
+
+.hc-table tbody tr.hc-diff-row:hover {
+  background: transparent;
 }

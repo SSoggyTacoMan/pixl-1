@@ -14,6 +14,7 @@ import { ReviewCelebration } from "@/app/_components/ReviewCelebration";
 import TopNav from "@/app/_ui/TopNav";
 import CommandPalette from "@/app/_ui/CommandPalette";
 import SettingsMenu from "@/app/_ui/SettingsMenu";
+import Tooltips from "@/app/_ui/Tooltips";
 import { buildNav } from "@/app/_ui/nav";
 import { ActionButton, Button, Mono } from "@/app/_ui/ui";
 
@@ -86,6 +87,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <LiveModeProvider live={live} hideReviewers={hideReviewers} viewer={session.slackId}>
           <div className="admin-shell">
             <ReviewCelebration confetti={settings.confetti} />
+            <Tooltips />
             <header className="hc-topbar sticky top-0 z-20">
               <div className="hc-topbar-inner mx-auto flex min-h-14 max-w-[1840px] flex-wrap items-center gap-x-6 gap-y-2 px-6 py-2">
                 <Link href="/" className="flex shrink-0 items-center gap-2">
