@@ -3330,7 +3330,7 @@ export async function logModAction(
 
 export interface SearchResults {
   players: { id: string; display_name: string; real_name: string; slack_id: string | null }[];
-  projects: { id: number; name: string; status: string; user_id: string }[];
+  projects: { id: number; name: string; status: string; user_id: string; users: { display_name: string | null } | null }[];
 }
 
 export async function globalSearch(
@@ -3353,7 +3353,7 @@ export async function globalSearch(
     opts.projects
       ? db
           .from("projects")
-          .select("id, name, status, user_id")
+          .select("id, name, status, user_id, users(display_name)")
           .is("archived_at", null)
           .ilike("name", like)
           .order("created_at", { ascending: false })
@@ -3365,7 +3365,7 @@ export async function globalSearch(
 
   return {
     players: (playersRes.data ?? []) as SearchResults["players"],
-    projects: (projectsRes.data ?? []) as SearchResults["projects"],
+    projects: (projectsRes.data ?? []) as unknown as SearchResults["projects"],
   };
 }
 
