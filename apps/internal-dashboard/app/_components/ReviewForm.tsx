@@ -580,14 +580,23 @@ export function ReviewForm({
   const pendingDraft = useRef<Draft | null>(null);
   const [draftSource, setDraftSource] = useState<"local" | "server" | "firstPass" | null>(null);
   const [featuresLen, setFeaturesLen] = useState(0);
-  const [serverSave, setServerSave] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [serverSave, setServerSave] = useState<"idle" | "saving" | "saved" | "error" | "stale">("idle");
+  const staleDeploy = useRef(false);
 
   const pushServerDraft = (draft: Draft) => {
+    // A deploy happened while this tab was open: its action ids no longer
+    // exist, so every further save would fail the same way (one per keystroke).
+    // Stop trying and ask for a reload instead; the local copy carries over.
+    if (staleDeploy.current) return;
     setServerSave("saving");
     saveReviewDraft(projectId, draft)
       .then(() => setServerSave("saved"))
       // Best-effort: the localStorage copy is unaffected either way.
-      .catch(() => setServerSave("error"));
+      .catch((e: unknown) => {
+        const stale = /server action|deployment/i.test(e instanceof Error ? e.message : String(e));
+        staleDeploy.current = stale;
+        setServerSave(stale ? "stale" : "error");
+      });
   };
 
   useEffect(() => {
@@ -921,16 +930,27 @@ export function ReviewForm({
               </span>
             ))}
           </div>
-          <span className="hc-save-status" data-tone={serverSave === "error" ? "danger" : serverSave === "saved" ? "success" : undefined}>
+          <span className="hc-save-status" data-tone={serverSave === "error" || serverSave === "stale" ? "danger" : serverSave === "saved" ? "success" : undefined}>
             {serverSave === "saving"
               ? "Saving draft…"
               : serverSave === "saved"
                 ? "Draft saved"
-                : serverSave === "error"
+                : serverSave === "error" || serverSave === "stale"
                   ? "Draft kept in this browser only"
                   : "Autosaves as you type"}
           </span>
         </div>
+        {serverSave === "stale" && (
+          <Callout tone="warning" icon="history">
+            A new version of the dashboard was deployed while this page was open. Reload before you submit: what you
+            have typed is saved in this browser and will still be here.
+            <div className="mt-2">
+              <button type="button" className="hc-btn hc-btn-outline hc-btn-sm" onClick={() => window.location.reload()}>
+                Reload now
+              </button>
+            </div>
+          </Callout>
+        )}
         {stepError && <Callout tone="danger" icon="important">{stepError}</Callout>}
 
         <div data-step="1" hidden={step !== 1} className="flex flex-col gap-4">
