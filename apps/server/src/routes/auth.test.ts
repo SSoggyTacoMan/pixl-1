@@ -89,6 +89,8 @@ function mockUsersTable(initialRows: Record<string, unknown>[] = []) {
     let filters: Record<string, unknown> = {};
     let insertPayload: Record<string, unknown> | null = null;
     let updatePayload: Record<string, unknown> | null = null;
+    // .maybeSingle() selects return one row (or null), like supabase-js.
+    let one = false;
     const chain: Record<string, unknown> = {
       select: () => chain,
       eq: (col: string, val: unknown) => {
@@ -97,7 +99,10 @@ function mockUsersTable(initialRows: Record<string, unknown>[] = []) {
       },
       limit: () => chain,
       single: () => chain,
-      maybeSingle: () => chain,
+      maybeSingle: () => {
+        one = true;
+        return chain;
+      },
       insert: (row: Record<string, unknown>) => {
         insertPayload = row;
         return chain;
@@ -120,7 +125,7 @@ function mockUsersTable(initialRows: Record<string, unknown>[] = []) {
           const matches = rows.filter((r) =>
             Object.entries(filters).every(([k, v]) => r[k] === v),
           );
-          result = { data: matches, error: null };
+          result = { data: one ? (matches[0] ?? null) : matches, error: null };
         }
         return Promise.resolve(result).then(resolve, reject);
       },
@@ -617,6 +622,11 @@ describe("GET /auth/hackclub redirect allowlist", () => {
         "https://user:pass@play.pixl.hackclub.com/",
         "javascript:alert(1)",
         "/relative",
+        // A login code may only land on the two pages that exchange it.
+        "https://pixl.hackclub.com/account",
+        "https://pixl.hackclub.com/api/auth/callback?next=/x",
+        "https://play.pixl.hackclub.com/?x=1",
+        "https://play.pixl.hackclub.com/shop",
       ]) {
         const res = await start(app.baseUrl, bad);
         expect(res.status).toBe(400);
@@ -821,6 +831,45 @@ describe("POST /auth/flow/:name", () => {
   });
 });
 
+describe("verify-address identity binding", () => {
+  const ADDRESS = { line_1: "1 Victim St", city: "Burlington", country: "US", postal_code: "05401", primary: true };
+  async function runVerifyAddress(hcaIdentityId: string) {
+    process.env.PII_ENCRYPTION_KEY ??= "a".repeat(64);
+    const users = mockUsersTable([{ id: "addr-user", oauth_provider: "hackclub", oauth_id: "hca-addr-owner" }]);
+    const hca = mockHcaFetch({ id: hcaIdentityId, addresses: [ADDRESS] });
+    const app = await startTestApp();
+    try {
+      const token = issueSessionToken({ client: "web", userId: "addr-user", displayName: "Addr" });
+      const start = await fetch(`${app.baseUrl}/auth/flow/verify-address`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ redirect: "https://pixl.hackclub.com/account" }),
+      });
+      expect(start.status).toBe(200);
+      const state = new URL(((await start.json()) as { url: string }).url).searchParams.get("state")!;
+      const res = await fetch(`${app.baseUrl}/auth/hackclub/callback?code=fake-code&state=${state}`, { redirect: "manual" });
+      return { res, updates: users.updatedRows().filter((u) => "address_line1" in u) };
+    } finally {
+      users.restore();
+      hca.restore();
+      await app.close();
+    }
+  }
+
+  test("someone else's HCA consent never writes their address onto the flow starter's account", async () => {
+    const { res, updates } = await runVerifyAddress("hca-someone-else");
+    expect(res.status).toBe(403);
+    expect(updates).toHaveLength(0);
+  });
+
+  test("the account's own HCA identity refreshes the address", async () => {
+    const { res, updates } = await runVerifyAddress("hca-addr-owner");
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get("location")!).searchParams.get("addr_verified")).toBe("1");
+    expect(updates).toHaveLength(1);
+  });
+});
+
 describe("removed backdoors", () => {
   test("/auth/demo no longer exists", async () => {
     const app = await startTestApp();
@@ -828,6 +877,29 @@ describe("removed backdoors", () => {
       const res = await fetch(`${app.baseUrl}/auth/demo?name=anyone`);
       expect(res.status).toBe(404);
     } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("ban check fails closed at login", () => {
+  test("a bans lookup error issues no login code", async () => {
+    const users = mockUsersTable([{ id: "ban-user", oauth_provider: "hackclub", oauth_id: "hca-ban-check", display_name: "B" }]);
+    const usersFrom = db.from;
+    db.from = ((table: string) =>
+      table === "bans"
+        ? chainable({ data: null, error: { message: "connection refused" } })
+        : usersFrom(table)) as typeof db.from;
+    const hca = mockHcaFetch({ id: "hca-ban-check", first_name: "Ban", last_name: "Check" });
+    const app = await startTestApp();
+    try {
+      const res = await driveHcaCallback(app.baseUrl);
+      expect(res.status).toBe(503);
+      expect(res.headers.get("location")).toBeNull();
+    } finally {
+      db.from = usersFrom;
+      users.restore();
+      hca.restore();
       await app.close();
     }
   });

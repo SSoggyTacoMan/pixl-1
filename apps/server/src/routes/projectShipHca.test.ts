@@ -23,6 +23,7 @@ function chainable(result: { data: unknown; error: unknown }) {
 interface Scenario {
   hcaRow: Record<string, unknown> | null;
   usersError?: { message: string };
+  project?: Record<string, unknown>;
 }
 
 async function callAs(
@@ -35,7 +36,7 @@ async function callAs(
   db.from = ((table: string) => {
     if (table === "projects")
       return chainable({
-        data: { id: 1, user_id: "user-1", name: "Draft", status: "draft", repo_url: null },
+        data: scenario.project ?? { id: 1, user_id: "user-1", name: "Draft", status: "draft", repo_url: null },
         error: null,
       });
     if (table === "users")
@@ -145,5 +146,38 @@ describe("drafts are not gated on HCA state", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body.ok).toBe(true);
+  });
+});
+
+describe("POST /api/projects/:id/ship eligibility attestation", () => {
+  // Everything up to the attestation check is satisfied; the demo link is a
+  // GitHub repo page, so a ship that gets past the attestation stops at the
+  // next (network-free) check, demo_is_repo.
+  const ready = {
+    hcaRow: { hca_verification_status: "verified", hca_ysws_eligible: true },
+    project: {
+      id: 1, user_id: "user-1", name: "Ready", status: "draft", kind: "software",
+      repo_url: "https://github.com/pixl/ready", demo_url: "https://github.com/pixl/ready",
+      image_url: "https://cdn.hackclub.com/ready.png",
+    },
+  };
+
+  test("the attestation survives validation and lets the ship through", async () => {
+    const r = await callAs(ready, "/api/projects/1/ship", { eligibilityAttested: true });
+    expect(r.body.error).toBe("demo_is_repo");
+  });
+
+  test("a ship without the attestation is refused", async () => {
+    const r = await callAs(ready, "/api/projects/1/ship", {});
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe("eligibility_attestation_required");
+    const f = await callAs(ready, "/api/projects/1/ship", { eligibilityAttested: false });
+    expect(f.body.error).toBe("eligibility_attestation_required");
+  });
+
+  test("a non-boolean attestation is rejected by the schema", async () => {
+    const r = await callAs(ready, "/api/projects/1/ship", { eligibilityAttested: "true" });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe("invalid_request");
   });
 });

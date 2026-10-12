@@ -16,23 +16,65 @@ export interface UrlLivenessDeps {
   ca?: string | Buffer | Array<string | Buffer>; // test only
 }
 
+// An IPv6 address as its 8 16-bit groups (an embedded dotted IPv4 tail is
+// folded into the last two), or null.
+export function ipv6Groups(ip: string): number[] | null {
+  let s = ip.toLowerCase();
+  const zone = s.indexOf("%");
+  if (zone >= 0) s = s.slice(0, zone);
+  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (v4) {
+    if (isIP(v4[1]) !== 4) return null;
+    const [a, b, c, d] = v4[1].split(".").map(Number);
+    s = s.slice(0, -v4[1].length) + ((a << 8) | b).toString(16) + ":" + ((c << 8) | d).toString(16);
+  }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const groups = [...head, ...Array(fill).fill("0"), ...tail].map((g) => (/^[0-9a-f]{1,4}$/.test(g) ? parseInt(g, 16) : NaN));
+  return groups.length === 8 && groups.every((g) => !Number.isNaN(g)) ? groups : null;
+}
+
+function v4FromGroups(hi: number, lo: number): string {
+  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join(".");
+}
+
 export function isBlockedIp(ip: string): boolean {
   const v = isIP(ip);
   if (v === 4) {
-    const [a, b] = ip.split(".").map(Number);
+    const [a, b, c] = ip.split(".").map(Number);
     if (a === 0 || a === 10 || a === 127) return true; // this-network, private, loopback
     if (a === 169 && b === 254) return true; // link-local + cloud metadata (169.254.169.254)
     if (a === 172 && b >= 16 && b <= 31) return true; // private
     if (a === 192 && b === 168) return true; // private
     if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+    if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24 IETF protocol assignments
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmarking
+    if (a >= 224) return true; // 224.0.0.0/3: multicast, reserved, broadcast
     return false;
   }
   if (v === 6) {
-    const s = ip.toLowerCase();
-    if (s === "::1" || s === "::") return true; // loopback / unspecified
-    if (s.startsWith("::ffff:")) return isBlockedIp(s.slice(7)); // IPv4-mapped
-    if (s.startsWith("fc") || s.startsWith("fd")) return true; // unique local
-    if (s.startsWith("fe80")) return true; // link-local
+    const g = ipv6Groups(ip);
+    if (!g) return true;
+    const zeroTo = (n: number) => g.slice(0, n).every((x) => x === 0);
+    if (zeroTo(8)) return true; // ::
+    if (zeroTo(7) && g[7] === 1) return true; // ::1
+    // IPv4-mapped (::ffff:a.b.c.d, in any spelling) and the deprecated
+    // IPv4-compatible (::a.b.c.d): judge the embedded IPv4 address.
+    if (zeroTo(5) && g[5] === 0xffff) return isBlockedIp(v4FromGroups(g[6], g[7]));
+    if (zeroTo(6)) return isBlockedIp(v4FromGroups(g[6], g[7]));
+    // NAT64 64:ff9b::/96 and 6to4 2002::/16 both carry an IPv4 address that
+    // the network may route to: judge that address, refuse if it's internal.
+    if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0))
+      return isBlockedIp(v4FromGroups(g[6], g[7]));
+    if (g[0] === 0x2002) return true; // 6to4: refuse outright, no real host needs it
+    if ((g[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
+    if ((g[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+    if ((g[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 site-local (deprecated)
+    if ((g[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
     return false;
   }
   return true; // not a parseable IP - refuse rather than guess

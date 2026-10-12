@@ -3,7 +3,8 @@ import { supabase } from "../db/client.js";
 import { addNotification } from "../routes/notifications.js";
 import { yswsShipForSlackId, yswsShipsForSlackId } from "./archive.js";
 import { availableShips, collectTaken, nameFromShip } from "./imports.js";
-import { parseProjectBody } from "../routes/projects.js";
+import { parseProjectBody, toPlayerProject } from "../routes/projects.js";
+import { allowedImageUrl } from "../http/imageUrls.js";
 import { z } from "zod";
 import { validate, v } from "../http/validate.js";
 
@@ -93,7 +94,9 @@ router.post("/api/projects/import-ysws", validate({ query: v.noQuery, body: z.ob
     description: ship.description,
     repoUrl: ship.codeUrl,
     demoUrl: ship.demoUrl,
-    imageUrl: ship.screenshotUrl,
+    // A screenshot hosted anywhere but the Hack Club CDN is dropped, not
+    // carried over (http/imageUrls.ts); the player can upload one.
+    imageUrl: allowedImageUrl(ship.screenshotUrl) ?? "",
   });
   if (parsed.error !== undefined)
     return res.status(400).json({ ok: false, error: parsed.error });
@@ -121,7 +124,7 @@ router.post("/api/projects/import-ysws", validate({ query: v.noQuery, body: z.ob
     "Project imported",
     `"${parsed.fields.name}" came in from ${ship.ysws}. Its ${ship.hours}h there don't carry over, only new tracked work counts here.`,
   );
-  res.json({ ok: true, project: data });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 export default router;

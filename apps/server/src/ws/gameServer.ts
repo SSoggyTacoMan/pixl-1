@@ -12,7 +12,7 @@ import {
 } from "../auth/revocation.js";
 import { consumeRateLimit, peekRateLimit, type RateLimitOptions } from "../rateLimit.js";
 import { requestIpKey } from "../clientIp.js";
-import { activeBan, censorChat, recordChatViolation } from "../moderation.js";
+import { censorChat, lookupActiveBan, recordChatViolation } from "../moderation.js";
 import { areFriends } from "../social.js";
 import { getPixoChatReply } from "../pixoChat.js";
 import { supabase, type PlayerStateRow } from "../db/client.js";
@@ -659,7 +659,13 @@ export function attachWebSocketServer(httpServer: Server) {
         return;
       }
 
-      const ban = await activeBan(session.userId);
+      // Fail closed, same as the revocation check above.
+      const banLookup = await lookupActiveBan(session.userId);
+      if (!banLookup.ok) {
+        ws.close(1013, "Try again later");
+        return;
+      }
+      const ban = banLookup.ban;
       if (ban) {
         const message = ban.expires_at
           ? `You've been temporarily banned from Pixl until ${new Date(ban.expires_at).toUTCString()}.`

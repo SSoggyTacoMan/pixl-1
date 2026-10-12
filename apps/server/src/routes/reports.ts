@@ -103,7 +103,7 @@ router.get("/api/reports/players", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const q = String(req.query.q ?? "")
+  const q = String(req.query.q ?? "").slice(0, 64)
     .replace(/[,()%*\\]/g, " ")
     .trim();
   if (q.length < 2) return res.json({ ok: true, players: [] });

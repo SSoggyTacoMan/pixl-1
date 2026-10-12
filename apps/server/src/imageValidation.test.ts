@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import sharp from "sharp";
-import { isRealImage, sniffFormat } from "./imageValidation.js";
+import { declaredSizeOk, isRealImage, sanitizeImage, sniffFormat, withSanitizeSlot, BUSY } from "./imageValidation.js";
 
 function pixel() {
   return { create: { width: 2, height: 2, channels: 3 as const, background: { r: 1, g: 2, b: 3 } } };
@@ -78,5 +78,70 @@ describe("isRealImage with non-raster payloads", () => {
   test("rejects an SVG claiming image/png", async () => {
     const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"/>');
     expect(await isRealImage(svg, "image/png")).toBe(false);
+  });
+});
+
+// A real 2x2 PNG whose IHDR is rewritten to declare width x height, with a
+// valid chunk CRC so the header parses. The pixel data stays 2x2-sized, so
+// the file is a few dozen bytes while a full decode would need w*h*3 bytes.
+async function pngDeclaring(width: number, height: number): Promise<Buffer> {
+  const buf = Buffer.from(await sharp(pixel()).png().toBuffer());
+  // signature(8) + length(4) + "IHDR"(4), then width/height (4 each).
+  buf.writeUInt32BE(width, 16);
+  buf.writeUInt32BE(height, 20);
+  const crc = Bun.hash.crc32(buf.subarray(12, 29));
+  buf.writeUInt32BE(crc >>> 0, 29);
+  return buf;
+}
+
+describe("decompression bombs", () => {
+  test("a tiny PNG declaring 100000x100000 pixels is refused", async () => {
+    const bomb = await pngDeclaring(100_000, 100_000);
+    expect(bomb.length).toBeLessThan(200);
+    expect(await isRealImage(bomb, "image/png")).toBe(false);
+  });
+
+  test("a PNG declaring 9000x9000 (under the side cap, over the pixel cap) is refused", async () => {
+    expect(await isRealImage(await pngDeclaring(9000, 9000), "image/png")).toBe(false);
+  });
+
+  test("declared size limits", () => {
+    expect(declaredSizeOk({ width: 4000, height: 4000 })).toBe(true);
+    expect(declaredSizeOk({ width: 10_001, height: 10 })).toBe(false);
+    expect(declaredSizeOk({ width: 10, height: 10_001 })).toBe(false);
+    expect(declaredSizeOk({ width: 8000, height: 6000 })).toBe(false);
+    expect(declaredSizeOk({ width: 2000, height: 2000, pages: 20 })).toBe(false);
+    expect(declaredSizeOk({ width: 0, height: 10 })).toBe(false);
+    expect(declaredSizeOk({})).toBe(false);
+  });
+
+  test("a normal image still sanitizes", async () => {
+    const r = await sanitizeImage(await sharp(pixel()).png().toBuffer(), "image/png");
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe("sanitize concurrency", () => {
+  test("at most two run at once and the queue is bounded", async () => {
+    let active = 0;
+    let peak = 0;
+    const releases: (() => void)[] = [];
+    const job = () =>
+      withSanitizeSlot(async () => {
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise<void>((r) => releases.push(r));
+        active--;
+        return "done";
+      });
+    const jobs = Array.from({ length: 22 }, job);
+    // 2 running + 20 waiting; one more is turned away.
+    expect(await withSanitizeSlot(async () => "extra")).toBe(BUSY);
+    while (releases.length || active) {
+      await Bun.sleep(1);
+      releases.shift()?.();
+    }
+    expect(await Promise.all(jobs)).toEqual(Array(22).fill("done"));
+    expect(peak).toBe(2);
   });
 });

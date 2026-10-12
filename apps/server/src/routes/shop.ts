@@ -281,6 +281,44 @@ function applyDiscount(items: Record<string, unknown>[]): void {
   }
 }
 
+// The Trials a player has unlocked for Trial-gated items: a project linked
+// to the Trial that a reviewer approved, now or at some point (its net
+// approval payout still stands), and that isn't banned. Merely sitting in
+// the review queue doesn't count any more: a "shipped" project can be
+// withdrawn (unship) straight after a purchase, so ship -> buy -> unship got
+// the prize for a placeholder project. A DB error unlocks nothing.
+export function approvedTrialIds(
+  projects: { id: unknown; sidequest_id: unknown; status: unknown; banned_at: unknown }[],
+  approvals: { project_id: unknown; amount: unknown }[],
+): Set<number> {
+  const net = new Map<number, number>();
+  for (const t of approvals) net.set(Number(t.project_id), (net.get(Number(t.project_id)) ?? 0) + Number(t.amount || 0));
+  const out = new Set<number>();
+  for (const p of projects) {
+    if (p.sidequest_id == null || p.banned_at) continue;
+    if (p.status === "approved" || (net.get(Number(p.id)) ?? 0) > 0) out.add(Number(p.sidequest_id));
+  }
+  return out;
+}
+
+export async function unlockedTrialIds(userId: string): Promise<Set<number>> {
+  const { data: projects, error } = await supabase
+    .from("projects")
+    .select("id, sidequest_id, status, banned_at")
+    .eq("user_id", userId)
+    .not("sidequest_id", "is", null);
+  if (error || !projects || projects.length === 0) return new Set();
+  const ids = projects.map((p) => Number((p as { id: unknown }).id));
+  const { data: approvals, error: txError } = await supabase
+    .from("pixel_transactions")
+    .select("project_id, amount")
+    .eq("user_id", userId)
+    .in("project_id", ids)
+    .in("reason", ["project_approved", "review_reverted"]);
+  if (txError) return approvedTrialIds(projects as never[], []);
+  return approvedTrialIds(projects as never[], (approvals ?? []) as never[]);
+}
+
 // How many Beacon-locked items this player can still unlock: one unlock per
 // Beacon project they have (projects.is_peak, live/not banned/rejected/
 // archived), minus however many distinct beacon_locked items they already
@@ -396,8 +434,8 @@ router.get("/api/shop/items", async (req, res) => {
   }
 
   // Trial-gated items: an item with unlock_trial_ids is locked until the player
-  // has shipped (reached review on) a project linked to at least one of those
-  // Trials. We attach `locked` and the Trial names so the client can show what
+  // has had a project linked to at least one of those Trials approved (see
+  // unlockedTrialIds). We attach `locked` and the Trial names so the client can show what
   // to build to unlock it.
   const gatedIds = [
     ...new Set(
@@ -410,18 +448,10 @@ router.get("/api/shop/items", async (req, res) => {
     // A signed-out visitor hasn't shipped anything, so every gated item is
     // locked for them , skip the shipped-projects lookup entirely rather than
     // querying it against no user.
-    const [{ data: shipped }, { data: trials }] = await Promise.all([
-      session
-        ? supabase
-            .from("projects")
-            .select("sidequest_id")
-            .eq("user_id", session.userId)
-            .not("sidequest_id", "is", null)
-            .in("status", ["shipped", "fraud_review", "second_review", "approved"])
-        : Promise.resolve({ data: [] as { sidequest_id: number }[] }),
+    const [done, { data: trials }] = await Promise.all([
+      session ? unlockedTrialIds(session.userId) : Promise.resolve(new Set<number>()),
       supabase.from("sidequests").select("id, name, active").in("id", gatedIds),
     ]);
-    const done = new Set(((shipped ?? []) as { sidequest_id: number }[]).map((r) => Number(r.sidequest_id)));
     const trialRows = (trials ?? []) as { id: number; name: string; active: boolean }[];
     const nameById = new Map(trialRows.map((t) => [Number(t.id), t.name]));
     const activeById = new Map(trialRows.map((t) => [Number(t.id), !!t.active]));
@@ -809,13 +839,7 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
     ? ((gateRow as { unlock_trial_ids: unknown[] }).unlock_trial_ids).map(Number).filter((n) => Number.isFinite(n) && n > 0)
     : [];
   if (gateIds.length > 0) {
-    const { data: shipped } = await supabase
-      .from("projects")
-      .select("sidequest_id")
-      .eq("user_id", session.userId)
-      .not("sidequest_id", "is", null)
-      .in("status", ["shipped", "fraud_review", "second_review", "approved"]);
-    const done = new Set(((shipped ?? []) as { sidequest_id: number }[]).map((r) => Number(r.sidequest_id)));
+    const done = await unlockedTrialIds(session.userId);
     if (!gateIds.some((tid) => done.has(tid)))
       return res.status(403).json({ ok: false, error: "locked" });
   }
@@ -843,7 +867,10 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
     quantity?: number;
   };
   if (!result.ok) {
-    return res.status(result.error === "insufficient" ? 400 : 409).json(result);
+    // "locked" comes from the Beacon check buy_shop_item runs under the row
+    // lock (0217), same meaning as the route's own 403 locked above.
+    const status = result.error === "insufficient" ? 400 : result.error === "locked" ? 403 : 409;
+    return res.status(status).json(result);
   }
 
   const qtyPrefix = (result.quantity ?? 1) > 1 ? `${result.quantity}x ` : "";

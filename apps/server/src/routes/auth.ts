@@ -5,8 +5,8 @@ import { supabase, type UserRow } from "../db/client.js";
 import type { PgError } from "../db/pgCompat.js";
 import { issueSessionToken, type SessionClient } from "../auth/session.js";
 import { forgetCachedRevocation, revokeUserSessions } from "../auth/revocation.js";
-import { checkRedirect, CLIENT_STATE_RE, createLoginCodeStore, type LoginGrant } from "../auth/loginCodes.js";
-import { activeBan } from "../moderation.js";
+import { checkLoginRedirect, checkRedirect, CLIENT_STATE_RE, createLoginCodeStore, type LoginGrant } from "../auth/loginCodes.js";
+import { lookupActiveBan } from "../moderation.js";
 import { fetchSlackAvatar, fetchSlackDisplayName } from "../slackAvatar.js";
 import { enrollSlackPlayerInPixl } from "../pixlSlack.js";
 import { config } from "../config.generated.js";
@@ -255,8 +255,8 @@ function loginFailed(req: Request, reason: string, extra: { actorId?: string; sl
   });
 }
 
-// Step 1 of the code-exchange login. `redirect` must be an absolute https://
-// URL on config.urls.site or config.urls.play; `state` is echoed back
+// Step 1 of the code-exchange login. `redirect` must be exactly one of
+// LOGIN_REDIRECTS (the Pixl Dashboard's callback or the game's root); `state` is echoed back
 // untouched on the final redirect.
 router.get(
   "/auth/hackclub",
@@ -264,7 +264,7 @@ router.get(
     query: z.object({ redirect: z.string().max(2000), state: z.string().regex(CLIENT_STATE_RE) }),
   }),
   (req, res) => {
-    const redirect = checkRedirect(req.query.redirect);
+    const redirect = checkLoginRedirect(req.query.redirect);
     if (!redirect) {
       loginFailed(req, "bad_redirect");
       return res.status(400).json({ ok: false, error: "invalid_redirect" });
@@ -577,8 +577,36 @@ router.get(
     }
 
     if (pending.purpose === "verify_address") {
+      if (!pending.userId) return res.status(400).send("Invalid OAuth state");
+      const { data: row, error: rowError } = await supabase
+        .from("users")
+        .select("id, oauth_provider, oauth_id")
+        .eq("id", pending.userId)
+        .maybeSingle();
+      if (rowError || !row) {
+        console.error("HCA verify-address user lookup failed", rowError?.message);
+        return res.status(502).send("Something went wrong, try that link again");
+      }
+      // Same identity binding as resync_hca / verify_legal_name: the address
+      // HCA returns belongs to whoever consented, so it may only land on the
+      // account tied to that exact HCA identity. Without this, A could start
+      // the flow, send the authorize link to B, and B's address would be
+      // written onto A's row.
+      if (row.oauth_provider !== "hackclub" || row.oauth_id !== identity.id) {
+        audit({ ...requestActor(req), actorType: "player", actorId: pending.userId, action: "auth.flow.identity_mismatch", target: `user:${pending.userId}`, result: "denied", meta: { flow: "verify-address" } });
+        return res
+          .status(403)
+          .send(
+            loginErrorPage(
+              "That's a different Hack Club account",
+              "Sign in to Hack Club Auth with the same account you used to join Pixl, then try that link again.",
+              pending.redirect,
+              "Back to Pixl",
+            ),
+          );
+      }
       const addr = extractAddress(identity);
-      if (addr && pending.userId) {
+      if (addr) {
         const { error: addrErr } = await supabase
           .from("users")
           .update({
@@ -781,7 +809,16 @@ router.get(
       }
     }
 
-    const ban = await activeBan(userId);
+    // Fail closed: if the bans table can't be read, no login code is issued.
+    const banLookup = await lookupActiveBan(userId);
+    if (!banLookup.ok) {
+      loginFailed(req, "ban_check_failed", { actorId: userId, slackId: identity.slack_id ?? null });
+      return res
+        .status(503)
+        .set("Retry-After", "5")
+        .send(loginErrorPage("Pixl couldn't finish logging you in", "Something went wrong on our side. Try again in a moment.", retryLoginUrl(pending)));
+    }
+    const ban = banLookup.ban;
     if (ban) {
       loginFailed(req, "banned", { actorId: userId, slackId: identity.slack_id ?? null });
       const heading = ban.expires_at

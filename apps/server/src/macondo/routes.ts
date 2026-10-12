@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { supabase } from "../db/client.js";
 import { addNotification } from "../routes/notifications.js";
-import { parseProjectBody } from "../routes/projects.js";
+import { parseProjectBody, toPlayerProject } from "../routes/projects.js";
+import { allowedImageUrl, demoteDisallowedMarkdownImages } from "../http/imageUrls.js";
 import { macondoProjectForSlackId, macondoProjectsForSlackId } from "./client.js";
 import { z } from "zod";
 import { validate, v } from "../http/validate.js";
@@ -110,7 +111,7 @@ router.post("/api/projects/import-macondo", validate({ query: v.noQuery, body: z
     description: project.description,
     repoUrl: project.repoUrl,
     demoUrl: project.demoUrl,
-    imageUrl: project.thumbnailUrl,
+    imageUrl: allowedImageUrl(project.thumbnailUrl) ?? "",
     projectType: projectTypeForMacondo(project.type),
     kind: project.type === "hardware" ? "hardware" : "software",
   });
@@ -141,7 +142,7 @@ router.post("/api/projects/import-macondo", validate({ query: v.noQuery, body: z
         project_id: data.id,
         user_id: session.userId,
         title: journal.title,
-        content: journal.content,
+        content: demoteDisallowedMarkdownImages(journal.content),
         hours: 0,
         created_at: sourceDate(journal.createdAt),
       })),
@@ -165,7 +166,7 @@ router.post("/api/projects/import-macondo", validate({ query: v.noQuery, body: z
       journalsImported > 0 ? ` with ${journalsImported} journal${journalsImported === 1 ? "" : "s"}` : ""
     }. Historical Macondo hours don't carry over; new time tracked here does.`,
   );
-  res.json({ ok: true, project: data, journalsImported });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId), journalsImported });
 });
 
 export default router;

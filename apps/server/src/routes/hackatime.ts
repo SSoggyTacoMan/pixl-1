@@ -2,7 +2,7 @@ import { Router } from "express";
 import { randomBytes } from "crypto";
 import { z } from "zod";
 import { supabase } from "../db/client.js";
-import { fetchHackatimeStats, fetchProjectActivitySummary, HACKATIME_CUTOFF } from "../hackatime/api.js";
+import { fetchHackatimeSlackId, fetchHackatimeStats, fetchProjectActivitySummary, HACKATIME_CUTOFF } from "../hackatime/api.js";
 import { config } from "../config.generated.js";
 import { checkRedirect } from "../auth/loginCodes.js";
 import { validate, v } from "../http/validate.js";
@@ -149,6 +149,33 @@ router.get(
         return res.redirect(back(redirect, "failed"));
       }
 
+      // Bind the token to the Pixl account that started the flow: it must be
+      // the same person's Hackatime (matched on Slack ID), not whoever
+      // happened to open the consent link. Otherwise the token is dropped.
+      const { data: owner, error: ownerError } = await supabase
+        .from("users")
+        .select("slack_id")
+        .eq("id", userId)
+        .maybeSingle();
+      if (ownerError) {
+        done("error", "owner_lookup_failed");
+        return res.redirect(back(redirect, "failed"));
+      }
+      const expectedSlackId = (owner as { slack_id?: string | null } | null)?.slack_id ?? null;
+      const tokenSlackId = await fetchHackatimeSlackId(data.access_token);
+      if (!expectedSlackId || !tokenSlackId || tokenSlackId !== expectedSlackId) {
+        audit({
+          ...requestActor(req),
+          actorType: "player",
+          actorId: userId,
+          action: "hackatime.identity_mismatch",
+          target: `user:${userId}`,
+          result: "denied",
+          meta: { reason: tokenSlackId ? "different_account" : "identity_unknown" },
+        });
+        return res.redirect(back(redirect, "failed"));
+      }
+
       const { data: updated, error } = await supabase
         .from("users")
         .update({ hackatime_token: data.access_token })
@@ -160,6 +187,7 @@ router.get(
         return res.redirect(back(redirect, "failed"));
       }
 
+      forgetStats(userId);
       console.log("[hackatime] token saved for", userId);
       done("ok");
       res.redirect(back(redirect, "connected"));
@@ -171,10 +199,49 @@ router.get(
   },
 );
 
+// Each stats call fans out to Hackatime (one projects call plus one spans
+// call per checked project), so the result is cached per user and `since`
+// for a minute and at most STATS_FANOUT_CAP projects are checked.
+export const STATS_FANOUT_CAP = 20;
+const STATS_CACHE_TTL_MS = 60_000;
+const STATS_CACHE_MAX = 5_000;
+const statsCache = new Map<string, { at: number; stats: unknown }>();
+
+export function statsCacheGet(key: string, now = Date.now()): unknown {
+  const hit = statsCache.get(key);
+  if (!hit) return undefined;
+  if (now - hit.at >= STATS_CACHE_TTL_MS) {
+    statsCache.delete(key);
+    return undefined;
+  }
+  return hit.stats;
+}
+
+export function statsCacheSet(key: string, stats: unknown, now = Date.now()): void {
+  if (statsCache.size >= STATS_CACHE_MAX) {
+    for (const [k, v] of statsCache) if (now - v.at >= STATS_CACHE_TTL_MS) statsCache.delete(k);
+    while (statsCache.size >= STATS_CACHE_MAX) {
+      const oldest = statsCache.keys().next().value;
+      if (oldest === undefined) break;
+      statsCache.delete(oldest);
+    }
+  }
+  statsCache.set(key, { at: now, stats });
+}
+
+// A fresh connect must show up straight away, not after the cache expires.
+function forgetStats(userId: string): void {
+  for (const k of statsCache.keys()) if (k.startsWith(`${userId}:`)) statsCache.delete(k);
+}
+
 // Current connection state + per-project time for the logged-in user.
 router.get("/api/hackatime/stats", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
+  const sinceParam = Number(req.query.since);
+  const cacheKey = `${session.userId}:${Number.isFinite(sinceParam) ? Math.floor(sinceParam) : ""}`;
+  const cached = statsCacheGet(cacheKey);
+  if (cached !== undefined) return res.json({ ok: true, stats: cached });
 
   const { data } = await supabase
     .from("users")
@@ -196,10 +263,10 @@ router.get("/api/hackatime/stats", async (req, res) => {
       : HACKATIME_CUTOFF;
   // Flag projects with any activity before the event cutoff so the picker can
   // warn "only time after the cutoff counts" before the player links one. Capped
-  // to the top 40 by tracked time so a prolific account doesn't fan out into
+  // to the top STATS_FANOUT_CAP by tracked time so a prolific account doesn't fan out into
   // dozens of Hackatime API calls.
   if (stats.connected && slackId) {
-    const toCheck = [...stats.projects].sort((a, b) => b.seconds - a.seconds).slice(0, 40);
+    const toCheck = [...stats.projects].sort((a, b) => b.seconds - a.seconds).slice(0, STATS_FANOUT_CAP);
     const summaries = await Promise.all(
       toCheck.map((p) => fetchProjectActivitySummary(slackId, htToken, p.name, since)),
     );
@@ -214,6 +281,8 @@ router.get("/api/hackatime/stats", async (req, res) => {
       };
     });
   }
+  // Only cache a real answer; a failed fetch is retried on the next call.
+  if (stats.connected) statsCacheSet(cacheKey, stats);
   res.json({ ok: true, stats });
 });
 

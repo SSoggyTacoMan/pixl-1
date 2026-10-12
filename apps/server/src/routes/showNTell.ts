@@ -180,8 +180,24 @@ router.post("/api/show-n-tell/entries/:id/vote", validate({ query: v.noQuery, pa
     if (collab) return res.status(400).json({ ok: false, error: "own_project" });
   }
 
-  // Only one live vote per round, per user - drop any existing vote this
-  // user has on another entry in the same round before adding the new one.
+  // Only one live vote per round, per user. With 0217 applied the database
+  // enforces it (UNIQUE (round_id, user_id), round_id filled by a trigger
+  // from the entry), so one upsert moves the vote atomically - two parallel
+  // requests can no longer both land. Before 0217 there is no such
+  // constraint (42P10) or column (42703): fall back to delete + insert.
+  const { error: upsertError } = await supabase
+    .from("show_n_tell_votes")
+    .upsert(
+      { entry_id: entryId, user_id: session.userId, round_id: entry.round_id as number },
+      { onConflict: "round_id,user_id" },
+    );
+  if (!upsertError) return res.json({ ok: true, voted: true });
+  const code = (upsertError as { code?: string }).code;
+  if (code !== "42P10" && code !== "42703") {
+    console.error("[show-n-tell] vote upsert failed", upsertError);
+    return res.status(500).json({ ok: false });
+  }
+
   const { data: roundEntries } = await supabase
     .from("show_n_tell_entries")
     .select("id")

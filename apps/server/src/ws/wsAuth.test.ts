@@ -104,6 +104,29 @@ describe("WebSocket auth over a real socket", () => {
     });
   });
 
+  test("a ban lookup error closes with 1013 instead of letting the player in", async () => {
+    const { db } = await import("../db/pgCompat.js");
+    const realFrom = db.from;
+    db.from = ((table: string) => {
+      const result = table === "bans" ? { data: null, error: { message: "db down" } } : { data: null, error: null };
+      const c: Record<string, unknown> = {};
+      for (const m of ["select", "eq", "is", "or", "order", "limit", "in", "maybeSingle", "single"]) c[m] = () => c;
+      c.then = (resolve: (v: unknown) => unknown) => Promise.resolve(result).then(resolve);
+      return c;
+    }) as unknown as typeof db.from;
+    try {
+      const game = issueSessionToken({ client: "game", userId: "u-ws-ban", displayName: "W" });
+      await withServer(async (url) => {
+        const c = open(url, "https://play.pixl.hackclub.com");
+        expect(await c.opened).toBe(true);
+        c.ws.send(JSON.stringify({ type: "auth", token: game }));
+        expect((await c.closed).code).toBe(1013);
+      });
+    } finally {
+      db.from = realFrom;
+    }
+  });
+
   test("no first frame within 5 s closes with 4401", async () => {
     await withServer(async (url) => {
       const c = open(url, "https://play.pixl.hackclub.com");

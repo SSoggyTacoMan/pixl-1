@@ -5,6 +5,7 @@ import { addNotification } from "./notifications.js";
 import { fetchTrackedSecondsSince } from "../hackatime/api.js";
 import { z } from "zod";
 import { validate, v, optStr, params } from "../http/validate.js";
+import { auditRequest } from "../audit.js";
 
 const router = Router();
 
@@ -357,6 +358,40 @@ router.post("/api/projects/:id/collaborators/code", validate({ query: v.noQuery,
   res.status(500).json({ ok: false });
 });
 
+// Owner replaces the join code, e.g. after it leaked or after removing
+// someone who still has it. The old code stops working at once.
+router.post("/api/projects/:id/collaborators/code/rotate", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
+  if (!session) return res.status(401).json({ ok: false });
+
+  const projectId = Number(req.params.id);
+  const { data: existing } = await supabase
+    .from("projects")
+    .select("id, user_id")
+    .eq("id", projectId)
+    .eq("user_id", session.userId)
+    .maybeSingle();
+  if (!existing || existing.user_id !== session.userId) {
+    auditRequest(req, { action: "collaborators.code.rotate", target: `project:${projectId}`, result: "denied" });
+    return res.status(404).json({ ok: false });
+  }
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = randomCode();
+    const { error } = await supabase
+      .from("projects")
+      .update({ join_code: code })
+      .eq("id", projectId)
+      .eq("user_id", session.userId);
+    if (!error) {
+      auditRequest(req, { action: "collaborators.code.rotate", target: `project:${projectId}`, result: "ok" });
+      return res.json({ ok: true, code });
+    }
+  }
+  auditRequest(req, { action: "collaborators.code.rotate", target: `project:${projectId}`, result: "error" });
+  res.status(500).json({ ok: false });
+});
+
 // Any player redeems a code to join that project as an accepted
 // collaborator immediately, the code itself is the invitation, so there's
 // no separate pending/accept step like the name-search invite has.
@@ -386,6 +421,10 @@ router.post("/api/collaborators/redeem", validate({ query: v.noQuery, body: z.ob
   if (existingRow) {
     if (existingRow.status === "accepted")
       return res.json({ ok: true, projectId: project.id, projectName: project.name, status: "accepted" });
+    // Someone the owner (or they themselves) removed can't walk back in with
+    // a code they kept; only a fresh invite from the owner brings them back.
+    if (existingRow.status === "removed")
+      return res.status(403).json({ ok: false, error: "removed", reason: "You were removed from this project. Ask the owner to invite you again." });
     const { error } = await supabase
       .from("project_collaborators")
       .update({ status: "accepted", responded_at: new Date().toISOString() })

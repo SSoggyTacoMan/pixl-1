@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { toPlayerProject } from "./projects.js";
+import { parseProjectBody, toPlayerProject } from "./projects.js";
 
 // Every internal/admin column found on `projects` across drizzle/*.sql as of
 // this test - reviewer/admin identities, fraud/system notes, review draft
@@ -178,5 +178,42 @@ describe("toPlayerProject", () => {
       banned_at: "2026-09-17T14:44:54.819Z",
     });
     expect(safe.status).toBe("second_review");
+  });
+});
+
+describe("parseProjectBody image URLs", () => {
+  const base = { name: "Thing" };
+  test("a Hack Club CDN thumbnail is kept", () => {
+    const r = parseProjectBody({ ...base, imageUrl: "https://cdn.hackclub.com/a.png" });
+    expect(r.fields?.image_url).toBe("https://cdn.hackclub.com/a.png");
+  });
+
+  test("an attacker-hosted or non-https thumbnail is refused", () => {
+    for (const imageUrl of ["https://evil.example/t.png", "javascript:alert(1)", "data:image/png;base64,AA", "http://cdn.hackclub.com/a.png"])
+      expect(parseProjectBody({ ...base, imageUrl }).error).toBe("invalid_image_url");
+  });
+
+  test("an empty thumbnail is fine", () => {
+    expect(parseProjectBody({ ...base, imageUrl: "" }).fields?.image_url).toBe("");
+  });
+
+  test("cart screenshots must all be CDN URLs", () => {
+    const hw = { ...base, kind: "hardware", needsFunding: true };
+    expect(parseProjectBody({ ...hw, cartScreenshotUrls: ["https://cdn.hackclub.com/c.png"] }).fields?.cart_screenshot_urls).toEqual([
+      "https://cdn.hackclub.com/c.png",
+    ]);
+    expect(parseProjectBody({ ...hw, cartScreenshotUrls: ["https://cdn.hackclub.com/c.png", "javascript:alert(1)"] }).error).toBe("invalid_image_url");
+    expect(parseProjectBody({ ...hw, cartScreenshotUrls: ["https://evil.example/c.png"] }).error).toBe("invalid_image_url");
+  });
+});
+
+describe("toPlayerProject join_code", () => {
+  const row = { id: 1, user_id: "owner", name: "P", join_code: "ABC-DEF" };
+  test("the owner sees the join code", () => {
+    expect(toPlayerProject(row, "owner").join_code).toBe("ABC-DEF");
+  });
+  test("a collaborator, or a caller that names no viewer, never does", () => {
+    expect(toPlayerProject(row, "collaborator").join_code).toBeNull();
+    expect(toPlayerProject(row).join_code).toBeNull();
   });
 });

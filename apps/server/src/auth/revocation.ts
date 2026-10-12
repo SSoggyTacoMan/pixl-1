@@ -65,12 +65,14 @@ type QueryError = { code?: string; message: string };
 type ColumnQuery<T> = (columns: string) => PromiseLike<{ data: T | null; error: QueryError | null }>;
 
 // Runs `query` with the per-client columns, falling back to the legacy
-// column alone when 0216 isn't applied yet, and to "nothing revoked" when
-// even 0181 isn't (the behavior before the game/web split).
+// column alone when 0216 isn't applied yet. If even 0181's column is missing
+// the database can't say whether a session was revoked, so that is an error
+// (callers fail closed: 503 / socket refused), never "nothing revoked".
 export async function selectRevocation<T>(query: ColumnQuery<T>): Promise<{ data: T | null; error: QueryError | null }> {
   let result = await query(REVOCATION_COLUMNS);
   if (result.error?.code === UNDEFINED_COLUMN) result = await query(LEGACY_REVOCATION_COLUMNS);
-  if (result.error?.code === UNDEFINED_COLUMN) return { data: null, error: null };
+  if (result.error?.code === UNDEFINED_COLUMN)
+    return { data: null, error: { code: UNDEFINED_COLUMN, message: "session revocation columns missing (migration 0181)" } };
   return result;
 }
 

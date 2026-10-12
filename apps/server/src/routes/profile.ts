@@ -12,6 +12,7 @@ import {
   MAX_LEVEL,
 } from "../xp.js";
 import { decryptPII } from "../crypto.js";
+import { allowedImageUrl } from "../http/imageUrls.js";
 import { z } from "zod";
 import { validate, v, optStr, optBool, optNum } from "../http/validate.js";
 
@@ -50,14 +51,20 @@ router.post("/api/profile/name", validate({ query: v.noQuery, body: z.object({ n
     return res.status(500).json({ ok: false, reason: "Database error." });
   }
 
-  // Re-issue the session token so the embedded displayName matches the new one,
-  // for the same client the caller's token was issued to.
-  const fresh = issueSessionToken({
-    userId: session.userId,
-    displayName: name,
-    client: session.client,
-    ...(session.slackId ? { slackId: session.slackId } : {}),
-  });
+  // The game shows the name embedded in its token (the WebSocket reads it
+  // from there), so a real change re-issues the token for the same client -
+  // but only on a change, and ending exactly when the old one would have:
+  // renaming must never be a way to keep a session alive past its 14 days.
+  if (name === session.displayName || session.exp === undefined) return res.json({ ok: true, name });
+  const fresh = issueSessionToken(
+    {
+      userId: session.userId,
+      displayName: name,
+      client: session.client,
+      ...(session.slackId ? { slackId: session.slackId } : {}),
+    },
+    { expiresAtSec: session.exp },
+  );
   res.json({ ok: true, name, token: fresh });
 });
 
@@ -201,21 +208,11 @@ router.post("/api/profile/card-image", validate({ query: v.noQuery, body: z.obje
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const raw = typeof req.body?.url === "string" ? req.body.url.trim() : "";
-  // Parse it rather than prefix-match it. This value is rendered back into
-  // other players' pages, so anything that is not a plain https url (quotes,
-  // angle brackets, whitespace, a second scheme) has no business being stored.
-  let url = "";
-  try {
-    const parsed = new URL(raw);
-    // Store the normalized form, which percent-encodes anything exotic in the
-    // path/query rather than carrying it through verbatim.
-    if (parsed.protocol === "https:") url = parsed.href;
-  } catch {
-    url = "";
-  }
-  if (!url || url.length > 500 || /["'<>\s\\]/.test(url))
-    return res.status(400).json({ ok: false, error: "bad_url" });
+  // Rendered on other players' pages, so only a Hack Club CDN upload or the
+  // Slack photo the card was seeded with (http/imageUrls.ts): an arbitrary
+  // host would log the IP of every player who views this card.
+  const url = allowedImageUrl(req.body?.url, { avatar: true });
+  if (!url) return res.status(400).json({ ok: false, error: "invalid_image_url" });
   const { error } = await supabase
     .from("users")
     .update({ avatar_url: url })
@@ -365,20 +362,20 @@ router.get("/api/profile/eligibility", async (req, res) => {
       yswsEligible = age < 19;
     }
   }
-  res.json({
-    ok: true,
-    birthday: birthday || null,
-    age,
-    yswsEligible,
-    addressLine1: decryptPII(row.address_line1 as string | null),
-    addressLine2: decryptPII(row.address_line2 as string | null),
+  res.json({ ok: true, birthday: birthday || null, age, yswsEligible, ...maskedAddress(row) });
+});
+
+// The street lines, postal code and phone never leave the server: a stolen
+// session (or a mis-bound HCA flow) must not be enough to read a minor's
+// home address. The Pixl Dashboard only shows city + country as a "this is
+// roughly where we'd ship" hint, plus two flags for the checkout gate.
+export function maskedAddress(row: Record<string, unknown>) {
+  return {
     addressCity: decryptPII(row.address_city as string | null),
-    addressState: decryptPII(row.address_state as string | null),
     addressCountry: decryptPII(row.address_country as string | null),
-    addressPostal: decryptPII(row.address_postal as string | null),
     hasAddress: hasAddress(row),
     hasPhone: String(decryptPII(row.phone as string | null) ?? "").trim() !== "",
-  });
-});
+  };
+}
 
 export default router;

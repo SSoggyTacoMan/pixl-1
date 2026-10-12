@@ -12,6 +12,7 @@ import {
   type HcaStateRow,
 } from "../hcaEligibility.js";
 import { normalizeProjectUrl, MAX_DEMO_URL_LENGTH } from "./projectUrlSafety.js";
+import { allowedImageUrl, markdownImagesAllowed } from "../http/imageUrls.js";
 import { isGitRepoUrl } from "./gitRepoUrl.js";
 import { urlAlive } from "./urlLiveness.js";
 import { recordShipForOperations } from "../operations/service.js";
@@ -104,9 +105,13 @@ const PLAYER_PROJECT_FIELDS = [
   "hours_extended_since",
 ] as const;
 
-export function toPlayerProject(p: Record<string, unknown>): Record<string, unknown> {
+// viewerId is the signed-in player the row is going to. The join code is a
+// bearer credential for joining the project, so only the owner ever sees it
+// (collaborators get the project too, via the list); no viewerId = hidden.
+export function toPlayerProject(p: Record<string, unknown>, viewerId?: string): Record<string, unknown> {
   const safe: Record<string, unknown> = {};
   for (const field of PLAYER_PROJECT_FIELDS) safe[field] = p[field] ?? null;
+  if (viewerId === undefined || p.user_id !== viewerId) safe.join_code = null;
   // Credited (possibly deflated) hours only become real once a project is
   // actually approved - a stale value from an earlier review cycle must not
   // leak back out on the very next save/ship/unship.
@@ -275,7 +280,7 @@ router.get("/api/projects", async (req, res) => {
   res.json({
     ok: true,
     projects: projects.map((p) => ({
-      ...toPlayerProject(p),
+      ...toPlayerProject(p, session.userId),
       is_owner: p.is_owner,
       pixels_earned: earned.get(p.id as number) ?? 0,
       journal_seconds: journalSeconds.get(p.id as number) ?? 0,
@@ -424,11 +429,22 @@ export function parseProjectBody(
   // depth against a dangerous scheme landing here the same way repo_url/
   // demo_url could. <img src="javascript:...">  doesn't execute in modern
   // browsers, but there's no reason to store a non-http(s) value here either.
-  const imageUrlResult = normalizeProjectUrl(body?.imageUrl);
-  const imageUrl = imageUrlResult.ok ? imageUrlResult.url : "";
-  const cartScreenshotUrls = needsFunding && Array.isArray(body?.cartScreenshotUrls)
-    ? body.cartScreenshotUrls.map((u: unknown) => String(u)).slice(0, 10)
+  // Only Hack Club CDN URLs (what /api/uploads returns): an arbitrary host
+  // would see the IP of everyone who views the project, and could swap the
+  // picture after review. See http/imageUrls.ts.
+  const rawImage = String(body?.imageUrl ?? "").trim();
+  const imageUrl = rawImage ? allowedImageUrl(rawImage) : "";
+  if (imageUrl === null) return { error: "invalid_image_url" };
+  const rawCart: unknown[] = needsFunding && Array.isArray(body?.cartScreenshotUrls)
+    ? body.cartScreenshotUrls.slice(0, 10)
     : [];
+  const cartScreenshotUrls: string[] = [];
+  for (const u of rawCart) {
+    if (typeof u === "string" && u.trim() === "") continue;
+    const ok = allowedImageUrl(u);
+    if (ok === null) return { error: "invalid_image_url" };
+    cartScreenshotUrls.push(ok);
+  }
   // Whether the physical thing actually exists and can be filmed working -
   // distinct from needsFunding, which by definition happens before a build
   // exists. Hardware-only, same reasoning as needsFunding above.
@@ -507,7 +523,7 @@ router.post("/api/projects", validate({ query: v.noQuery, body: projectBody }), 
     return res.status(500).json({ ok: false });
   }
   void addNotification(session.userId, "Project logged", `You logged "${parsed.fields.name}".`);
-  res.json({ ok: true, project: toPlayerProject(data) });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 // Update one of the user's own projects.
@@ -559,7 +575,7 @@ router.put("/api/projects/:id", validate({ query: v.noQuery, params: params({ id
     console.error("[projects] update failed", error);
     return res.status(500).json({ ok: false });
   }
-  res.json({ ok: true, project: toPlayerProject(data) });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 // Ship a project for review: draft/needs_changes -> shipped, or approved ->
@@ -567,7 +583,7 @@ router.put("/api/projects/:id", validate({ query: v.noQuery, params: params({ id
 // thumbnail, and an eligibility attestation (not a school assignment or paid
 // Hack Club work). Undisclosed matches against the Hack Club YSWS archive get
 // a system note for the reviewer plus a mod_actions entry.
-router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ updateNotes: optStr(20000), shipNote: optStr(10000), otherYsws: optBool, otherYswsNotes: optStr(10000), acceptNoTrialPrize: optBool }) }), async (req, res) => {
+router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ updateNotes: optStr(20000), shipNote: optStr(10000), otherYsws: optBool, otherYswsNotes: optStr(10000), acceptNoTrialPrize: optBool, eligibilityAttested: optBool }) }), async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
@@ -946,7 +962,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   if (!project.first_shipped_at && ownerSlackId) void enrollSlackPlayerInReviewChannel(ownerSlackId);
   if (project.status === "needs_changes" && project.notify_reviewer_slack_id)
     void dmReviewerOfResubmit(project.notify_reviewer_slack_id as string, data);
-  res.json({ ok: true, project: toPlayerProject(data) });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 // Withdraw a project from the review queue back to a draft so the owner can
@@ -993,7 +1009,7 @@ router.post("/api/projects/:id/unship", validate({ query: v.noQuery, params: par
     console.error("[projects] unship failed", error);
     return res.status(500).json({ ok: false });
   }
-  res.json({ ok: true, project: toPlayerProject(data) });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 // Settle an approved Trial ship: the prize, or the pixels the payout math held
@@ -1383,6 +1399,10 @@ router.post("/api/projects/:id/journal", validate({ query: v.noQuery, params: pa
   const content = String(req.body?.content ?? "").trim().slice(0, 5000);
   if (!content)
     return res.status(400).json({ ok: false, error: "content_required" });
+  // Journal images load for every viewer, so they must be Hack Club CDN
+  // uploads like every other player image (http/imageUrls.ts).
+  if (!markdownImagesAllowed(content))
+    return res.status(400).json({ ok: false, error: "invalid_image_url" });
   const title = String(req.body?.title ?? "").trim().slice(0, 120);
   let hours = Number(req.body?.hours ?? 0);
   if (!Number.isFinite(hours) || hours < 0) hours = 0;
@@ -1429,6 +1449,10 @@ router.patch("/api/projects/:id/journal/:entryId", validate({ query: v.noQuery, 
   const content = String(req.body?.content ?? "").trim().slice(0, 5000);
   if (!content)
     return res.status(400).json({ ok: false, error: "content_required" });
+  // Journal images load for every viewer, so they must be Hack Club CDN
+  // uploads like every other player image (http/imageUrls.ts).
+  if (!markdownImagesAllowed(content))
+    return res.status(400).json({ ok: false, error: "invalid_image_url" });
   const title = String(req.body?.title ?? "").trim().slice(0, 120);
   let hours = Number(req.body?.hours ?? 0);
   if (!Number.isFinite(hours) || hours < 0) hours = 0;

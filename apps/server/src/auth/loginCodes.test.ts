@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkRedirect, CLIENT_STATE_RE, createLoginCodeStore, LOGIN_CODE_TTL_MS } from "./loginCodes.js";
+import { checkLoginRedirect, checkRedirect, CLIENT_STATE_RE, createLoginCodeStore, LOGIN_CODE_TTL_MS } from "./loginCodes.js";
 
 const grant = { userId: "u1", displayName: "P", slackId: "U123", isNew: false, needsLegalName: false };
 
@@ -71,5 +71,33 @@ describe("checkRedirect", () => {
     expect(CLIENT_STATE_RE.test("short")).toBe(false);
     expect(CLIENT_STATE_RE.test("has space in it")).toBe(false);
     expect(CLIENT_STATE_RE.test("x".repeat(513))).toBe(false);
+  });
+});
+
+describe("checkLoginRedirect", () => {
+  test("only the dashboard callback and the game root, exactly", () => {
+    expect(checkLoginRedirect("https://pixl.hackclub.com/api/auth/callback")).toBe("https://pixl.hackclub.com/api/auth/callback");
+    expect(checkLoginRedirect("https://play.pixl.hackclub.com/")).toBe("https://play.pixl.hackclub.com/");
+  });
+
+  test("any other path, a query, a fragment or a look-alike is refused", () => {
+    for (const bad of [
+      "https://pixl.hackclub.com/",
+      "https://pixl.hackclub.com/account",
+      "https://pixl.hackclub.com/api/auth/callback?next=/x",
+      "https://pixl.hackclub.com/api/auth/callback#x",
+      "https://pixl.hackclub.com/api/auth/callback/",
+      "https://pixl.hackclub.com/API/auth/callback",
+      "https://play.pixl.hackclub.com",
+      "https://play.pixl.hackclub.com/?x=1",
+      "https://play.pixl.hackclub.com/some/page",
+      "https://play.pixl.hackclub.com:443/",
+      "http://play.pixl.hackclub.com/",
+      "https://dash.pixl.hackclub.com/",
+      "https://user@play.pixl.hackclub.com/",
+      undefined,
+      42,
+    ])
+      expect(checkLoginRedirect(bad)).toBeNull();
   });
 });

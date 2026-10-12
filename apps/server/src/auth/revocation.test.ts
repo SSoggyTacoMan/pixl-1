@@ -90,7 +90,7 @@ describe("isSessionRevoked", () => {
 describe("verifySessionToken", () => {
   test("returns the identity and the issue second", () => {
     const session = verifySessionToken(issueAt("user-1", T0));
-    expect(session).toEqual({ userId: "user-1", displayName: "tester", client: "web", iat: T0 / SEC });
+    expect(session).toEqual({ userId: "user-1", displayName: "tester", client: "web", iat: T0 / SEC, exp: T0 / SEC + 14 * 24 * 3600 });
     expect(verifySessionToken(issueAt("user-1", T0, "game"))?.client).toBe("game");
   });
 
@@ -363,5 +363,25 @@ describe("enforceSessionRevocation", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+const { selectRevocation } = await import("./revocation.js");
+describe("selectRevocation without the revocation columns", () => {
+  const missing = { data: null, error: { code: "42703", message: "column does not exist" } };
+
+  test("no 0181 column at all is an error (fail closed), not 'nothing revoked'", async () => {
+    const r = await selectRevocation(async () => missing);
+    expect(r.error).not.toBeNull();
+  });
+
+  test("only 0216 missing still falls back to the legacy column", async () => {
+    const seen: string[] = [];
+    const r = await selectRevocation(async (columns) => {
+      seen.push(columns);
+      return seen.length === 1 ? missing : { data: { sessions_revoked_at: null }, error: null };
+    });
+    expect(r.error).toBeNull();
+    expect(seen[1]).toBe("sessions_revoked_at");
   });
 });

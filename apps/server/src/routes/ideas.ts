@@ -2,6 +2,7 @@ import { Router } from "express";
 import { supabase } from "../db/client.js";
 import { withLock } from "../db/advisoryLock.js";
 import { containsBlocked } from "../moderation.js";
+import { allowedImageUrl } from "../http/imageUrls.js";
 import { addNotification } from "./notifications.js";
 import { z } from "zod";
 import { validate, v, optStr, optBool, optNum, params } from "../http/validate.js";
@@ -100,7 +101,10 @@ router.post("/api/ideas", validate({ query: v.noQuery, body: z.object({ title: o
   const hoursEstimate = isCollab && Number.isFinite(hoursRaw) && hoursRaw > 0
     ? Math.min(hoursRaw, 1000)
     : null;
-  const imageUrl = String(req.body?.imageUrl ?? "").trim().slice(0, 500) || null;
+  // Hack Club CDN only, like every other player image (http/imageUrls.ts).
+  const rawImage = String(req.body?.imageUrl ?? "").trim();
+  const imageUrl = rawImage ? allowedImageUrl(rawImage) : null;
+  if (rawImage && !imageUrl) return res.status(400).json({ ok: false, error: "invalid_image_url" });
 
   const { data, error } = await supabase
     .from("ideas")

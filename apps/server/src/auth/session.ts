@@ -26,10 +26,17 @@ export interface SessionPayload {
 
 export interface VerifiedSession extends SessionPayload {
   iat: number;
+  // Expiry (unix seconds), when the token carries one.
+  exp?: number;
 }
 
+const SESSION_TTL_SEC = 14 * 24 * 3600;
+
 // revocable per (user, client), see revocation.ts
-export function issueSessionToken(payload: SessionPayload): string {
+// opts.expiresAtSec re-issues a token that ends when the one it replaces
+// would have (e.g. after a rename), so re-issuing never extends a session.
+// It can't be later than a fresh token's own 14 days.
+export function issueSessionToken(payload: SessionPayload, opts: { expiresAtSec?: number } = {}): string {
   if (!isSessionClient(payload.client)) throw new Error("issueSessionToken: unknown client");
   const claims: SessionPayload = {
     userId: payload.userId,
@@ -37,7 +44,13 @@ export function issueSessionToken(payload: SessionPayload): string {
     client: payload.client,
   };
   if (payload.slackId) claims.slackId = payload.slackId;
-  return jwt.sign(claims, JWT_SECRET, { algorithm: "HS256", expiresIn: "14d" });
+  if (opts.expiresAtSec !== undefined) {
+    const now = Math.floor(Date.now() / 1000);
+    const exp = Math.min(Math.floor(opts.expiresAtSec), now + SESSION_TTL_SEC);
+    if (!(exp > now)) throw new Error("issueSessionToken: expiry already passed");
+    return jwt.sign({ ...claims, exp }, JWT_SECRET, { algorithm: "HS256" });
+  }
+  return jwt.sign(claims, JWT_SECRET, { algorithm: "HS256", expiresIn: SESSION_TTL_SEC });
 }
 
 // A token without a valid `client` claim (everything issued before the
@@ -60,6 +73,7 @@ export function verifySessionToken(token: string): VerifiedSession | null {
       client: decoded.client,
       ...(typeof decoded.slackId === "string" && decoded.slackId ? { slackId: decoded.slackId } : {}),
       iat: typeof decoded.iat === "number" ? decoded.iat : 0,
+      ...(typeof decoded.exp === "number" ? { exp: decoded.exp } : {}),
     };
   } catch {
     return null;

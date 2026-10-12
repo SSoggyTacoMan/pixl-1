@@ -1,7 +1,7 @@
 import { Router } from "express";
 import crypto from "crypto";
 import { supabase } from "../db/client.js";
-import { rateLimit } from "../rateLimit.js";
+import { consumeRateLimit, peekRateLimit, rateLimit } from "../rateLimit.js";
 import { config as pixlConfig } from "../config.generated.js";
 import { createVerificationStore } from "./formVerification.js";
 import { z } from "zod";
@@ -127,6 +127,18 @@ const verificationStore = createVerificationStore();
 // Keyed by IP, separate from the per-slackId resend cooldown below - stops
 // one IP from cycling through many different victims' ids just as much as
 // it stops flooding a single one.
+// Keyed by the TARGET Slack id, across every form: the per-IP limit above
+// doesn't stop many IPs (or many form keys) from DM-bombing one player.
+// At most 3 code DMs per Slack account per hour; past that the request still
+// answers ok (no enumeration) but nothing is sent.
+export const TARGET_DM_LIMIT = { windowMs: 60 * 60 * 1000, max: 3, name: "form_code_target" } as const;
+export function targetDmAvailable(slackId: string): boolean {
+  return peekRateLimit(TARGET_DM_LIMIT, slackId) === null;
+}
+export function noteTargetDm(slackId: string): void {
+  consumeRateLimit(TARGET_DM_LIMIT, slackId);
+}
+
 const codeRequestLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, name: "form_request_code", key: formsLimiterKey });
 
 router.post("/api/forms/:formKey/request-code", codeRequestLimiter, validate({ query: v.noQuery, params: formKeyParams, body: z.object({ slackId: optStr(32) }) }), async (req, res) => {
@@ -146,11 +158,12 @@ router.post("/api/forms/:formKey/request-code", codeRequestLimiter, validate({ q
   // Whether or not this id resolves to a real Slack member never changes the
   // response below - only a successful lookup, on a key not already in its
   // resend cooldown, actually issues a code and sends a DM.
-  const slackUser = await lookupSlackUser(slackId);
+  const slackUser = targetDmAvailable(slackId) ? await lookupSlackUser(slackId) : null;
   if (slackUser) {
     try {
       const code = await verificationStore.issue(key, slackUser.name);
       if (code) {
+        noteTargetDm(slackId);
         void dmSlackUser(
           slackId,
           `Your PIXL verification code for "${formKey}" is *${code}*. It expires in 10 minutes , if you didn't request this, ignore it.`,

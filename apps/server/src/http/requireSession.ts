@@ -14,6 +14,8 @@ export interface RequestSession {
   client: SessionClient;
   slackId?: string;
   iat: number;
+  // Token expiry (unix seconds); a re-issued token keeps it (profile rename).
+  exp?: number;
 }
 
 declare global {
@@ -60,6 +62,7 @@ export function verifyBearer(deps: RequireSessionDeps = {}): RequestHandler {
       client: session.client,
       ...(session.slackId ? { slackId: session.slackId } : {}),
       iat: session.iat,
+      ...(session.exp !== undefined ? { exp: session.exp } : {}),
     };
     next();
   };

@@ -105,6 +105,10 @@ router.post(
     // coordinates included) as a side effect of the same decode this route
     // already needed for validation.
     const sanitized = await sanitizeImage(buf, type);
+    if (sanitized.busy) {
+      res.setHeader("Retry-After", "5");
+      return res.status(503).json({ ok: false, error: "busy" });
+    }
     if (!sanitized.ok) {
       auditRequest(req, { action: "upload.image", target: "journal", result: "denied", meta: { reason: "invalid_image" } });
       return res.status(400).json({ ok: false, error: "invalid_image" });
@@ -167,6 +171,10 @@ router.post(
     // Same EXIF/ICC/XMP stripping as /api/uploads above - upload the
     // sanitized buffer, never the original.
     const sanitized = await sanitizeImage(buf, type);
+    if (sanitized.busy) {
+      res.setHeader("Retry-After", "5");
+      return res.status(503).json({ ok: false, error: "busy" });
+    }
     if (!sanitized.ok) {
       auditRequest(req, { action: "upload.image", target: "submission", result: "denied", meta: { reason: "invalid_image" } });
       return res.status(400).json({ ok: false, error: "invalid_image" });

@@ -73,6 +73,22 @@ export function checkRedirect(raw: unknown): string | null {
   return `${url.origin}${url.pathname}${url.search}`;
 }
 
+// Where a LOGIN may send the browser back to, which is stricter than
+// checkRedirect: the login redirect carries a live single-use code, so it
+// may only land on the two pages that exchange it - the Pixl Dashboard's
+// callback route and the game's root - exactly, with no other path, no
+// query and no fragment. The re-auth flows (verify-address, resync,
+// legal-name, Hackatime connect) carry no code and keep checkRedirect.
+export const LOGIN_REDIRECTS: readonly string[] = Object.freeze([
+  `${config.urls.site}/api/auth/callback`,
+  `${config.urls.play}/`,
+]);
+
+export function checkLoginRedirect(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  return LOGIN_REDIRECTS.includes(raw) ? raw : null;
+}
+
 // `state` is opaque to the server, the client binds it to a cookie or a
 // local nonce and checks it when the browser comes back.
 export const CLIENT_STATE_RE = /^[A-Za-z0-9._~-]{8,512}$/;
