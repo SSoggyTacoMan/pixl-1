@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { NextConfig } from "next";
+import { config } from "./app/_generated/config";
 import { CDN_HOSTS } from "./lib/cdn-hosts";
 import { FALLBACK_CSP } from "./lib/csp";
 
@@ -49,7 +50,11 @@ const nextConfig: NextConfig = {
     return [{ source: "/:path*", headers: SECURITY_HEADERS }];
   },
   async redirects() {
-    return [{ source: "/sidequests", destination: "/trials", permanent: false }];
+    return [
+      { source: "/sidequests", destination: "/trials", permanent: false },
+      { source: "/play", destination: config.urls.play, permanent: false },
+      { source: "/play/:path*", destination: `${config.urls.play}/:path*`, permanent: false },
+    ];
   },
 };
 
