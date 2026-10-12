@@ -90,7 +90,7 @@ function mockUsersTable(initialRows: Record<string, unknown>[] = []) {
     let filters: Record<string, unknown> = {};
     let insertPayload: Record<string, unknown> | null = null;
     let updatePayload: Record<string, unknown> | null = null;
-    // .maybeSingle() selects return one row (or null), like supabase-js.
+    // .maybeSingle() selects return one row (or null), like db-js.
     let one = false;
     const chain: Record<string, unknown> = {
       select: () => chain,

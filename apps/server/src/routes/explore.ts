@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { sql } from "../db/pgCompat.js";
 import { activeEvents } from "../events.js";
 import { approvedHoursFor, lifetimeRe, levelForRe } from "../xp.js";
@@ -37,7 +37,7 @@ router.get("/api/explore/players", async (req, res) => {
   // window closes and there's nothing left to gain by targeting them.
   const referralSafeCutoff = new Date(Date.now() - REFERRAL_WINDOW_HOURS * 3600_000).toISOString();
   const buildQuery = (fields: string) => {
-    let query = supabase
+    let query = db
       .from("users")
       .select(fields)
       .lte("created_at", referralSafeCutoff)
@@ -69,7 +69,7 @@ router.get("/api/explore/players", async (req, res) => {
   const ids = (users ?? []).map((u) => u.id as string);
   const counts = new Map<string, number>();
   if (ids.length > 0) {
-    const { data: projects } = await supabase
+    const { data: projects } = await db
       .from("projects")
       .select("user_id")
       .is("archived_at", null)
@@ -95,7 +95,7 @@ router.get("/api/explore/leaderboard", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("users")
     .select("id, display_name, skin, pixels")
     .gt("pixels", 0)
@@ -117,14 +117,14 @@ router.get("/api/explore/leaderboard", async (req, res) => {
   let yourRank = players.find((p) => p.you)?.rank ?? 0;
   let yourPixels = players.find((p) => p.you)?.pixels ?? -1;
   if (yourPixels < 0) {
-    const { data: me } = await supabase
+    const { data: me } = await db
       .from("users")
       .select("pixels")
       .eq("id", session.userId)
       .single();
     yourPixels = Math.round(Number(me?.pixels) || 0);
     if (yourPixels > 0) {
-      const { count } = await supabase
+      const { count } = await db
         .from("users")
         .select("id", { count: "exact", head: true })
         .gt("pixels", yourPixels);
@@ -137,7 +137,7 @@ router.get("/api/explore/leaderboard", async (req, res) => {
   let sprint: Record<string, unknown> | null = null;
   const [sprintEvent] = await activeEvents(["leaderboard_sprint"]);
   if (sprintEvent) {
-    const { data: txs } = await supabase
+    const { data: txs } = await db
       .from("pixel_transactions")
       .select("user_id, amount")
       .gt("amount", 0)
@@ -150,7 +150,7 @@ router.get("/api/explore/leaderboard", async (req, res) => {
     const ranked = [...earned.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25);
     const names = new Map<string, string>();
     if (ranked.length > 0) {
-      const { data: users } = await supabase
+      const { data: users } = await db
         .from("users")
         .select("id, display_name")
         .in("id", ranked.map(([id]) => id));
@@ -213,7 +213,7 @@ router.get("/api/explore/leaderboard/referrals", async (req, res) => {
   const ids = ranked.map(([id]) => id);
   const names = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: users } = await supabase.from("users").select("id, display_name").in("id", ids);
+    const { data: users } = await db.from("users").select("id, display_name").in("id", ids);
     for (const u of users ?? []) names.set(u.id as string, u.display_name as string);
   }
   const players = ranked.map(([id, row], i) => ({
@@ -253,7 +253,7 @@ router.get("/api/explore/leaderboard/upvotes", async (req, res) => {
   const ids = ranked.map(([id]) => id);
   const names = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: users } = await supabase.from("users").select("id, display_name").in("id", ids);
+    const { data: users } = await db.from("users").select("id, display_name").in("id", ids);
     for (const u of users ?? []) names.set(u.id as string, u.display_name as string);
   }
   const players = ranked.map(([id, count], i) => ({
@@ -270,7 +270,7 @@ router.get("/api/explore/showcase", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data: projects, error } = await supabase
+  const { data: projects, error } = await db
     .from("projects")
     .select(PUBLIC_PROJECT_COLUMNS)
     .is("archived_at", null)
@@ -287,7 +287,7 @@ router.get("/api/explore/showcase", async (req, res) => {
   const ids = [...new Set((projects ?? []).map((p) => p.user_id as string))];
   const names = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: users } = await supabase
+    const { data: users } = await db
       .from("users")
       .select("id, display_name")
       .in("id", ids);
@@ -309,11 +309,11 @@ router.get("/api/explore/players/:id", async (req, res) => {
 
   const id = String(req.params.id);
   const userQuery = (fields: string) =>
-    supabase.from("users").select(fields).eq("id", id).maybeSingle();
+    db.from("users").select(fields).eq("id", id).maybeSingle();
   const [user, fallbackUser, projects, owned] = await Promise.all([
     userQuery("id, display_name, skin, created_at, pixels, avatar_url, card_pixelate"),
     userQuery("id, display_name, skin, created_at, pixels, avatar_url"),
-    supabase
+    db
       .from("projects")
       .select(PUBLIC_PROJECT_COLUMNS)
       .eq("user_id", id)
@@ -321,7 +321,7 @@ router.get("/api/explore/players/:id", async (req, res) => {
       .is("rejected_at", null)
     .is("banned_at", null)
       .order("created_at", { ascending: false }),
-    supabase
+    db
       .from("collectible_purchases")
       .select("created_at, collectibles(id, name, description, image_url)")
       .eq("user_id", id)
@@ -370,13 +370,13 @@ router.get("/api/explore/players/:id/public", async (req, res) => {
     return res.status(404).json({ ok: false });
 
   const userQuery = (fields: string) =>
-    supabase.from("users").select(fields).eq("id", id).maybeSingle();
+    db.from("users").select(fields).eq("id", id).maybeSingle();
   // card_pixelate arrives with migration 0030, same graceful fallback the
   // directory route uses. slack_id/email are never selected.
   const [user, fallbackUser, projects] = await Promise.all([
     userQuery("id, display_name, skin, created_at, pixels, avatar_url, card_pixelate"),
     userQuery("id, display_name, skin, created_at, pixels, avatar_url"),
-    supabase
+    db
       .from("projects")
       .select(PUBLIC_PROJECT_COLUMNS)
       .eq("user_id", id)
@@ -408,7 +408,7 @@ router.get("/api/explore/projects", async (req, res) => {
   const shipped = typeof req.query.shipped === "string" ? req.query.shipped : "";
   const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
   const limit = Number.isInteger(rawLimit) ? Math.max(1, Math.min(100, rawLimit)) : 100;
-  let query = supabase
+  let query = db
     .from("projects")
     .select(PUBLIC_PROJECT_COLUMNS)
     .is("archived_at", null)
@@ -433,7 +433,7 @@ router.get("/api/explore/projects", async (req, res) => {
   const ids = [...new Set((projects ?? []).map((p) => p.user_id as string))];
   const owners = new Map<string, { id: string; display_name: string; avatar_url: string | null }>();
   if (ids.length > 0) {
-    const { data: users } = await supabase
+    const { data: users } = await db
       .from("users")
       .select("id, display_name, avatar_url")
       .in("id", ids);
@@ -450,7 +450,7 @@ router.get("/api/explore/projects", async (req, res) => {
   const upCounts = new Map<number, number>();
   const myUp = new Set<number>();
   if (pids.length > 0) {
-    const { data: ups } = await supabase
+    const { data: ups } = await db
       .from("project_upvotes")
       .select("project_id, voter_id")
       .in("project_id", pids);
@@ -480,7 +480,7 @@ router.get("/api/explore/projects/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: project, error } = await supabase
+  const { data: project, error } = await db
     .from("projects")
     .select(PUBLIC_PROJECT_COLUMNS)
     .eq("id", id)
@@ -491,18 +491,18 @@ router.get("/api/explore/projects/:id", async (req, res) => {
   if (error || !project) return res.status(404).json({ ok: false });
 
   const [owner, entries, ups, reviews, payout, earnedTxs] = await Promise.all([
-    supabase
+    db
       .from("users")
       .select("id, display_name, avatar_url")
       .eq("id", project.user_id as string)
       .maybeSingle(),
     // #safe-fields-only
-    supabase
+    db
       .from("project_journals")
       .select("id, title, content, hours, created_at, edited_at")
       .eq("project_id", id)
       .order("created_at", { ascending: false }),
-    supabase
+    db
       .from("project_upvotes")
       .select("voter_id")
       .eq("project_id", id),
@@ -510,19 +510,19 @@ router.get("/api/explore/projects/:id", async (req, res) => {
     // owner sees on their own timeline. The reviewer identity and every
     // intermediate verdict (first-pass proposals, ban proposals, fraud
     // review) stay internal to the dashboard.
-    supabase
+    db
       .from("review_audits")
       .select("verdict, note, claimed_hours, approved_hours, created_at")
       .eq("project_id", id)
       .in("verdict", ["approved", "needs_changes"])
       .order("created_at", { ascending: true }),
-    supabase
+    db
       .from("projects")
       .select("approved_hours")
       .eq("id", id)
       .maybeSingle(),
     // Same sum the owner's own project list shows as "PX EARNED".
-    supabase
+    db
       .from("pixel_transactions")
       .select("amount")
       .eq("project_id", id)

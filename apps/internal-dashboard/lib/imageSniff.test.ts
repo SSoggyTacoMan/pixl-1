@@ -28,12 +28,12 @@ describe("sniffFormat (runs before sharp)", () => {
     expect(sniffFormat(bytes())).toBeNull();
   });
 
-  test("the shop upload sniffs before calling sharp and never uses Supabase", () => {
+  test("the shop upload sniffs before calling sharp and never calls a remote storage API", () => {
     const src = readFileSync(join(import.meta.dir, "../app/actions.ts"), "utf8");
     const start = src.indexOf("async function uploadShopImageBuffer(");
     const body = src.slice(start, src.indexOf("\n}\n", start));
     expect(body.indexOf("sniffFormat(raw)")).toBeGreaterThan(-1);
     expect(body.indexOf("sniffFormat(raw)")).toBeLessThan(body.indexOf("sharp("));
-    expect(src).not.toMatch(/SUPABASE_/);
+    expect(src).not.toMatch(/\/storage\/v1\//);
   });
 });

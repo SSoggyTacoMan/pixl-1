@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 
 const router = Router();
 
@@ -25,7 +25,7 @@ router.get("/api/npcs", async (req, res) => {
     return res.status(400).json({ ok: false, error: "unknown_world" });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("npcs")
     .select(
       "id, world, pos_x, pos_y, npc_name, skin, custom_hair, custom_sheet, dialogue, " +

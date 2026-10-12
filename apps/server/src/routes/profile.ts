@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { issueSessionToken } from "../auth/session.js";
 import { containsBlocked, logViolation } from "../moderation.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import {
   approvedHoursFor,
   lifetimeRe,
@@ -42,7 +42,7 @@ router.post("/api/profile/name", validate({ query: v.noQuery, body: z.object({ n
     return res.json({ ok: false, reason: problem });
   }
 
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ display_name: name })
     .eq("id", session.userId);
@@ -79,7 +79,7 @@ router.get("/api/profile/wallet", async (req, res) => {
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: user }, approvedHours, re] = await Promise.all([
-    supabase.from("users").select("pixels").eq("id", session.userId).single(),
+    db.from("users").select("pixels").eq("id", session.userId).single(),
     approvedHoursFor(session.userId),
     lifetimeRe(session.userId),
   ]);
@@ -112,7 +112,7 @@ router.get("/api/profile/experience", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("users")
     .select("coding_experience")
     .eq("id", session.userId)
@@ -133,7 +133,7 @@ router.post("/api/profile/experience", validate({ query: v.noQuery, body: z.obje
   if (!EXPERIENCE_VALUES.includes(value as Experience))
     return res.status(400).json({ ok: false, error: "bad_experience" });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ coding_experience: value })
     .eq("id", session.userId);
@@ -149,7 +149,7 @@ router.get("/api/profile/transactions", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("pixel_transactions")
     .select("id, project_id, amount, hours, reason, created_at")
     .eq("user_id", session.userId)
@@ -165,7 +165,7 @@ router.get("/api/profile/transactions", async (req, res) => {
   ];
   const names = new Map<number, string>();
   if (projectIds.length > 0) {
-    const { data: projects } = await supabase
+    const { data: projects } = await db
       .from("projects")
       .select("id, name")
       .in("id", projectIds);
@@ -189,13 +189,13 @@ router.get("/api/profile/card", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  let { data: user, error } = await supabase
+  let { data: user, error } = await db
     .from("users")
     .select("avatar_url, card_pixelate")
     .eq("id", session.userId)
     .maybeSingle();
   if (error)
-    ({ data: user } = (await supabase
+    ({ data: user } = (await db
       .from("users")
       .select("avatar_url")
       .eq("id", session.userId)
@@ -216,7 +216,7 @@ router.post("/api/profile/card-image", validate({ query: v.noQuery, body: z.obje
   // host would log the IP of every player who views this card.
   const url = allowedImageUrl(req.body?.url, { avatar: true });
   if (!url) return res.status(400).json({ ok: false, error: "invalid_image_url" });
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ avatar_url: url })
     .eq("id", session.userId);
@@ -245,7 +245,7 @@ router.get("/api/profile/onboarding", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("users")
     .select("onboarding_step, slack_id")
     .eq("id", session.userId)
@@ -275,14 +275,14 @@ router.post("/api/profile/onboarding", validate({ query: v.noQuery, body: z.obje
 
   // Forward-only: a stale client (older tab, a replay) must never rewind a
   // player who's already further along.
-  const { data: cur } = await supabase
+  const { data: cur } = await db
     .from("users")
     .select("onboarding_step")
     .eq("id", session.userId)
     .maybeSingle();
   const step = Math.max(Math.max(0, Number(cur?.onboarding_step) || 0), want);
 
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ onboarding_step: step })
     .eq("id", session.userId);
@@ -298,7 +298,7 @@ router.post("/api/profile/card-pixelate", validate({ query: v.noQuery, body: z.o
   if (!session) return res.status(401).json({ ok: false });
 
   const pixelate = req.body?.pixelate === true;
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ card_pixelate: pixelate })
     .eq("id", session.userId);
@@ -345,7 +345,7 @@ router.get("/api/profile/eligibility", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("users")
     .select(["birthday", ...ADDRESS_FIELDS, "phone"].join(", "))
     .eq("id", session.userId)

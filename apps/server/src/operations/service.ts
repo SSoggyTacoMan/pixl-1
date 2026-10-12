@@ -1,4 +1,4 @@
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { config } from "../config.generated.js";
 import { fetchTrackedSecondsBetween } from "../hackatime/api.js";
 import {
@@ -18,7 +18,7 @@ export interface RpcResult {
 }
 
 async function rpc(fn: string, args: Record<string, unknown>): Promise<RpcResult> {
-  const { data, error } = await supabase.rpc<RpcResult>(fn, args);
+  const { data, error } = await db.rpc<RpcResult>(fn, args);
   if (error || !data) {
     console.error(`[operations] ${fn} failed`, error?.message);
     return { ok: false, error: "server_error" };
@@ -39,7 +39,7 @@ interface OperationRow {
 }
 
 export async function getOperation(slug: string): Promise<OperationRow | null> {
-  const { data } = await supabase.from("operations").select("*").eq("slug", slug).maybeSingle();
+  const { data } = await db.from("operations").select("*").eq("slug", slug).maybeSingle();
   return (data as OperationRow | null) ?? null;
 }
 
@@ -83,13 +83,13 @@ export async function gatherEvidence(entry: ShipEntry, projectId: number): Promi
   const fixEnd = entry.fix_window_end ? new Date(entry.fix_window_end) : null;
   const hasFix = !!fixEnd && fixEnd.getTime() > baseEnd.getTime();
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("user_id, hackatime_projects")
     .eq("id", projectId)
     .maybeSingle();
   if (!project) return [];
-  const { data: collabs } = await supabase
+  const { data: collabs } = await db
     .from("project_collaborators")
     .select("user_id, hackatime_projects")
     .eq("project_id", projectId)
@@ -104,7 +104,7 @@ export async function gatherEvidence(entry: ShipEntry, projectId: number): Promi
     })),
   ];
 
-  const { data: users } = await supabase
+  const { data: users } = await db
     .from("users")
     .select("id, slack_id, hackatime_token")
     .in("id", people.map((p) => p.userId));
@@ -113,7 +113,7 @@ export async function gatherEvidence(entry: ShipEntry, projectId: number): Promi
       (u) => [u.id, u],
     ),
   );
-  const { data: journals } = await supabase
+  const { data: journals } = await db
     .from("project_journals")
     .select("user_id, hours, created_at")
     .eq("project_id", projectId);
@@ -184,7 +184,7 @@ export async function recordShipForOperations(
 export async function refreshEntryEvidence(
   entryId: number,
 ): Promise<{ ok: boolean; error?: string }> {
-  const { data: row } = await supabase
+  const { data: row } = await db
     .from("operation_entries")
     .select("id, operation_id, project_id, status, window_start, first_qualified_ship_at, fix_window_end")
     .eq("id", entryId)
@@ -205,7 +205,7 @@ export async function refreshEntryEvidence(
   if (!entry.first_qualified_ship_at) return { ok: false, error: "not_shipped" };
   if (entry.status === "approved") return { ok: true };
 
-  const { data: opRow } = await supabase
+  const { data: opRow } = await db
     .from("operations")
     .select("ends_at")
     .eq("id", entry.operation_id)
@@ -263,7 +263,7 @@ export async function getPublicOperation(slug: string): Promise<PublicOperationV
   };
   if (status === "upcoming") return base;
 
-  const { data: stats } = await supabase.rpc<{
+  const { data: stats } = await db.rpc<{
     entries: { approved: number };
     contributors: { approved_hours: number };
     participants: number;
@@ -301,7 +301,7 @@ export interface PlayerEntryView {
 export async function listPlayerEntries(slug: string, userId: string): Promise<PlayerEntryView[]> {
   const op = await getOperation(slug);
   if (!op) return [];
-  const { data: rows } = await supabase
+  const { data: rows } = await db
     .from("operation_entries")
     .select("project_id, status, joined_at, first_qualified_ship_at, grace_deadline, decided_by")
     .eq("operation_id", op.id)
@@ -315,7 +315,7 @@ export async function listPlayerEntries(slug: string, userId: string): Promise<P
     decided_by: string;
   }[];
   if (entries.length === 0) return [];
-  const { data: projects } = await supabase
+  const { data: projects } = await db
     .from("projects")
     .select("id, status")
     .in("id", entries.map((e) => Number(e.project_id)));

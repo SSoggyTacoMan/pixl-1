@@ -1,6 +1,6 @@
 import { randomInt } from "crypto";
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { addNotification } from "./notifications.js";
 import { fetchTrackedSecondsSince } from "../hackatime/api.js";
 import { z } from "zod";
@@ -25,7 +25,7 @@ interface CollaboratorRow {
 }
 
 async function projectOwner(projectId: number): Promise<{ id: number; name: string; user_id: string } | null> {
-  const { data } = await supabase
+  const { data } = await db
     .from("projects")
     .select("id, name, user_id")
     .eq("id", projectId)
@@ -51,14 +51,14 @@ router.post("/api/projects/:id/collaborators/invite", validate({ query: v.noQuer
   if (!targetId || targetId === session.userId)
     return res.status(400).json({ ok: false, reason: "Invalid target." });
 
-  const { data: target } = await supabase
+  const { data: target } = await db
     .from("users")
     .select("id, display_name")
     .eq("id", targetId)
     .single();
   if (!target) return res.status(404).json({ ok: false, reason: "No such player." });
 
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("project_collaborators")
     .select("id, status")
     .eq("project_id", projectId)
@@ -68,7 +68,7 @@ router.post("/api/projects/:id/collaborators/invite", validate({ query: v.noQuer
   if (existing) {
     if (existing.status === "accepted" || existing.status === "pending")
       return res.json({ ok: true, status: existing.status });
-    const { error } = await supabase
+    const { error } = await db
       .from("project_collaborators")
       .update({ status: "pending", invited_by: session.userId, responded_at: null })
       .eq("id", existing.id);
@@ -77,7 +77,7 @@ router.post("/api/projects/:id/collaborators/invite", validate({ query: v.noQuer
       return res.status(500).json({ ok: false });
     }
   } else {
-    const { error } = await supabase.from("project_collaborators").insert({
+    const { error } = await db.from("project_collaborators").insert({
       project_id: projectId,
       user_id: targetId,
       invited_by: session.userId,
@@ -108,7 +108,7 @@ router.get("/api/projects/:id/collaborators", async (req, res) => {
   const project = await projectOwner(projectId);
   if (!project) return res.status(404).json({ ok: false });
 
-  const { data: rows, error } = await supabase
+  const { data: rows, error } = await db
     .from("project_collaborators")
     .select("*")
     .eq("project_id", projectId)
@@ -126,7 +126,7 @@ router.get("/api/projects/:id/collaborators", async (req, res) => {
   const ids = collaborators.map((c) => c.user_id);
   const names = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: users } = await supabase
+    const { data: users } = await db
       .from("users")
       .select("id, display_name")
       .in("id", ids);
@@ -154,7 +154,7 @@ router.get("/api/collaborations/pending", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data: rows, error } = await supabase
+  const { data: rows, error } = await db
     .from("project_collaborators")
     .select("id, project_id, invited_by, created_at, projects(name)")
     .eq("user_id", session.userId)
@@ -167,7 +167,7 @@ router.get("/api/collaborations/pending", async (req, res) => {
   const inviterIds = [...new Set((rows ?? []).map((r) => r.invited_by as string))];
   const names = new Map<string, string>();
   if (inviterIds.length > 0) {
-    const { data: users } = await supabase
+    const { data: users } = await db
       .from("users")
       .select("id, display_name")
       .in("id", inviterIds);
@@ -192,7 +192,7 @@ router.post("/api/collaborators/:id/accept", validate({ query: v.noQuery, params
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_collaborators")
     .update({ status: "accepted", responded_at: new Date().toISOString() })
     .eq("id", id)
@@ -224,7 +224,7 @@ router.post("/api/collaborators/:id/decline", validate({ query: v.noQuery, param
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_collaborators")
     .update({ status: "declined", responded_at: new Date().toISOString() })
     .eq("id", id)
@@ -250,7 +250,7 @@ router.post("/api/collaborators/:id/remove", validate({ query: v.noQuery, params
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: row } = await supabase
+  const { data: row } = await db
     .from("project_collaborators")
     .select("id, project_id, user_id, status")
     .eq("id", id)
@@ -262,7 +262,7 @@ router.post("/api/collaborators/:id/remove", validate({ query: v.noQuery, params
   const isSelf = row.user_id === session.userId;
   if (!isOwner && !isSelf) return res.status(404).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("project_collaborators")
     .update({ status: "removed", responded_at: new Date().toISOString() })
     .eq("id", id);
@@ -287,7 +287,7 @@ router.put("/api/collaborators/:id/hackatime", validate({ query: v.noQuery, para
     ? req.body.hackatimeProjects.map((p: unknown) => String(p)).slice(0, 50)
     : [];
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_collaborators")
     .update({ hackatime_projects: hackatimeProjects })
     .eq("id", id)
@@ -304,7 +304,7 @@ router.put("/api/collaborators/:id/hackatime", validate({ query: v.noQuery, para
   // Recompute their tracked seconds right away instead of leaving it stale
   // until the owner's next ship, otherwise linking a project here has no
   // visible effect until then, which reads as "save does nothing."
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("hackatime_token, slack_id")
     .eq("id", session.userId)
@@ -314,7 +314,7 @@ router.put("/api/collaborators/:id/hackatime", validate({ query: v.noQuery, para
     (userRow as { hackatime_token?: string } | null)?.hackatime_token ?? null,
     hackatimeProjects,
   );
-  await supabase
+  await db
     .from("project_collaborators")
     .update({ hackatime_seconds: hackatimeSeconds })
     .eq("id", id);
@@ -341,7 +341,7 @@ router.post("/api/projects/:id/collaborators/code", validate({ query: v.noQuery,
   const projectId = Number(req.params.id);
   if (!Number.isFinite(projectId)) return res.status(400).json({ ok: false });
 
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("projects")
     .select("id, user_id, join_code")
     .eq("id", projectId)
@@ -354,7 +354,7 @@ router.post("/api/projects/:id/collaborators/code", validate({ query: v.noQuery,
   // few times against the unique index rather than trusting that.
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = randomCode();
-    const { error } = await supabase.from("projects").update({ join_code: code }).eq("id", projectId);
+    const { error } = await db.from("projects").update({ join_code: code }).eq("id", projectId);
     if (!error) return res.json({ ok: true, code });
   }
   res.status(500).json({ ok: false });
@@ -367,7 +367,7 @@ router.post("/api/projects/:id/collaborators/code/rotate", validate({ query: v.n
   if (!session) return res.status(401).json({ ok: false });
 
   const projectId = Number(req.params.id);
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("projects")
     .select("id, user_id")
     .eq("id", projectId)
@@ -380,7 +380,7 @@ router.post("/api/projects/:id/collaborators/code/rotate", validate({ query: v.n
 
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = randomCode();
-    const { error } = await supabase
+    const { error } = await db
       .from("projects")
       .update({ join_code: code })
       .eq("id", projectId)
@@ -416,7 +416,7 @@ router.post("/api/collaborators/redeem", redeemPerUser, redeemPerIp, validate({ 
   const code = String(req.body?.code ?? "").trim().toUpperCase();
   if (!code) return res.status(400).json({ ok: false, reason: "Enter a code." });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("id, name, user_id")
     .eq("join_code", code)
@@ -425,7 +425,7 @@ router.post("/api/collaborators/redeem", redeemPerUser, redeemPerIp, validate({ 
   if (project.user_id === session.userId)
     return res.status(400).json({ ok: false, reason: "That's your own project." });
 
-  const { data: existingRow } = await supabase
+  const { data: existingRow } = await db
     .from("project_collaborators")
     .select("id, status")
     .eq("project_id", project.id)
@@ -439,7 +439,7 @@ router.post("/api/collaborators/redeem", redeemPerUser, redeemPerIp, validate({ 
     // a code they kept; only a fresh invite from the owner brings them back.
     if (existingRow.status === "removed")
       return res.status(403).json({ ok: false, error: "removed", reason: "You were removed from this project. Ask the owner to invite you again." });
-    const { error } = await supabase
+    const { error } = await db
       .from("project_collaborators")
       .update({ status: "accepted", responded_at: new Date().toISOString() })
       .eq("id", existingRow.id);
@@ -448,7 +448,7 @@ router.post("/api/collaborators/redeem", redeemPerUser, redeemPerIp, validate({ 
       return res.status(500).json({ ok: false });
     }
   } else {
-    const { error } = await supabase.from("project_collaborators").insert({
+    const { error } = await db.from("project_collaborators").insert({
       project_id: project.id,
       user_id: session.userId,
       invited_by: project.user_id,

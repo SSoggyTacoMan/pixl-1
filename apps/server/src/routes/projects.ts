@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { addNotification } from "./notifications.js";
 import { findAllInYswsArchive } from "../ysws/archive.js";
 import { buildDoubleDip, type TeamMember } from "../ysws/doubleDip.js";
@@ -167,7 +167,7 @@ router.get("/api/projects", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data: owned, error } = await supabase
+  const { data: owned, error } = await db
     .from("projects")
     .select("*")
     .eq("user_id", session.userId)
@@ -178,7 +178,7 @@ router.get("/api/projects", async (req, res) => {
     return res.status(500).json({ ok: false });
   }
 
-  const { data: collabRows } = await supabase
+  const { data: collabRows } = await db
     .from("project_collaborators")
     .select("project_id")
     .eq("user_id", session.userId)
@@ -186,7 +186,7 @@ router.get("/api/projects", async (req, res) => {
   const collabProjectIds = (collabRows ?? []).map((r) => r.project_id as number);
   let collaborating: Record<string, unknown>[] = [];
   if (collabProjectIds.length > 0) {
-    const { data } = await supabase
+    const { data } = await db
       .from("projects")
       .select("*")
       .in("id", collabProjectIds)
@@ -203,7 +203,7 @@ router.get("/api/projects", async (req, res) => {
   const ids = projects.map((p) => p.id as number);
   const earned = new Map<number, number>();
   if (ids.length > 0) {
-    const { data: txs } = await supabase
+    const { data: txs } = await db
       .from("pixel_transactions")
       .select("project_id, amount")
       .in("project_id", ids)
@@ -217,7 +217,7 @@ router.get("/api/projects", async (req, res) => {
   const journalSeconds = new Map<number, number>();
   const ownedIds = (owned ?? []).map((p) => p.id as number);
   if (ownedIds.length > 0) {
-    const { data: jrows } = await supabase
+    const { data: jrows } = await db
       .from("project_journals")
       .select("project_id, hours")
       .in("project_id", ownedIds);
@@ -228,7 +228,7 @@ router.get("/api/projects", async (req, res) => {
       );
   }
   if (collabProjectIds.length > 0) {
-    const { data: jrows } = await supabase
+    const { data: jrows } = await db
       .from("project_journals")
       .select("project_id, hours")
       .in("project_id", collabProjectIds)
@@ -251,7 +251,7 @@ router.get("/api/projects", async (req, res) => {
     ),
   ];
   if (trialIds.length > 0) {
-    const { data: sqs } = await supabase
+    const { data: sqs } = await db
       .from("sidequests")
       .select("id, name, reward, prize_shop_item_id")
       .in("id", trialIds);
@@ -264,7 +264,7 @@ router.get("/api/projects", async (req, res) => {
     ];
     const itemName = new Map<number, string>();
     if (itemIds.length > 0) {
-      const { data: items } = await supabase.from("shop_items").select("id, name").in("id", itemIds);
+      const { data: items } = await db.from("shop_items").select("id, name").in("id", itemIds);
       for (const i of items ?? []) itemName.set(i.id as number, i.name as string);
     }
     for (const s of sqs ?? []) {
@@ -490,7 +490,7 @@ async function resolveTrialLink(
 ): Promise<{ error: string } | { id: number | null }> {
   const want = Number(wantSidequest);
   if (!Number.isFinite(want) || want <= 0) return { id: null };
-  const { data: unlock } = await supabase
+  const { data: unlock } = await db
     .from("sidequest_unlocks")
     .select("sidequest_id, sidequests!inner(active)")
     .eq("user_id", userId)
@@ -513,7 +513,7 @@ router.post("/api/projects", validate({ query: v.noQuery, body: projectBody }), 
   const trial = await resolveTrialLink(session.userId, req.body?.sidequestId);
   if ("error" in trial) return res.status(400).json({ ok: false, error: trial.error });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .insert({ user_id: session.userId, ...parsed.fields, sidequest_id: trial.id })
     .select()
@@ -542,7 +542,7 @@ router.put("/api/projects/:id", validate({ query: v.noQuery, params: params({ id
   // approved its level is what lifetimeRe() weights hours by, so a player must
   // NOT be able to re-grade an approved project (that would retroactively inflate
   // their RE). Keep the existing level on approved projects; the reviewer owns it.
-  const { data: cur } = await supabase
+  const { data: cur } = await db
     .from("projects")
     .select("status, level, sidequest_id, bom_url")
     .eq("id", id)
@@ -564,7 +564,7 @@ router.put("/api/projects/:id", validate({ query: v.noQuery, params: params({ id
     fields.sidequest_id = (cur as { sidequest_id?: number | null }).sidequest_id ?? null;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .update(fields)
     .eq("id", id)
@@ -590,7 +590,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: project, error } = await supabase
+  const { data: project, error } = await db
     .from("projects")
     .select("*")
     .eq("id", id)
@@ -605,7 +605,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   if (!shippable.includes(project.status as string) && !project.rejected_at)
     return res.status(400).json({ ok: false, error: "already_shipped" });
 
-  const { data: hcaRow, error: hcaError } = await supabase
+  const { data: hcaRow, error: hcaError } = await db
     .from("users")
     .select("hca_verification_status, hca_ysws_eligible")
     .eq("id", session.userId)
@@ -680,7 +680,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     }
   }
 
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("hackatime_token, slack_id, display_name, address_line1, address_city, address_country, address_postal")
     .eq("id", session.userId)
@@ -730,7 +730,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   // stays Hackatime-only for its floor.
   let journalSeconds = 0;
   if (isHardware) {
-    const { data: jrows } = await supabase
+    const { data: jrows } = await db
       .from("project_journals")
       .select("hours")
       .eq("project_id", id)
@@ -757,7 +757,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   // Hackatime account, filtered by the projects *they* linked) so review-time
   // crediting has up-to-date numbers per person. Purely informational , it
   // never gates whether this ship goes through.
-  const { data: collaborators } = await supabase
+  const { data: collaborators } = await db
     .from("project_collaborators")
     .select("id, user_id, hackatime_projects")
     .eq("project_id", id)
@@ -768,7 +768,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   const collaboratorTeam: TeamMember[] = [];
   if (collaborators && collaborators.length > 0) {
     const collaboratorIds = collaborators.map((c) => c.user_id as string);
-    const { data: collabUsers } = await supabase
+    const { data: collabUsers } = await db
       .from("users")
       .select("id, hackatime_token, slack_id, display_name")
       .in("id", collaboratorIds);
@@ -790,7 +790,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
           tokenFor.get(c.user_id as string) ?? null,
           collabLinked,
         );
-        await supabase
+        await db
           .from("project_collaborators")
           .update({ hackatime_seconds: collabSeconds })
           .eq("id", c.id);
@@ -825,7 +825,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   const wantSidequest = Number(project.sidequest_id);
   let sidequestId: number | null = null;
   if (Number.isFinite(wantSidequest) && wantSidequest > 0) {
-    const { data: unlock } = await supabase
+    const { data: unlock } = await db
       .from("sidequest_unlocks")
       .select("sidequest_id, sidequests!inner(active, name, min_hours)")
       .eq("user_id", session.userId)
@@ -881,7 +881,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     ownerSlackId,
   });
   if (flagDetail) {
-    const { error: flagError } = await supabase.from("mod_actions").insert({
+    const { error: flagError } = await db.from("mod_actions").insert({
       user_id: session.userId,
       action: "double_dip_flag",
       detail: flagDetail,
@@ -890,7 +890,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     if (flagError) console.error("[projects] double dip log failed", flagError);
   }
 
-  const { data, error: updateError } = await supabase
+  const { data, error: updateError } = await db
     .from("projects")
     .update({
       status: "shipped",
@@ -939,7 +939,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   // Collaborators get their own Airtable row per approval, same rule as the
   // owner's airtable_record_id above: an update ship starts fresh rows.
   if (isUpdate) {
-    const { error: collabResetError } = await supabase
+    const { error: collabResetError } = await db
       .from("project_collaborators")
       .update({ airtable_record_id: null })
       .eq("project_id", id);
@@ -981,7 +981,7 @@ router.post("/api/projects/:id/unship", validate({ query: v.noQuery, params: par
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("id, name, status")
     .eq("id", id)
@@ -991,7 +991,7 @@ router.post("/api/projects/:id/unship", validate({ query: v.noQuery, params: par
   if (project.status !== "shipped")
     return res.status(400).json({ ok: false, error: "not_in_review" });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .update({
       status: "draft",
@@ -1027,7 +1027,7 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
   if (choice !== "item" && choice !== "pixels")
     return res.status(400).json({ ok: false, error: "bad_choice" });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("id, name, status, approved_hours, sidequest_id, trial_reward_choice, trial_held_px, trial_prize_px")
     .eq("id", id)
@@ -1040,7 +1040,7 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
   // A Trial can be deleted out from under an approved ship (it has happened,
   // see [[trial-npc-link-drift]]). That must not strand the player's pixels, so
   // only the prize branch actually needs the row.
-  const { data: trial } = await supabase
+  const { data: trial } = await db
     .from("sidequests")
     .select("id, name, reward, prize_shop_item_id")
     .eq("id", project.sidequest_id as number)
@@ -1051,7 +1051,7 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
 
   // Claim the choice first. If someone else's request already took it, this
   // matches no rows and we stop before paying anything out.
-  const { data: claimed } = await supabase
+  const { data: claimed } = await db
     .from("projects")
     .update({ trial_reward_choice: choice })
     .eq("id", id)
@@ -1069,7 +1069,7 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
   const beyondPx = Math.max(heldPx - prizePx, 0);
 
   if (choice === "pixels") {
-    const { error } = await supabase.rpc("credit_project_pixels", {
+    const { error } = await db.rpc("credit_project_pixels", {
       p_user_id: session.userId,
       p_project_id: id,
       p_amount: heldPx,
@@ -1078,7 +1078,7 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
     });
     if (error) {
       console.error("[projects] trial pixels payout failed", error);
-      await supabase.from("projects").update({ trial_reward_choice: "pending" }).eq("id", id);
+      await db.from("projects").update({ trial_reward_choice: "pending" }).eq("id", id);
       return res.status(500).json({ ok: false });
     }
     void addNotification(
@@ -1100,7 +1100,7 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
   let itemId: number | null = null;
   let itemName = (trial.reward as string) || (trial.name as string);
   if (trial.prize_shop_item_id) {
-    const { data: prizeItem } = await supabase
+    const { data: prizeItem } = await db
       .from("shop_items")
       .select("id, name")
       .eq("id", trial.prize_shop_item_id)
@@ -1110,7 +1110,7 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
       itemName = prizeItem.name as string;
     }
   }
-  const { data: order, error: orderError } = await supabase
+  const { data: order, error: orderError } = await db
     .from("shop_orders")
     .insert({
       user_id: session.userId,
@@ -1124,13 +1124,13 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
     .single();
   if (orderError || !order) {
     console.error("[projects] trial prize order failed", orderError);
-    await supabase.from("projects").update({ trial_reward_choice: "pending" }).eq("id", id);
+    await db.from("projects").update({ trial_reward_choice: "pending" }).eq("id", id);
     return res.status(500).json({ ok: false });
   }
-  await supabase.from("projects").update({ trial_prize_order_id: order.id }).eq("id", id);
+  await db.from("projects").update({ trial_prize_order_id: order.id }).eq("id", id);
   // Keeping the prize still pays out the pixels for hours past the minimum.
   if (beyondPx > 0) {
-    const { error: pxError } = await supabase.rpc("credit_project_pixels", {
+    const { error: pxError } = await db.rpc("credit_project_pixels", {
       p_user_id: session.userId,
       p_project_id: id,
       p_amount: beyondPx,
@@ -1153,7 +1153,7 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
 // only , journal and timeline reads/writes are gated on this; edit/ship/
 // unship/delete stay owner-only via their own direct .eq("user_id", ...)).
 async function canAccessProject(userId: string, projectId: number): Promise<boolean> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .select("id")
     .eq("id", projectId)
@@ -1165,7 +1165,7 @@ async function canAccessProject(userId: string, projectId: number): Promise<bool
   }
   if (data !== null) return true;
 
-  const { data: collab } = await supabase
+  const { data: collab } = await db
     .from("project_collaborators")
     .select("id")
     .eq("project_id", projectId)
@@ -1186,7 +1186,7 @@ router.get("/api/projects/:id/journal", async (req, res) => {
   if (!(await canAccessProject(session.userId, id)))
     return res.status(404).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_journals")
     .select("*")
     .eq("project_id", id)
@@ -1212,7 +1212,7 @@ router.get("/api/projects/:id/hours", async (req, res) => {
   if (!(await canAccessProject(session.userId, id)))
     return res.status(404).json({ ok: false });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("user_id, hackatime_projects, hours_extended_since, status, shipped_at")
     .eq("id", id)
@@ -1229,10 +1229,10 @@ router.get("/api/projects/:id/hours", async (req, res) => {
   let linked: string[];
   let hackatimeSlackId: string | null;
   let hackatimeToken: string | null;
-  let journalQuery = supabase.from("project_journals").select("hours").eq("project_id", id);
+  let journalQuery = db.from("project_journals").select("hours").eq("project_id", id);
 
   if (isOwner) {
-    const { data: owner } = await supabase
+    const { data: owner } = await db
       .from("users")
       .select("hackatime_token, slack_id")
       .eq("id", project.user_id as string)
@@ -1242,14 +1242,14 @@ router.get("/api/projects/:id/hours", async (req, res) => {
     hackatimeToken = (owner as { hackatime_token?: string } | null)?.hackatime_token ?? null;
   } else {
     const [{ data: collab }, { data: viewer }] = await Promise.all([
-      supabase
+      db
         .from("project_collaborators")
         .select("hackatime_projects")
         .eq("project_id", id)
         .eq("user_id", session.userId)
         .eq("status", "accepted")
         .maybeSingle(),
-      supabase.from("users").select("hackatime_token, slack_id").eq("id", session.userId).single(),
+      db.from("users").select("hackatime_token, slack_id").eq("id", session.userId).single(),
     ]);
     linked = (collab?.hackatime_projects as string[]) ?? [];
     hackatimeSlackId = (viewer as { slack_id?: string } | null)?.slack_id ?? null;
@@ -1298,14 +1298,14 @@ router.get("/api/projects/:id/timeline", async (req, res) => {
     return res.status(404).json({ ok: false });
 
   const [{ data: proj }, { data: audits }] = await Promise.all([
-    supabase
+    db
       .from("projects")
       .select(
         "created_at, shipped_at, status, first_pass_verdict, banned_at, robert_project_id, robert_submitted_at, robert_reviewed_at",
       )
       .eq("id", id)
       .single(),
-    supabase
+    db
       .from("review_audits")
       .select("verdict, note, claimed_hours, approved_hours, created_at")
       .eq("project_id", id)
@@ -1363,7 +1363,7 @@ router.get("/api/projects/:id/timeline", async (req, res) => {
 // moment a project is in review (same set as IN_REVIEW in operations/domain.ts)
 // and open back up on needs_changes/approved/draft.
 async function journalLockedForReview(projectId: number): Promise<boolean> {
-  const { data } = await supabase
+  const { data } = await db
     .from("projects")
     .select("status")
     .eq("id", projectId)
@@ -1422,7 +1422,7 @@ router.post("/api/projects/:id/journal", validate({ query: v.noQuery, params: pa
       .status(400)
       .json({ ok: false, error: "journal_images_required", need: imagesNeed, have: imagesHave, hours });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_journals")
     .insert({ project_id: id, user_id: session.userId, content, hours, title })
     .select()
@@ -1470,7 +1470,7 @@ router.patch("/api/projects/:id/journal/:entryId", validate({ query: v.noQuery, 
       .status(400)
       .json({ ok: false, error: "journal_images_required", need: imagesNeed, have: imagesHave, hours });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_journals")
     .update({ content, hours, title, edited_at: new Date().toISOString() })
     .eq("id", entryId)
@@ -1498,7 +1498,7 @@ router.delete("/api/projects/:id/journal/:entryId", validate({ query: v.noQuery,
   if (await journalLockedForReview(id))
     return res.status(409).json({ ok: false, error: "project_in_review" });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("project_journals")
     .delete()
     .eq("id", entryId)
@@ -1519,7 +1519,7 @@ router.delete("/api/projects/:id", validate({ query: v.noQuery, params: params({
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("projects")
     .delete()
     .eq("id", id)

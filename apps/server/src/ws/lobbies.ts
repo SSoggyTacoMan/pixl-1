@@ -1,5 +1,5 @@
 import { createHash, randomInt, timingSafeEqual } from "node:crypto";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { censorChat, containsBlocked } from "../moderation.js";
 
 export interface Lobby {
@@ -59,7 +59,7 @@ export function lobbyScene(id: string): string {
 }
 
 export async function loadLobbies() {
-  const { data, error } = await supabase.from("lobbies").select("*");
+  const { data, error } = await db.from("lobbies").select("*");
   if (error) {
     console.error("Failed to load lobbies (is the lobbies table migrated?)", error);
     return;
@@ -90,7 +90,7 @@ export async function loadLobbies() {
 
   // Fold permanent unlocks into each lobby so the owner's picker knows what's
   // already bought without a per-lobby round trip.
-  const { data: upgrades, error: upgradeError } = await supabase
+  const { data: upgrades, error: upgradeError } = await db
     .from("village_upgrades")
     .select("lobby_id, upgrade_key");
   if (upgradeError) {
@@ -105,7 +105,7 @@ export async function loadLobbies() {
 
 function persistLobby(l: Lobby) {
   if (!l.ownerId) return;
-  void supabase
+  void db
     .from("lobbies")
     .upsert({
       id: l.id,
@@ -218,7 +218,7 @@ export function setLobbyTheme(l: Lobby, theme: string): boolean {
 
 export function deleteLobby(id: string) {
   if (!lobbies.delete(id)) return;
-  void supabase
+  void db
     .from("lobbies")
     .delete()
     .eq("id", id)

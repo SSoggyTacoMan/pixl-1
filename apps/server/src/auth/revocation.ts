@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { sql } from "../db/pgCompat.js";
 import { verifySessionToken, type SessionClient } from "./session.js";
 import { bearerToken } from "../http/bearer.js";
@@ -78,7 +78,7 @@ export async function selectRevocation<T>(query: ColumnQuery<T>): Promise<{ data
 
 export async function lookupSessionRevokedAt(userId: string, client: SessionClient): Promise<RevocationLookup> {
   const { data, error } = await selectRevocation((columns) =>
-    supabase.from("users").select(columns).eq("id", userId).maybeSingle(),
+    db.from("users").select(columns).eq("id", userId).maybeSingle(),
   );
   if (error) {
     console.error("Failed to check session revocation", error.message);

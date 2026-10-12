@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import crypto from "crypto";
 import { z } from "zod";
-import { supabase, type UserRow } from "../db/client.js";
+import { db, type UserRow } from "../db/client.js";
 import type { PgError } from "../db/pgCompat.js";
 import { issueSessionToken, type SessionClient } from "../auth/session.js";
 import { forgetCachedRevocation, revokeUserSessions } from "../auth/revocation.js";
@@ -47,7 +47,7 @@ function isOauthIdentityRace(error: PgError | null | undefined): boolean {
 async function saveSlackAvatar(userId: string, slackId: string): Promise<void> {
   const url = await fetchSlackAvatar(slackId);
   if (!url) return;
-  const { error } = await supabase.from("users").update({ avatar_url: url }).eq("id", userId);
+  const { error } = await db.from("users").update({ avatar_url: url }).eq("id", userId);
   if (error) console.error("Failed to save slack avatar", error.message);
 }
 
@@ -233,7 +233,7 @@ function retryLoginUrl(pending: PendingLogin): string {
 }
 
 async function persistHcaState(userId: string, patch: HcaStateRow): Promise<boolean> {
-  const { error } = await supabase.from("users").update(patch).eq("id", userId);
+  const { error } = await db.from("users").update(patch).eq("id", userId);
   if (error) {
     console.error("Failed to persist HCA state", userId, error.message);
     return false;
@@ -520,7 +520,7 @@ router.get(
       const unsaved = () =>
         res.status(503).set("Retry-After", "5").send(unsavedStatePage(back, "Back to Pixl"));
       if (!pending.userId) return res.status(400).send("Invalid OAuth state");
-      const { data: row, error: rowError } = await supabase
+      const { data: row, error: rowError } = await db
         .from("users")
         .select("id, oauth_provider, oauth_id, hca_verification_status, hca_ysws_eligible")
         .eq("id", pending.userId)
@@ -556,7 +556,7 @@ router.get(
 
     if (pending.purpose === "verify_legal_name") {
       if (!pending.userId) return res.status(400).send("Invalid OAuth state");
-      const { data: row, error: rowError } = await supabase
+      const { data: row, error: rowError } = await db
         .from("users")
         .select("id, oauth_provider, oauth_id")
         .eq("id", pending.userId)
@@ -584,7 +584,7 @@ router.get(
       }
       let saved = false;
       if (identity.legal_first_name || identity.legal_last_name) {
-        const { error: legalErr } = await supabase
+        const { error: legalErr } = await db
           .from("users")
           .update({
             legal_first_name: identity.legal_first_name ?? null,
@@ -599,7 +599,7 @@ router.get(
 
     if (pending.purpose === "verify_address") {
       if (!pending.userId) return res.status(400).send("Invalid OAuth state");
-      const { data: row, error: rowError } = await supabase
+      const { data: row, error: rowError } = await db
         .from("users")
         .select("id, oauth_provider, oauth_id")
         .eq("id", pending.userId)
@@ -628,7 +628,7 @@ router.get(
       }
       const addr = extractAddress(identity);
       if (addr) {
-        const { error: addrErr } = await supabase
+        const { error: addrErr } = await db
           .from("users")
           .update({
             address_line1: encryptPII(addr.address_line1),
@@ -681,7 +681,7 @@ router.get(
     // initial name from HCA/Slack must pass the same check or it never would.
     const displayNameFromHca = nameProblem(candidateName) ? fallbackName : candidateName;
 
-    const { data: existingUsers, error: lookupError } = await supabase
+    const { data: existingUsers, error: lookupError } = await db
       .from("users")
       .select("*")
       .eq("oauth_provider", "hackclub")
@@ -689,7 +689,7 @@ router.get(
       .limit(1);
 
     if (lookupError) {
-      console.error("Supabase lookup failed", lookupError);
+      console.error("User lookup failed", lookupError);
       loginFailed(req, "db_error");
       return res.status(500).send("Database error");
     }
@@ -734,7 +734,7 @@ router.get(
         patch.address_postal = encryptPII(hcaAddress.address_postal);
       }
       if (Object.keys(patch).length > 0) {
-        void supabase
+        void db
           .from("users")
           .update(patch)
           .eq("id", userId)
@@ -758,7 +758,7 @@ router.get(
           );
       }
 
-      const { data: created, error: insertError } = await supabase
+      const { data: created, error: insertError } = await db
         .from("users")
         .insert({
           oauth_provider: "hackclub",
@@ -792,7 +792,7 @@ router.get(
         // the DB constraint is the actual guard. The loser just re-fetches the
         // row the winner created and logs into that account instead of erroring.
         if (isOauthIdentityRace(insertError)) {
-          const { data: racedUser, error: racedLookupError } = await supabase
+          const { data: racedUser, error: racedLookupError } = await db
             .from("users")
             .select("*")
             .eq("oauth_provider", "hackclub")
@@ -808,7 +808,7 @@ router.get(
           displayName = row.display_name;
           needsLegalName = needsLegalNameFor(row, fullName || row.real_name || "");
         } else {
-          console.error("Supabase insert failed", insertError);
+          console.error("User insert failed", insertError);
           loginFailed(req, "db_error");
           return res.status(500).send("Database error");
         }
@@ -820,7 +820,7 @@ router.get(
         needsLegalName = needsLegalNameFor({}, fullName);
         if (identity.slack_id) void saveSlackAvatar(userId, identity.slack_id);
 
-        const { error: stateError } = await supabase
+        const { error: stateError } = await db
           .from("player_state")
           .insert({ user_id: userId });
 

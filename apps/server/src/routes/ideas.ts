@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { withLock } from "../db/advisoryLock.js";
 import { containsBlocked } from "../moderation.js";
 import { allowedImageUrl } from "../http/imageUrls.js";
@@ -20,8 +20,8 @@ async function voteInfo(ideaIds: number[], viewerId: string) {
   const myDown = new Set<number>();
   if (ideaIds.length > 0) {
     const [{ data: ups }, { data: downs }] = await Promise.all([
-      supabase.from("idea_upvotes").select("idea_id, voter_id").in("idea_id", ideaIds),
-      supabase.from("idea_downvotes").select("idea_id, voter_id").in("idea_id", ideaIds),
+      db.from("idea_upvotes").select("idea_id, voter_id").in("idea_id", ideaIds),
+      db.from("idea_downvotes").select("idea_id, voter_id").in("idea_id", ideaIds),
     ]);
     for (const u of ups ?? []) {
       const id = u.idea_id as number;
@@ -44,7 +44,7 @@ router.get("/api/ideas", async (req, res) => {
 
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const sort = req.query.sort === "top" ? "top" : "new";
-  let query = supabase
+  let query = db
     .from("ideas")
     .select("*")
     .is("banned_at", null)
@@ -60,7 +60,7 @@ router.get("/api/ideas", async (req, res) => {
   const uids = [...new Set((ideas ?? []).map((i) => i.user_id as string))];
   const names = new Map<string, string>();
   if (uids.length > 0) {
-    const { data: users } = await supabase.from("users").select("id, display_name").in("id", uids);
+    const { data: users } = await db.from("users").select("id, display_name").in("id", uids);
     for (const u of users ?? []) names.set(u.id as string, u.display_name as string);
   }
 
@@ -106,7 +106,7 @@ router.post("/api/ideas", validate({ query: v.noQuery, body: z.object({ title: o
   const imageUrl = rawImage ? allowedImageUrl(rawImage) : null;
   if (rawImage && !imageUrl) return res.status(400).json({ ok: false, error: "invalid_image_url" });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("ideas")
     .insert({
       user_id: session.userId,
@@ -134,7 +134,7 @@ router.delete("/api/ideas/:id", validate({ query: v.noQuery, params: params({ id
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("ideas")
     .delete()
     .eq("id", id)
@@ -155,7 +155,7 @@ router.post("/api/ideas/:id/upvote", validate({ query: v.noQuery, params: params
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
 
-  const { data: idea } = await supabase
+  const { data: idea } = await db
     .from("ideas")
     .select("id, user_id")
     .eq("id", id)
@@ -193,7 +193,7 @@ router.post("/api/ideas/:id/downvote", validate({ query: v.noQuery, params: para
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
 
-  const { data: idea } = await supabase
+  const { data: idea } = await db
     .from("ideas")
     .select("id, user_id")
     .eq("id", id)
@@ -230,7 +230,7 @@ router.post("/api/ideas/:id/apply", validate({ query: v.noQuery, params: params(
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
 
-  const { data: idea } = await supabase
+  const { data: idea } = await db
     .from("ideas")
     .select("id, user_id, title, is_collab")
     .eq("id", id)

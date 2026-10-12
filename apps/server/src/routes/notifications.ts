@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { validate, v } from "../http/validate.js";
 
 const router = Router();
@@ -12,7 +12,7 @@ export async function addNotification(
   title: string,
   body: string,
 ): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from("notifications")
     .insert({ user_id: userId, title, body });
   if (error) console.error("[notifications] insert failed", error);
@@ -36,7 +36,7 @@ router.post("/api/admin/notifications", validate({ query: v.noQuery, body: admin
 
   const userId = typeof req.body?.userId === "string" ? req.body.userId : "";
   if (userId) {
-    const { error } = await supabase
+    const { error } = await db
       .from("notifications")
       .insert({ user_id: userId, title, body });
     if (error) {
@@ -46,7 +46,7 @@ router.post("/api/admin/notifications", validate({ query: v.noQuery, body: admin
     return res.json({ ok: true, sent: 1 });
   }
 
-  const { data, error } = await supabase.from("users").select("id");
+  const { data, error } = await db.from("users").select("id");
   if (error) {
     console.error("[notifications] admin user list failed", error);
     return res.status(500).json({ ok: false });
@@ -57,7 +57,7 @@ router.post("/api/admin/notifications", validate({ query: v.noQuery, body: admin
     body,
   }));
   for (let i = 0; i < rows.length; i += 500) {
-    const { error: insertError } = await supabase
+    const { error: insertError } = await db
       .from("notifications")
       .insert(rows.slice(i, i + 500));
     if (insertError) {
@@ -72,7 +72,7 @@ router.get("/api/notifications", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("notifications")
     .select("*")
     .eq("user_id", session.userId)
@@ -91,7 +91,7 @@ router.post("/api/notifications/read", validate({ query: v.noQuery, body: v.empt
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("notifications")
     .update({ read: true })
     .eq("user_id", session.userId)

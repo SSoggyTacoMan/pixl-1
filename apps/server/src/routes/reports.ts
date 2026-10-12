@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { runReportAnalysis, postReportToSlack } from "../reports.js";
 import { z } from "zod";
 import { validate, v, optStr, optBool } from "../http/validate.js";
@@ -21,7 +21,7 @@ router.post("/api/reports", validate({ query: v.noQuery, body: z.object({ target
   if (!targetId || targetId === session.userId)
     return res.status(400).json({ ok: false, error: "bad_target" });
 
-  const { data: target } = await supabase
+  const { data: target } = await db
     .from("users")
     .select("id, display_name")
     .eq("id", targetId)
@@ -29,7 +29,7 @@ router.post("/api/reports", validate({ query: v.noQuery, body: z.object({ target
   if (!target) return res.status(404).json({ ok: false, error: "no_target" });
 
   const since = new Date(Date.now() - 3600_000).toISOString();
-  const { count } = await supabase
+  const { count } = await db
     .from("reports")
     .select("id", { count: "exact", head: true })
     .eq("reporter_id", session.userId)
@@ -37,7 +37,7 @@ router.post("/api/reports", validate({ query: v.noQuery, body: z.object({ target
   if ((count ?? 0) >= 5)
     return res.status(429).json({ ok: false, error: "rate_limited" });
 
-  const { data: inserted, error } = await supabase
+  const { data: inserted, error } = await db
     .from("reports")
     .insert({
       reporter_id: session.userId,
@@ -74,7 +74,7 @@ router.get("/api/reports/mine", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data } = await supabase
+  const { data } = await db
     .from("reports")
     .select("id, target_id, reason, status, anonymous, created_at")
     .eq("reporter_id", session.userId)
@@ -84,7 +84,7 @@ router.get("/api/reports/mine", async (req, res) => {
   const ids = [...new Set(rows.map((r) => r.target_id as string))];
   const names = new Map<string, string>();
   if (ids.length) {
-    const { data: users } = await supabase
+    const { data: users } = await db
       .from("users")
       .select("id, display_name")
       .in("id", ids);
@@ -108,7 +108,7 @@ router.get("/api/reports/players", async (req, res) => {
     .replace(/[,()%*\\]/g, " ")
     .trim();
   if (q.length < 2) return res.json({ ok: true, players: [] });
-  const { data } = await supabase
+  const { data } = await db
     .from("users")
     .select("id, display_name")
     .ilike("display_name", `%${q}%`)

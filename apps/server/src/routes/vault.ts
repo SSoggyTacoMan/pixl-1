@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { communityEnergy, pendingCommunityEnergy, topChapterContributors } from "../xp.js";
 import { addNotification } from "./notifications.js";
 
@@ -34,7 +34,7 @@ async function settleChapterAward(level: VaultLevelRow, windowStart: Date | null
   const totalReward = level.top1_re + level.top2_re + level.top3_re;
   if (totalReward <= 0) {
     // Nothing to award, but still mark the chapter closed so its window ends.
-    await supabase
+    await db
       .from("vault_levels")
       .update({ unlocked_at: new Date().toISOString() })
       .eq("id", level.id)
@@ -47,7 +47,7 @@ async function settleChapterAward(level: VaultLevelRow, windowStart: Date | null
 
   // Claim the level first (only if still unclaimed) so two concurrent
   // requests can't both compute a leaderboard and try to award it twice.
-  const { data: claimed } = await supabase
+  const { data: claimed } = await db
     .from("vault_levels")
     .update({ unlocked_at: new Date().toISOString() })
     .eq("id", level.id)
@@ -60,7 +60,7 @@ async function settleChapterAward(level: VaultLevelRow, windowStart: Date | null
     const { userId } = top[i];
     const reAwarded = rewardByRank[i];
     if (!reAwarded) continue;
-    const { error } = await supabase.from("vault_chapter_awards").insert({
+    const { error } = await db.from("vault_chapter_awards").insert({
       vault_level_id: level.id,
       user_id: userId,
       award_rank: i + 1,
@@ -81,7 +81,7 @@ async function settleChapterAward(level: VaultLevelRow, windowStart: Date | null
 async function displayInfoFor(userIds: string[]): Promise<Map<string, { displayName: string; avatarUrl: string | null }>> {
   const out = new Map<string, { displayName: string; avatarUrl: string | null }>();
   if (userIds.length === 0) return out;
-  const { data } = await supabase
+  const { data } = await db
     .from("users")
     .select("id, display_name, avatar_url")
     .in("id", userIds);
@@ -104,7 +104,7 @@ router.get("/api/vault", async (req, res) => {
   const [energy, pendingEnergy, { data: rows }] = await Promise.all([
     communityEnergy(),
     pendingCommunityEnergy(),
-    supabase
+    db
       .from("vault_levels")
       .select("id, level, energy_required, title, blurb, rewards, position, unlocked_at, top1_re, top2_re, top3_re")
       .eq("active", true)
@@ -130,7 +130,7 @@ router.get("/api/vault", async (req, res) => {
 
   const winnerIds = rawLevels.filter((l) => l.unlocked_at).map((l) => l.id);
   const { data: allAwards } = winnerIds.length
-    ? await supabase
+    ? await db
         .from("vault_chapter_awards")
         .select("vault_level_id, user_id, award_rank, re_awarded")
         .in("vault_level_id", winnerIds)

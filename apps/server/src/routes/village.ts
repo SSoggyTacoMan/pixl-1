@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { addNotification } from "./notifications.js";
 import { presenceFor, sendToUser } from "../ws/gameServer.js";
 import { areFriends } from "../social.js";
@@ -21,7 +21,7 @@ interface InviteRow {
 }
 
 async function nameFor(userId: string): Promise<string> {
-  const { data } = await supabase
+  const { data } = await db
     .from("users")
     .select("display_name")
     .eq("id", userId)
@@ -63,7 +63,7 @@ router.post("/api/village/invite", validate({ query: v.noQuery, body: z.object({
     return res.json({ ok: true, status: "already_here" });
 
   // Collapse repeat clicks: reuse a live pending invite to the same village.
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("village_invites")
     .select("id")
     .eq("lobby_id", lobby.id)
@@ -74,7 +74,7 @@ router.post("/api/village/invite", validate({ query: v.noQuery, body: z.object({
   if ((existing ?? []).length > 0)
     return res.json({ ok: true, status: "pending" });
 
-  const { data: inserted, error } = await supabase
+  const { data: inserted, error } = await db
     .from("village_invites")
     .insert({
       lobby_id: lobby.id,
@@ -112,7 +112,7 @@ router.get("/api/village/invites", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("village_invites")
     .select("*")
     .eq("to_user_id", session.userId)
@@ -149,7 +149,7 @@ router.post("/api/village/invite/decline", validate({ query: v.noQuery, body: z.
   if (!inviteId)
     return res.status(400).json({ ok: false, reason: "Invalid invite." });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("village_invites")
     .update({ status: "declined" })
     .eq("id", inviteId)

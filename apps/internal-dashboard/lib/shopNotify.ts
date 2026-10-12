@@ -4,14 +4,14 @@ import { callPixo } from "@/lib/pixoCall";
 // Shop-change notifications for pixorpheus (the Slack bot).
 //
 // The original design was a Postgres trigger calling pg_net (migration 0103),
-// which only works on Supabase, pg_net is a Supabase extension and is not
+// which needs the pg_net extension. pg_net is not
 // available (nor installable) on the CNPG cluster the stack runs on now, so on
 // CNPG the trigger silently skips itself. So the POST is made here, from the
 // app, right after a successful shop_items write. That works regardless of the
 // database behind `db`.
 //
-// The payload deliberately keeps the exact shape a Supabase Database Webhook
-// would send, so pixorpheus' /webhooks/shop handler needs no changes.
+// The payload deliberately keeps the exact shape that trigger would have
+// sent, so pixorpheus' /webhooks/shop handler needs no changes.
 
 export interface ShopRowSnapshot {
   id: number;

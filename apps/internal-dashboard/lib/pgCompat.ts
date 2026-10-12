@@ -1,7 +1,7 @@
-// A postgres.js-backed stand-in for the slice of the supabase-js query builder
-// this codebase uses, so the ~400 existing `.from(...).select(...).eq(...)`
-// call sites keep working while the data lives in Orchard Postgres instead of
-// Supabase. It is deliberately not a general PostgREST implementation:
+// A postgres.js-backed query builder covering the slice of the chained
+// `.from(...).select(...).eq(...)` API this codebase uses, so the ~400
+// existing call sites run straight against Orchard Postgres. It is
+// deliberately not a general PostgREST implementation:
 // embedded relation selects ("users(display_name)") are not supported and are
 // written as explicit joins at the call site instead.
 //
@@ -38,7 +38,7 @@ export const sql: ReturnType<typeof postgres> = new Proxy(
   },
 );
 
-// Mirrors the shape of a supabase-js error closely enough for the call sites
+// A PostgREST-style error object, shaped closely enough for the call sites
 // that branch on it. `code` is the Postgres SQLSTATE (e.g. "23505" for a
 // unique violation), which several routes use to turn a duplicate insert into
 // a friendly response instead of a 500.
@@ -56,7 +56,7 @@ export interface PgResult<T> {
 }
 
 // .single()/.maybeSingle() resolve to one row rather than an array. Splitting
-// the type keeps call sites contextually typed the way supabase-js typed them:
+// the type keeps call sites contextually typed per result shape:
 // `data.map(r => ...)` on a list, `data.some_column` on a single row.
 export interface SingleQuery<T> extends PromiseLike<PgResult<T>> {}
 
@@ -494,7 +494,7 @@ export const db = {
         params as never[],
       )) as unknown as Record<string, unknown>[];
       // A scalar-returning function comes back as [{ fn_name: value }];
-      // unwrap it so callers see the value supabase-js would have given them.
+      // unwrap it so callers see the bare value, as a PostgREST RPC would return it.
       if (rows.length === 1 && Object.keys(rows[0]).length === 1) {
         return { data: Object.values(rows[0])[0] as T, error: null };
       }

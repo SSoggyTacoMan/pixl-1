@@ -15,7 +15,7 @@ import { requestIpKey } from "../clientIp.js";
 import { censorChat, lookupActiveBan, recordChatViolation } from "../moderation.js";
 import { areFriends } from "../social.js";
 import { getPixoChatReply } from "../pixoChat.js";
-import { supabase, type PlayerStateRow } from "../db/client.js";
+import { db, type PlayerStateRow } from "../db/client.js";
 import { orValue } from "../db/pgCompat.js";
 import {
   type Lobby,
@@ -274,7 +274,7 @@ function snapshotForScene(scene: string, exceptUserId?: string) {
 // Position is now stored per (user, scene), so saving upserts the row for the
 // player's *current* scene rather than overwriting a single global position.
 async function persist(p: ConnectedPlayer) {
-  const { error } = await supabase
+  const { error } = await db
     .from("player_state")
     .upsert(
       {
@@ -297,7 +297,7 @@ async function loadSceneState(
   userId: string,
   scene: string,
 ): Promise<PlayerStateRow | null> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("player_state")
     .select("*")
     .eq("user_id", userId)
@@ -329,7 +329,7 @@ function sendLobbyTheme(p: ConnectedPlayer) {
 // Sends the player their saved NPC positions for a scene so the client can
 // place villagers where they last left them (empty list on a first visit).
 async function sendNpcInit(p: ConnectedPlayer, scene: string) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("npc_state")
     .select("npc_id,pos_x,pos_y")
     .eq("user_id", p.userId)
@@ -374,7 +374,7 @@ async function persistNpcs(
   }
   if (rows.length === 0) return;
 
-  const { error } = await supabase
+  const { error } = await db
     .from("npc_state")
     .upsert(rows, { onConflict: "user_id,scene,npc_id" });
   if (error) console.error("Failed to persist npc_state", error);
@@ -480,7 +480,7 @@ export async function sweepRevokedSessions() {
   if (players.size === 0) return;
   const ids = [...players.keys()];
   const { data, error } = await selectRevocation((columns) =>
-    supabase.from("users").select(`id, ${columns}`).in("id", ids),
+    db.from("users").select(`id, ${columns}`).in("id", ids),
   );
   if (error) {
     console.error("Failed to sweep revoked sessions", error.message);
@@ -496,7 +496,7 @@ export async function sweepRevokedSessions() {
 // players who are banned while already connected.
 async function sweepBans() {
   if (players.size === 0) return;
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("bans")
     .select("user_id, expires_at")
     .in("user_id", [...players.keys()])
@@ -703,7 +703,7 @@ export function attachWebSocketServer(httpServer: Server) {
       );
 
       // Default to the player's most recently active scene/position.
-      const { data: stateRows, error } = await supabase
+      const { data: stateRows, error } = await db
         .from("player_state")
         .select("*")
         .eq("user_id", session.userId)
@@ -715,7 +715,7 @@ export function attachWebSocketServer(httpServer: Server) {
       const state = (stateRows && stateRows[0]) as PlayerStateRow | undefined;
 
       // Pull the player's chosen skin descriptor (defaults handled by the DB).
-      const { data: userRow } = await supabase
+      const { data: userRow } = await db
         .from("users")
         .select("skin")
         .eq("id", session.userId)
@@ -738,7 +738,7 @@ export function attachWebSocketServer(httpServer: Server) {
         }
       }
 
-      const { data: blockRows } = await supabase
+      const { data: blockRows } = await db
         .from("blocks")
         .select("blocked_id")
         .eq("blocker_id", session.userId);
@@ -1051,7 +1051,7 @@ export function attachWebSocketServer(httpServer: Server) {
 
         // Persist the choice, then tell everyone in the scene (the sender
         // included) so all clients re-skin this player.
-        void supabase
+        void db
           .from("users")
           .update({ skin })
           .eq("id", player.userId)
@@ -1113,7 +1113,7 @@ export function attachWebSocketServer(httpServer: Server) {
         if (text !== raw.slice(0, 200)) void punishChat(player, ws, raw.slice(0, 200));
         if (!text) return;
 
-        void supabase
+        void db
           .from("chat_messages")
           .insert({
             user_id: player.userId,
@@ -1201,7 +1201,7 @@ export function attachWebSocketServer(httpServer: Server) {
         const blocking = msg.type === "block";
         void (async () => {
           if (blocking) {
-            await supabase
+            await db
               .from("blocks")
               .upsert(
                 { blocker_id: self.userId, blocked_id: targetId },
@@ -1209,7 +1209,7 @@ export function attachWebSocketServer(httpServer: Server) {
               );
             self.blocked.add(targetId);
           } else {
-            await supabase
+            await db
               .from("blocks")
               .delete()
               .eq("blocker_id", self.userId)
@@ -1259,7 +1259,7 @@ export function attachWebSocketServer(httpServer: Server) {
               ws.send(JSON.stringify({ type: "lobby_denied", reason }));
           };
           if (!inviteId) return deny("That invite is no longer valid.");
-          const { data, error } = await supabase
+          const { data, error } = await db
             .from("village_invites")
             .select("*")
             .eq("id", inviteId)
@@ -1286,7 +1286,7 @@ export function attachWebSocketServer(httpServer: Server) {
           if (!lobby) return deny("That village no longer exists.");
           if (lobbyMemberCount(lobby.id, asking.userId) >= lobby.capacity)
             return deny("That village is full.");
-          const { error: updateError } = await supabase
+          const { error: updateError } = await db
             .from("village_invites")
             .update({ status: "accepted" })
             .eq("id", inviteId)
@@ -1444,7 +1444,7 @@ export function attachWebSocketServer(httpServer: Server) {
             return;
           }
           void (async () => {
-            const { data, error } = await supabase.rpc("buy_village_theme", {
+            const { data, error } = await db.rpc("buy_village_theme", {
               p_user_id: player.userId,
               p_lobby_id: lobby.id,
               p_theme: theme,

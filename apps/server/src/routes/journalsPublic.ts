@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { timingSafeEqual } from "node:crypto";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { rateLimit } from "../rateLimit.js";
 
 const router = Router();
@@ -31,7 +31,7 @@ router.get("/api/journals/public/:projectId/:token", journalsLimiter, async (req
   const token = String(req.params.token ?? "");
   if (!Number.isFinite(projectId) || !token) return res.status(404).json({ ok: false });
 
-  const { data: project, error: projectError } = await supabase
+  const { data: project, error: projectError } = await db
     .from("projects")
     .select("id, name, journal_share_token")
     .eq("id", projectId)
@@ -46,7 +46,7 @@ router.get("/api/journals/public/:projectId/:token", journalsLimiter, async (req
   if (!project?.journal_share_token || !safeTokenEquals(project.journal_share_token as string, token))
     return res.status(404).json({ ok: false });
 
-  const { data: journals, error: journalsError } = await supabase
+  const { data: journals, error: journalsError } = await db
     .from("project_journals")
     .select("id, title, content, hours, approved_hours, created_at, user_id")
     .eq("project_id", projectId)
@@ -59,7 +59,7 @@ router.get("/api/journals/public/:projectId/:token", journalsLimiter, async (req
   const userIds = [...new Set((journals ?? []).map((j) => j.user_id as string))];
   const contributorNames = new Map<string, string>();
   if (userIds.length > 0) {
-    const { data: users } = await supabase
+    const { data: users } = await db
       .from("users")
       .select("id, display_name")
       .in("id", userIds);

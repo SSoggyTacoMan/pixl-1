@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { orValue } from "../db/pgCompat.js";
 import { activeEvents } from "../events.js";
 import { levelFor } from "../xp.js";
@@ -73,7 +73,7 @@ export function regionForCountry(country: string): string {
 }
 
 async function regionFor(userId: string): Promise<string> {
-  const { data } = await supabase
+  const { data } = await db
     .from("users")
     .select("region, region_auto, address_country")
     .eq("id", userId)
@@ -168,7 +168,7 @@ export function scopePersonalItems<T extends Record<string, unknown>>(
 // XP requirement regardless of region , never scope them to a region.
 async function fetchItems(filterIds?: number[], region?: string) {
   const build = (cols: string, withRegion: boolean) => {
-    let q = supabase.from("shop_items").select(cols);
+    let q = db.from("shop_items").select(cols);
     if (filterIds) q = q.in("id", filterIds);
     else q = q.eq("active", true);
     // A personal item (reserved_user_id) is not tied to a region, it is
@@ -204,7 +204,7 @@ async function fetchItems(filterIds?: number[], region?: string) {
 async function attachStock(items: Record<string, unknown>[]): Promise<void> {
   const ids = items.map((i) => Number(i.id)).filter((id) => Number.isFinite(id));
   if (!ids.length) return;
-  const { data } = await supabase
+  const { data } = await db
     .from("shop_option_stock")
     .select("item_id, choice, total, remaining")
     .in("item_id", ids);
@@ -230,7 +230,7 @@ async function attachStock(items: Record<string, unknown>[]): Promise<void> {
 // exist, and a shop that won't load is a far worse outcome than a shop with no
 // buyer counts. Same spirit as ITEM_COLUMNS_FALLBACK above.
 async function attachBuyerCounts(items: Record<string, unknown>[]): Promise<void> {
-  const { data, error } = await supabase.rpc("shop_item_buyer_counts");
+  const { data, error } = await db.rpc("shop_item_buyer_counts");
   const byItem = new Map<number, number>();
   if (error) {
     console.error("[shop] buyer counts failed", error);
@@ -302,14 +302,14 @@ export function approvedTrialIds(
 }
 
 export async function unlockedTrialIds(userId: string): Promise<Set<number>> {
-  const { data: projects, error } = await supabase
+  const { data: projects, error } = await db
     .from("projects")
     .select("id, sidequest_id, status, banned_at")
     .eq("user_id", userId)
     .not("sidequest_id", "is", null);
   if (error || !projects || projects.length === 0) return new Set();
   const ids = projects.map((p) => Number((p as { id: unknown }).id));
-  const { data: approvals, error: txError } = await supabase
+  const { data: approvals, error: txError } = await db
     .from("pixel_transactions")
     .select("project_id, amount")
     .eq("user_id", userId)
@@ -328,7 +328,7 @@ export async function unlockedTrialIds(userId: string): Promise<Set<number>> {
 // buying it again never spends another unlock.
 async function beaconUnlocks(userId: string): Promise<{ available: number; owned: Set<number> }> {
   const [{ count: beaconCount }, { data: beaconItemIds }] = await Promise.all([
-    supabase
+    db
       .from("projects")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
@@ -336,11 +336,11 @@ async function beaconUnlocks(userId: string): Promise<{ available: number; owned
       .is("archived_at", null)
       .is("rejected_at", null)
       .is("banned_at", null),
-    supabase.from("shop_items").select("id").eq("beacon_locked", true),
+    db.from("shop_items").select("id").eq("beacon_locked", true),
   ]);
   const ids = ((beaconItemIds ?? []) as { id: number }[]).map((i) => i.id);
   if (ids.length === 0) return { available: beaconCount ?? 0, owned: new Set() };
-  const { data: orders } = await supabase
+  const { data: orders } = await db
     .from("shop_orders")
     .select("item_id")
     .eq("user_id", userId)
@@ -401,7 +401,7 @@ router.get("/api/shop/items", async (req, res) => {
     ? new Map(
         (
           (
-            await supabase
+            await db
               .from("shop_saves")
               .select("item_id, option, config")
               .eq("user_id", session.userId)
@@ -427,7 +427,7 @@ router.get("/api/shop/items", async (req, res) => {
   if (hasTrophies && session) {
     const [level, { data: claims }] = await Promise.all([
       levelFor(session.userId),
-      supabase.from("shop_claims").select("item_id").eq("user_id", session.userId),
+      db.from("shop_claims").select("item_id").eq("user_id", session.userId),
     ]);
     xp = level;
     claimed = ((claims ?? []) as { item_id: number }[]).map((c) => c.item_id);
@@ -450,7 +450,7 @@ router.get("/api/shop/items", async (req, res) => {
     // querying it against no user.
     const [done, { data: trials }] = await Promise.all([
       session ? unlockedTrialIds(session.userId) : Promise.resolve(new Set<number>()),
-      supabase.from("sidequests").select("id, name, active").in("id", gatedIds),
+      db.from("sidequests").select("id, name, active").in("id", gatedIds),
     ]);
     const trialRows = (trials ?? []) as { id: number; name: string; active: boolean }[];
     const nameById = new Map(trialRows.map((t) => [Number(t.id), t.name]));
@@ -516,7 +516,7 @@ router.post("/api/shop/region", validate({ query: v.noQuery, body: z.object({ re
   if (!SHOP_REGIONS.includes(region))
     return res.status(400).json({ ok: false, error: "invalid_region" });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ region, region_auto: false })
     .eq("id", session.userId);
@@ -535,7 +535,7 @@ router.get("/api/shop/item/:id/public", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("shop_items")
     .select("id, name, description, price, image_url")
     .eq("id", id)
@@ -560,7 +560,7 @@ router.get("/api/shop/stock/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("shop_option_stock")
     .select("choice, total, remaining")
     .eq("item_id", id);
@@ -581,7 +581,7 @@ router.post("/api/shop/claim/:id", validate({ query: v.noQuery, params: params({
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: item } = await supabase
+  const { data: item } = await db
     .from("shop_items")
     .select("id, name, unlock_xp, active")
     .eq("id", id)
@@ -594,7 +594,7 @@ router.post("/api/shop/claim/:id", validate({ query: v.noQuery, params: params({
   if (xp < unlockXp)
     return res.status(400).json({ ok: false, error: "not_eligible", xp, need: unlockXp });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("shop_claims")
     .upsert(
       { user_id: session.userId, item_id: id },
@@ -628,7 +628,7 @@ router.post("/api/shop/save/:id", validate({ query: v.noQuery, params: params({ 
   const config =
     req.body?.config && typeof req.body.config === "object" ? req.body.config : null;
 
-  const { error } = await supabase
+  const { error } = await db
     .from("shop_saves")
     .upsert(
       { user_id: session.userId, item_id: id, option, config },
@@ -648,7 +648,7 @@ router.delete("/api/shop/save/:id", validate({ query: v.noQuery, params: params(
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("shop_saves")
     .delete()
     .eq("user_id", session.userId)
@@ -673,7 +673,7 @@ router.get("/api/shop/orders", async (req, res) => {
   if (!session) return res.status(401).json({ ok: false });
 
   const build = (cols: string) =>
-    supabase
+    db
       .from("shop_orders")
       .select(cols)
       .eq("user_id", session.userId)
@@ -694,7 +694,7 @@ router.get("/api/shop/orders", async (req, res) => {
   // how many orders (anyone's) are ahead of theirs.
   const pendingIds = new Set(orders.filter((o) => o.status === "pending").map((o) => o.id));
   if (pendingIds.size > 0) {
-    const { data: queue, error: queueError } = await supabase
+    const { data: queue, error: queueError } = await db
       .from("shop_orders")
       .select("id, created_at")
       .eq("status", "pending")
@@ -731,7 +731,7 @@ router.post("/api/shop/orders/:id/cancel", validate({ query: v.noQuery, params: 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: order } = await supabase
+  const { data: order } = await db
     .from("shop_orders")
     .select("user_id, status")
     .eq("id", id)
@@ -741,7 +741,7 @@ router.post("/api/shop/orders/:id/cancel", validate({ query: v.noQuery, params: 
   if (order.status !== "pending")
     return res.status(400).json({ ok: false, error: "not_cancellable" });
 
-  const { data: refunded, error } = await supabase.rpc("cancel_shop_order", {
+  const { data: refunded, error } = await db.rpc("cancel_shop_order", {
     p_order_id: id,
     p_by: `${session.displayName} (self-cancel)`,
   });
@@ -762,7 +762,7 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
 
   // We physically ship every order, so an address has to be on file before we
   // let the purchase through , see /account in apps/game/web.
-  const { data: buyer } = await supabase
+  const { data: buyer } = await db
     .from("users")
     .select("address_line1, address_city, address_country, address_postal, phone")
     .eq("id", session.userId)
@@ -788,7 +788,7 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
     const rawPhone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
     if (rawPhone.length < 7 || rawPhone.length > 20)
       return res.status(400).json({ ok: false, error: "phone_required" });
-    const { error: phoneErr } = await supabase
+    const { error: phoneErr } = await db
       .from("users")
       .update({ phone: encryptPII(rawPhone) })
       .eq("id", session.userId);
@@ -816,7 +816,7 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
   // unlocking Trials (mirrors the `locked` flag computed for the catalog).
   // A manual lock (see updateShopItem in the dashboard) blocks purchase
   // outright, independent of any Trial.
-  const { data: gateRow } = await supabase
+  const { data: gateRow } = await db
     .from("shop_items")
     .select("unlock_trial_ids, manual_locked, region, unlock_xp, beacon_locked, reserved_user_id")
     .eq("id", id)
@@ -844,7 +844,7 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
       return res.status(403).json({ ok: false, error: "locked" });
   }
 
-  const { data, error } = await supabase.rpc("buy_shop_item", {
+  const { data, error } = await db.rpc("buy_shop_item", {
     p_user_id: session.userId,
     p_item_id: id,
     p_option: option,

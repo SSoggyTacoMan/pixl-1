@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { z } from "zod";
 import { validate, v, params } from "../http/validate.js";
 
@@ -13,7 +13,7 @@ router.get("/api/sidequests", async (req, res) => {
 
   const [{ data: quests, error }, { data: unlocks }, { data: projects }, { data: givers }] =
     await Promise.all([
-      supabase
+      db
         .from("sidequests")
         // min_hours rides along so the projects page can show progress toward
         // the same gate the ship route enforces.
@@ -21,13 +21,13 @@ router.get("/api/sidequests", async (req, res) => {
         .eq("active", true)
         .order("position", { ascending: true })
         .order("id", { ascending: true }),
-      supabase
+      db
         .from("sidequest_unlocks")
         .select("sidequest_id, unlocked_at")
         .eq("user_id", session.userId),
       // A Trial counts as completed once the player has a project linked to it
       // that's reached (or passed) review.
-      supabase
+      db
         .from("projects")
         .select("sidequest_id")
         .eq("user_id", session.userId)
@@ -36,7 +36,7 @@ router.get("/api/sidequests", async (req, res) => {
       // The giver NPC behind each Trial, so the client can spawn a matching
       // check-in copy (same look + the authored reminder line) into the village
       // once the player has accepted it.
-      supabase
+      db
         .from("npcs")
         .select("sidequest_id, npc_name, skin, trial_reminder, quest_offer")
         .eq("active", true)
@@ -94,7 +94,7 @@ router.post("/api/sidequests/:id/accept", validate({ query: v.noQuery, params: p
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: quest } = await supabase
+  const { data: quest } = await db
     .from("sidequests")
     .select("id")
     .eq("id", id)
@@ -102,7 +102,7 @@ router.post("/api/sidequests/:id/accept", validate({ query: v.noQuery, params: p
     .maybeSingle();
   if (!quest) return res.status(404).json({ ok: false, error: "not_found" });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("sidequest_unlocks")
     .upsert(
       { sidequest_id: id, user_id: session.userId },
@@ -130,12 +130,12 @@ router.get("/api/sidequests/recommended", async (req, res) => {
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: user }, { data: starters, error }] = await Promise.all([
-    supabase
+    db
       .from("users")
       .select("coding_experience")
       .eq("id", session.userId)
       .maybeSingle(),
-    supabase
+    db
       .from("sidequests")
       .select("id, name, region, npc, description, reward, difficulty, tags")
       .eq("active", true)

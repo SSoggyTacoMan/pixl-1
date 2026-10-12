@@ -1,5 +1,5 @@
 import express, { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { sanitizeImage } from "../imageValidation.js";
 import { consumeRateLimit, type RateLimitOptions } from "../rateLimit.js";
 import { validateBomCsv, sanitizeBomCsv } from "./bomCsv.js";
@@ -223,7 +223,7 @@ router.post(
     const projectId = Number(req.params.projectId);
     if (!Number.isSafeInteger(projectId) || projectId <= 0)
       return res.status(400).json({ ok: false, error: "project_not_found" });
-    const { data: project, error: projectError } = await supabase
+    const { data: project, error: projectError } = await db
       .from("projects")
       .select("id")
       .eq("id", projectId)
@@ -283,7 +283,7 @@ router.post(
         await releaseCdnUploadQuota(session.userId, safeBuf.length, quota.windowId);
       return res.status(502).json({ ok: false, error: "cdn_failed" });
     }
-    const { error: updateError } = await supabase
+    const { error: updateError } = await db
       .from("projects")
       .update({ bom_url: outcome.url })
       .eq("id", projectId)

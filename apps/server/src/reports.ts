@@ -1,4 +1,4 @@
-import { supabase } from "./db/client.js";
+import { db } from "./db/client.js";
 import { escapeMrkdwn } from "./slackEscape.js";
 
 const MODEL = "google/gemini-2.5-flash-lite";
@@ -18,7 +18,7 @@ export async function fetchTargetChat(
   hours = LOOKBACK_HOURS,
 ): Promise<{ text: string; created_at: string }[]> {
   const since = new Date(Date.now() - hours * 3600_000).toISOString();
-  const { data } = await supabase
+  const { data } = await db
     .from("chat_messages")
     .select("text, created_at")
     .eq("user_id", targetId)
@@ -140,7 +140,7 @@ const CORROBORATION_WINDOW_DAYS = 7;
 
 export async function distinctRecentReporters(targetId: string): Promise<number> {
   const since = new Date(Date.now() - CORROBORATION_WINDOW_DAYS * 24 * 3600_000).toISOString();
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("reports")
     .select("reporter_id")
     .eq("target_id", targetId)
@@ -168,7 +168,7 @@ export function aiFlagKind(distinctReporters: number, reporterAlreadyCounted = 0
 // (reports.ai_counted, migration 0219).
 export async function reporterCountedAiFlags(targetId: string, reporterId: string): Promise<number> {
   const since = new Date(Date.now() - CORROBORATION_WINDOW_DAYS * 24 * 3600_000).toISOString();
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("reports")
     .select("id")
     .eq("target_id", targetId)
@@ -208,7 +208,7 @@ export async function runReportAnalysis(
   const chat = await fetchTargetChat(targetId);
   const result = await analyzeReport(targetName, reason, chat);
   if (result) {
-    await supabase
+    await db
       .from("reports")
       .update({
         ai_verdict: result.verdict,
@@ -235,15 +235,15 @@ export async function runReportAnalysis(
           await reporterCountedAiFlags(targetId, reporterId),
         );
         if (kind === "chat") {
-          await supabase.from("reports").update({ ai_counted: true }).eq("id", reportId);
+          await db.from("reports").update({ ai_counted: true }).eq("id", reportId);
         }
-        await supabase.from("violations").insert({
+        await db.from("violations").insert({
           user_id: targetId,
           kind,
           content: `[AI auto-flag ${result.score}/100] ${result.summary}`.slice(0, 500),
         });
       });
-      await supabase.from("notifications").insert({
+      await db.from("notifications").insert({
         user_id: targetId,
         title: "Chat warning",
         body: "Your recent chat was flagged as harmful by automated review after a player reported you. Keep it kind: continued behaviour like this leads to a ban.",

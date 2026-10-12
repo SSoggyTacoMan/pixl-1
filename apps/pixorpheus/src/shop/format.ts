@@ -4,7 +4,8 @@ import { escapeMrkdwn } from "../slack/escape.js";
 // is testable). Every admin-authored string (names, descriptions, lock
 // notes, region codes) goes through esc() before it reaches mrkdwn.
 
-// Supabase Database Webhook payload for a table change.
+// Database-webhook-style payload for a table change (sent by the internal
+// dashboard after each shop_items write).
 export type ShopRow = {
   id: number;
   name: string;

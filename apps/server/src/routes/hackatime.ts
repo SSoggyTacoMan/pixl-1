@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { randomBytes } from "crypto";
 import { z } from "zod";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { fetchHackatimeSlackId, fetchHackatimeStats, fetchProjectActivitySummary, HACKATIME_CUTOFF } from "../hackatime/api.js";
 import { config } from "../config.generated.js";
 import { checkRedirect } from "../auth/loginCodes.js";
@@ -152,7 +152,7 @@ router.get(
       // Bind the token to the Pixl account that started the flow: it must be
       // the same person's Hackatime (matched on Slack ID), not whoever
       // happened to open the consent link. Otherwise the token is dropped.
-      const { data: owner, error: ownerError } = await supabase
+      const { data: owner, error: ownerError } = await db
         .from("users")
         .select("slack_id")
         .eq("id", userId)
@@ -176,7 +176,7 @@ router.get(
         return res.redirect(back(redirect, "failed"));
       }
 
-      const { data: updated, error } = await supabase
+      const { data: updated, error } = await db
         .from("users")
         .update({ hackatime_token: data.access_token })
         .eq("id", userId)
@@ -243,7 +243,7 @@ router.get("/api/hackatime/stats", async (req, res) => {
   const cached = statsCacheGet(cacheKey);
   if (cached !== undefined) return res.json({ ok: true, stats: cached });
 
-  const { data } = await supabase
+  const { data } = await db
     .from("users")
     .select("hackatime_token, slack_id")
     .eq("id", session.userId)

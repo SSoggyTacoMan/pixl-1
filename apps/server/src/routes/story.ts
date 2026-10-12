@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 
 const router = Router();
 
@@ -9,7 +9,7 @@ router.get("/api/story", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("story_nodes")
     .select("kind, seal, tag, duration, title, body, quote, outcome")
     .eq("active", true)

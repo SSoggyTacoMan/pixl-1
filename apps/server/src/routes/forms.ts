@@ -1,6 +1,6 @@
 import { Router } from "express";
 import crypto from "crypto";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { consumeRateLimit, peekRateLimit, rateLimit } from "../rateLimit.js";
 import { config as pixlConfig } from "../config.generated.js";
 import { createVerificationStore } from "./formVerification.js";
@@ -60,7 +60,7 @@ interface FormConfig {
 }
 
 async function loadFormConfig(formKey: string): Promise<FormConfig | null> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("form_configs")
     .select("form_key, title, description, questions, close_at")
     .eq("form_key", formKey)
@@ -241,7 +241,7 @@ router.post("/api/forms/:formKey/submit", submitLimiter, validate({ query: v.noQ
   // One pending submission per person per form at a time - resubmitting
   // while still pending would just spam the reviewer queue and the "received"
   // DM; once a decision is made they're free to submit again.
-  const { data: existingSubmission } = await supabase
+  const { data: existingSubmission } = await db
     .from("form_submissions")
     .select("id")
     .eq("form_key", formKey)
@@ -253,7 +253,7 @@ router.post("/api/forms/:formKey/submit", submitLimiter, validate({ query: v.noQ
   const ip = clientIpFor(req);
   const ipHash = ip && ip !== "unknown" ? crypto.createHash("sha256").update(ip).digest("hex") : "";
 
-  const { data: inserted, error } = await supabase
+  const { data: inserted, error } = await db
     .from("form_submissions")
     .insert({
       form_key: formKey,

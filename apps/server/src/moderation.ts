@@ -1,4 +1,4 @@
-import { supabase } from "./db/client.js";
+import { db } from "./db/client.js";
 import { orValue } from "./db/pgCompat.js";
 import { verifySessionToken } from "./auth/session.js";
 import { bearerToken } from "./http/bearer.js";
@@ -328,7 +328,7 @@ export async function sendModerationDm(slackId: string, text: string, deps?: Pix
 async function dmSlack(userId: string, text: string): Promise<void> {
   try {
     if (!process.env.EXTERNAL_API_KEY) return;
-    const { data: user } = await supabase
+    const { data: user } = await db
       .from("users")
       .select("slack_id")
       .eq("id", userId)
@@ -352,10 +352,10 @@ export async function recordChatViolation(
   userId: string,
   content: string,
 ): Promise<ViolationOutcome> {
-  await supabase
+  await db
     .from("violations")
     .insert({ user_id: userId, kind: "chat", content });
-  const { count } = await supabase
+  const { count } = await db
     .from("violations")
     .select("id", { count: "exact", head: true })
     .eq("user_id", userId)
@@ -367,13 +367,13 @@ export async function recordChatViolation(
     if (!existing) {
       const expiresAt = new Date(Date.now() + 7 * 24 * 3600_000).toISOString();
       const reason = `Automatic 1-week ban: ${n} chat filter violations.`;
-      await supabase.from("bans").insert({
+      await db.from("bans").insert({
         user_id: userId,
         reason,
         banned_by: "Auto-mod",
         expires_at: expiresAt,
       });
-      const { data: recent } = await supabase
+      const { data: recent } = await db
         .from("violations")
         .select("content")
         .eq("user_id", userId)
@@ -387,7 +387,7 @@ export async function recordChatViolation(
         `Your most recent flagged messages:\n${list}\n\n` +
         `Your ban lifts automatically on ${new Date(expiresAt).toUTCString()}. ` +
         `If you believe this is a mistake, contact the Pixl team.`;
-      await supabase.from("notifications").insert({
+      await db.from("notifications").insert({
         user_id: userId,
         title: "Banned from Pixl (1 week)",
         body,
@@ -399,7 +399,7 @@ export async function recordChatViolation(
   }
   if (n >= WARN_AFTER) {
     const body = `Warning ${n}/${BAN_AFTER}: keep the chat clean. At ${BAN_AFTER} violations you're banned automatically.`;
-    await supabase.from("notifications").insert({
+    await db.from("notifications").insert({
       user_id: userId,
       title: "Chat warning",
       body,
@@ -416,7 +416,7 @@ export function logViolation(
   kind: "chat" | "name",
   content: string,
 ): void {
-  void supabase
+  void db
     .from("violations")
     .insert({ user_id: userId, kind, content })
     .then(({ error }) => {
@@ -437,7 +437,7 @@ export interface BanRow {
 export type BanLookup = { ok: true; ban: BanRow | null } | { ok: false };
 
 export async function lookupActiveBan(userId: string): Promise<BanLookup> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("bans")
     .select("*")
     .eq("user_id", userId)

@@ -1,4 +1,4 @@
-import { supabase } from "./db/client.js";
+import { db } from "./db/client.js";
 
 export interface EventRow {
   id: number;
@@ -11,7 +11,7 @@ export interface EventRow {
 
 export async function activeEvents(types?: string[]): Promise<EventRow[]> {
   const now = new Date().toISOString();
-  let q = supabase
+  let q = db
     .from("events")
     .select("id, type, name, config, starts_at, ends_at")
     .lte("starts_at", now)
@@ -27,7 +27,7 @@ export async function activeEvents(types?: string[]): Promise<EventRow[]> {
 }
 
 export async function communityGoalProgress(ev: EventRow): Promise<number> {
-  const { count, error } = await supabase
+  const { count, error } = await db
     .from("projects")
     .select("id", { count: "exact", head: true })
     .gte("shipped_at", ev.starts_at)

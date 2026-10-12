@@ -175,7 +175,7 @@ export async function createTicket(
       .single();
     ticketRow = normalizeTicket(r.data);
     if (!ticketRow) {
-      // Likely a unique violation if another call snuck in (supabase-js reports it
+      // Likely a unique violation if another call snuck in (the query builder reports it
       // via r.error instead of throwing), try SELECT again
       const retry = await db().from("tickets").select("*").eq("msg_ts", event.ts).limit(1).maybeSingle();
       ticketRow = normalizeTicket(retry.data);

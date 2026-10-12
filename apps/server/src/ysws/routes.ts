@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { addNotification } from "../routes/notifications.js";
 import { yswsShipForSlackId, yswsShipsForSlackId } from "./archive.js";
 import { availableShips, collectTaken, nameFromShip } from "./imports.js";
@@ -19,7 +19,7 @@ router.get("/api/projects/ysws-available", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("slack_id")
     .eq("id", session.userId)
@@ -30,7 +30,7 @@ router.get("/api/projects/ysws-available", async (req, res) => {
   const ships = await yswsShipsForSlackId(slackId);
   if (ships.length === 0) return res.json({ ok: true, ships: [] });
 
-  const { data: mine, error: mineError } = await supabase
+  const { data: mine, error: mineError } = await db
     .from("projects")
     .select("repo_url, demo_url, imported_ysws_entry_id")
     .eq("user_id", session.userId);
@@ -70,7 +70,7 @@ router.post("/api/projects/import-ysws", validate({ query: v.noQuery, body: z.ob
   const entryId = String(req.body?.entryId ?? "").trim();
   if (entryId === "") return res.status(400).json({ ok: false, error: "entry_required" });
 
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("slack_id")
     .eq("id", session.userId)
@@ -81,7 +81,7 @@ router.post("/api/projects/import-ysws", validate({ query: v.noQuery, body: z.ob
   const ship = await yswsShipForSlackId(slackId, entryId);
   if (!ship) return res.status(404).json({ ok: false, error: "ship_not_found" });
 
-  const { data: dupe } = await supabase
+  const { data: dupe } = await db
     .from("projects")
     .select("id")
     .eq("user_id", session.userId)
@@ -101,7 +101,7 @@ router.post("/api/projects/import-ysws", validate({ query: v.noQuery, body: z.ob
   if (parsed.error !== undefined)
     return res.status(400).json({ ok: false, error: parsed.error });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .insert({
       user_id: session.userId,
