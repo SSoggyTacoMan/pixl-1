@@ -13,13 +13,12 @@ Pixl is a Bun/Turborepo monorepo (`bun` workspaces: `apps/*`, `packages/*`) for 
 | `apps/internal-dashboard` | Next.js 16, React 19, Tailwind 4, shadcn/radix | `dash.pixl.hackclub.com` | **Pixl Internal Dashboard** - review queue, moderation, shop/fulfillment, tickets, stats. Still talks to Postgres directly (moving it behind the server is planned). |
 | `apps/game` | Godot 4 | `play.pixl.hackclub.com` | The 2D multiplayer client. Serves only the Godot web export. |
 | `apps/pixorpheus` | Bun, TypeScript, Slack Bolt v4 | `pixo.pixl.hackclub.com` | Pixo, the Slack bot - tickets, AI chat, moderation DMs, slash commands |
-| `apps/pixo-dm` | Node (CommonJS), Express | Railway | Relays dashboard-initiated player DMs through Slack as Pixo - plain `node index.js`; folding it into Pixo is planned |
 | `packages/config` | JSON + plain ESM | | **Single source of truth** for program facts - name, launch date, Hackatime cutoff, canonical URLs, economy rates. |
 | `packages/theme` | JSON + plain ESM | | **Single source of truth** for the LEDGER color palette. |
 | `packages/docs-engine` | Bun/TypeScript | | Renders `docs/*.md` for Pixl Dashboard and builds OG preview cards. |
 | `packages/map-sync` | Bun/TypeScript | | Copies the game's baked world-map PNGs into the internal dashboard for the NPC spot-picker. |
 
-Everything deploys on Orchard (Kubernetes) except `pixo-dm` (Railway). Stale `vercel.json` files are not deploy config. Every env var on Orchard must be stored with `secret: true`.
+Everything deploys on Orchard (Kubernetes). Stale `vercel.json` files are not deploy config. Every env var on Orchard must be stored with `secret: true`.
 
 ### Boundaries (do not break these)
 
@@ -125,9 +124,7 @@ Pixl Dashboard renders `docs/*.md` through this package's `render()`/`buildToken
 ### `apps/pixorpheus` (Slack bot)
 - Bun-native TypeScript, no build step - a single Bolt v4 process organized by feature under `src/`. Ticket moderation lives in the internal dashboard, which resolves tickets through `src/external/ticketApi.ts`.
 - `models.json` lists the OpenRouter models available to AI features. See `apps/pixorpheus/README.md` for commands.
-
-### `apps/pixo-dm` (Pixo DM relay)
-- Small standalone Express service (`index.js`, CommonJS): `POST /api/external/dm`, called by the internal dashboard, authenticated with `EXTERNAL_API_KEY`, rate limited in memory.
+- Every player DM the internal dashboard and server send goes through `POST /api/external/dm` (`src/external/dmApi.ts`, rules in `dmRelay.ts`): `EXTERNAL_API_KEY` (timing-safe, fails closed), Slack user ids only, no `<!...>` or `<scheme:...>` syntax, 3000-char cap, per-user/global/daily in-memory rate limits. Callers default to Pixo's in-cluster address `http://pixl-pixorpheus.ysws-pixl.svc.cluster.local:3000`.
 
 ## Bun usage
 

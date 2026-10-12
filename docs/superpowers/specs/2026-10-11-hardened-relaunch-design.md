@@ -224,4 +224,5 @@ delete `landing` and `web-shell` deployments -> all env vars secret -> start ->
 smoke test -> lift the Cloudflare block.
 
 Later (separate specs): remaining player pages, Internal Dashboard behind the
-server, pixo-dm folded into Pixo, major dependency upgrades, wider cleanup.
+server, major dependency upgrades, wider cleanup. (The standalone DM relay
+was folded into Pixo's `POST /api/external/dm` on this branch.)

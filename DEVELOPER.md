@@ -26,7 +26,6 @@ A <a href="https://hackclub.com/">Hack Club</a> YSWS - ship a real project, get 
   <a href="#the-web-shell">Web Shell</a> |
   <a href="#the-admin-dashboard">Dashboard</a> |
   <a href="#pixorpheus">Pixorpheus</a> |
-  <a href="#pixo-dm">Pixo DM</a> |
   <a href="#getting-started">Getting Started</a>
 </p>
 
@@ -47,7 +46,6 @@ A <a href="https://hackclub.com/">Hack Club</a> YSWS - ship a real project, get 
 - [The Web Shell](#the-web-shell)
 - [The Admin Dashboard](#the-admin-dashboard)
 - [Pixorpheus](#pixorpheus)
-- [Pixo DM](#pixo-dm)
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Install](#install)
@@ -96,8 +94,7 @@ pixl/
 │   ├── landing/          Next.js marketing site + apex proxy (pixl.hackclub.com)
 │   ├── web-shell/        Next.js player-facing web pages (React migration of apps/game/web)
 │   ├── dashboard/        Next.js admin/review dashboard
-│   ├── pixorpheus/       Slack bot - tickets, AI chat, moderation
-│   └── pixo-dm/          Standalone relay for dashboard -> Slack player DMs
+│   └── pixorpheus/       Slack bot - tickets, AI chat, moderation, player DMs
 ├── packages/
 │   ├── config/            Shared program facts (launch date, economy rates, URLs)
 │   ├── theme/              Shared LEDGER color palette (dark/light, web + Godot)
@@ -115,7 +112,6 @@ pixl/
 | [`web-shell`](apps/web-shell) | Next.js 16, React 19 | Player-facing pages being migrated off `apps/game/web`'s static HTML - docs, and a growing shell (`/dashboard`, `/form/*`) |
 | [`dashboard`](apps/dashboard) | Next.js 16, React 19, Tailwind 4, shadcn/radix | Admin dashboard - project review, moderation, tickets, shop, stats |
 | [`pixorpheus`](apps/pixorpheus) | Bun, Slack Bolt v4, Express | Slack bot - help tickets, AI chat, moderation DMs, slash commands ([full docs](https://github.com/gabouin/pixorpheus)) |
-| [`pixo-dm`](apps/pixo-dm) | Node.js (CommonJS), Express | Small Railway service that relays dashboard-initiated player DMs through Slack as Pixo |
 
 ### Packages
 
@@ -267,7 +263,7 @@ Not every player-facing page has moved yet - anything not listed above still liv
 | `notify` | Send a notification/DM to a player |
 | `stats` | Program-wide stats |
 
-Player-facing DMs sent from the dashboard (e.g. review results) are routed through [Pixo DM](#pixo-dm) rather than a direct Slack token, with a Resend email fallback for players without a linked Slack account.
+Player-facing DMs sent from the dashboard (e.g. review results) are routed through [Pixorpheus](#pixorpheus)'s `POST /api/external/dm` rather than a direct Slack token, with a Resend email fallback for players without a linked Slack account.
 
 ---
 
@@ -283,18 +279,11 @@ It's maintained as its own repository with a more detailed README (slash command
 
 ---
 
-## Pixo DM
-
-`apps/pixo-dm` is a small standalone Express service (`index.js`, CommonJS, plain `node`, not Bun-native) that exposes `POST /api/external/dm`, called by the dashboard to deliver a player DM through Slack as Pixo. Authenticated with `EXTERNAL_API_KEY`. Runs on its own Railway deployment, separate from `apps/pixorpheus`, and enforces per-user/global/daily rate limits in-process to bound blast radius if the API key leaks.
-
----
-
 ## Getting Started
 
 ### Prerequisites
 
 - [Bun](https://bun.com) >= 1.3
-- [Node.js](https://nodejs.org) >= 20 (for `pixo-dm`, which is plain CommonJS, not Bun)
 - [Godot 4](https://godotengine.org/) (only if you're working on `apps/game`)
 - A [Supabase](https://supabase.com/) project (shared Postgres database)
 
@@ -306,12 +295,12 @@ bun install
 
 ### Environment Variables
 
-Each app has its own `.env` (see `.env.example` in `apps/server`, `apps/dashboard`, `apps/web-shell`, `apps/pixo-dm`). Bun auto-loads `.env` files. Common vars shared across apps:
+Each app has its own `.env` (see `.env.example` in `apps/server`, `apps/dashboard`, `apps/web-shell`). Bun auto-loads `.env` files. Common vars shared across apps:
 
 - `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` - same Supabase project everywhere
 - `JWT_SECRET` - signs game server sessions; must match exactly between `server`, `dashboard`, and `web-shell`
 - Hack Club Auth (`HCA_CLIENT_ID` / `HCA_CLIENT_SECRET` / redirect URI) - identity provider for `server` and `dashboard`
-- Slack tokens - for `pixorpheus`, `pixo-dm`, and dashboard notifications
+- Slack tokens - for `pixorpheus` and dashboard notifications
 
 ### Run
 
@@ -322,7 +311,6 @@ bun run --cwd apps/landing dev         # landing site
 bun run --cwd apps/dashboard dev       # admin dashboard (port 4900)
 bun run --cwd apps/web-shell dev       # web shell (port 4901)
 bun run --cwd apps/pixorpheus start    # Slack bot
-bun run --cwd apps/pixo-dm start       # Pixo DM relay (plain node, not bun)
 
 # Turborepo shortcuts (root package.json)
 bun run dev          # all apps concurrently
