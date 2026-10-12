@@ -13,6 +13,7 @@ interface PlayerHit {
 interface ProjectHit {
   id: number;
   label: string;
+  sub?: string;
 }
 interface Hit {
   href: string;
@@ -87,7 +88,7 @@ export default function CommandPalette({ nav }: { nav: NavModel }) {
   const hits: Hit[] = [
     ...pages,
     ...players.map((p) => ({ href: `/players/${p.id}`, label: p.label, sub: p.sub, group: "Players", glyph: "person" as const })),
-    ...projects.map((p) => ({ href: `/projects/${p.id}`, label: p.label, group: "Projects", glyph: "rep" as const })),
+    ...projects.map((p) => ({ href: `/projects/${p.id}`, label: p.label, sub: p.sub, group: "Projects", glyph: "rep" as const })),
   ];
 
   function go(href: string) {

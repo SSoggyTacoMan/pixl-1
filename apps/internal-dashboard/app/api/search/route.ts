@@ -29,10 +29,16 @@ export const GET = guardedRoute("api.search", "staff", async (access, req) => {
       label: liveName(live, p, p.real_name || (p.slack_id && handles.get(p.slack_id)) || p.slack_id || p.display_name),
       sub: p.display_name,
     })),
-    projects: projects.map((p) => ({
-      id: p.id,
-      label: p.name,
-      status: p.status,
-    })),
+    // Project names repeat a lot ("My Portfolio"), so say whose each one is.
+    // Live mode hides the maker and leaves just the id.
+    projects: projects.map((p) => {
+      const maker = live ? null : p.users?.display_name;
+      return {
+        id: p.id,
+        label: p.name,
+        sub: maker ? `by ${maker} · #${p.id}` : `#${p.id}`,
+        status: p.status,
+      };
+    }),
   });
 });
