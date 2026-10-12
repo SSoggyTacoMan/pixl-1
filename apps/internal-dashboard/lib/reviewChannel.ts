@@ -3,6 +3,7 @@ import { dmOrEmail } from "@/lib/notify";
 import { dmUser } from "@/lib/slack";
 import { pixorpheusUrl } from "@/lib/pixo";
 import { callPixo } from "@/lib/pixoCall";
+import { config } from "@/app/_generated/config";
 
 // Review verdicts (approved / changes requested) are announced publicly in the
 // review channel by Pixo instead of being DMed. Bans still use DMs.
@@ -10,8 +11,8 @@ import { callPixo } from "@/lib/pixoCall";
 // ever posts to the one fixed review channel.
 
 const GABIN_SLACK_ID = "U0A2SJ7B739";
-// The player-facing project page on the game site (served by apps/game).
-const PROJECT_PAGE_URL = "https://play.pixl.hackclub.com/project";
+// The public project page on Pixl Dashboard (the game site has no player pages).
+const PROJECT_PAGE_URL = `${config.urls.site}/projects`;
 const SLACK_ID_RE = /^[UW][A-Z0-9]{5,20}$/;
 
 export type ReviewAnnouncementKind = "changes" | "first_pass" | "final";
@@ -24,7 +25,8 @@ export interface ReviewMessageInput {
   /** Link for the project name, or null for a plain bold name. */
   projectUrl: string | null;
   note: string;
-  reviewerSlackId: string;
+  /** The reviewer to name, or null to say "a reviewer" (they opted out of being named). */
+  reviewerSlackId: string | null;
   /** Pixels granted, only used by the final approval. */
   pixels?: number;
   /** Extra sentence for the final approval (e.g. a held Trial prize). */
@@ -46,7 +48,7 @@ export function buildReviewMessage(input: ReviewMessageInput): string {
   const hello = `Hi ${input.playerSlackIds.map((id) => `<@${id}>`).join(", ")}!`;
   const name = escapeMrkdwn(input.projectName);
   const project = input.projectUrl ? `<${input.projectUrl}|${name}>` : `*${name}*`;
-  const reviewer = `<@${input.reviewerSlackId}>`;
+  const reviewer = input.reviewerSlackId ? `<@${input.reviewerSlackId}>` : "a reviewer";
   const thread = "please discuss in this thread for any questions/feedback and keep in mind an answer could take a few hours.";
 
   if (input.kind === "changes") {
@@ -76,19 +78,24 @@ export function buildReviewMessage(input: ReviewMessageInput): string {
   );
 }
 
-/** The reviewer to tag: their own id, or Gabin when they opted out of being named. */
-export function reviewerToTag(reviewerSlackId: string, revealName: boolean): string {
-  return revealName && SLACK_ID_RE.test(reviewerSlackId) ? reviewerSlackId : GABIN_SLACK_ID;
+/** The reviewer to name in the post, or null ("a reviewer") when they opted out or have no usable Slack id. */
+export function reviewerToTag(reviewerSlackId: string, revealName: boolean): string | null {
+  return revealName && SLACK_ID_RE.test(reviewerSlackId) ? reviewerSlackId : null;
 }
 
-async function postToReviewChannel(message: string): Promise<boolean> {
+/** Thread reply that pings Gabin as a cc when the reviewer stayed anonymous, otherwise null. */
+export function ccReply(reviewerSlackId: string | null): string | null {
+  return reviewerSlackId ? null : `cc <@${GABIN_SLACK_ID}>`;
+}
+
+async function postToReviewChannel(message: string, reply: string | null): Promise<boolean> {
   const key = process.env.EXTERNAL_API_KEY;
   if (!key) return false;
   // Never throws; when Pixo is offline the caller falls back to DMs/email.
   const r = await callPixo("review-post", `${pixorpheusUrl()}/api/external/review-post`, {
     method: "POST",
     headers: { "x-api-key": key, "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(reply ? { message, reply } : { message }),
   });
   return r.ok;
 }
@@ -130,17 +137,18 @@ export async function announceReview(a: ReviewAnnouncement): Promise<boolean> {
       const collabSlackIds = a.collaboratorIds
         .map((id) => slackById.get(id) ?? "")
         .filter((id) => SLACK_ID_RE.test(id));
+      const reviewer = reviewerToTag(a.reviewerSlackId, a.revealName);
       const message = buildReviewMessage({
         kind: a.kind,
         playerSlackIds: [ownerSlackId, ...collabSlackIds],
         projectName: a.projectName,
         projectUrl: `${PROJECT_PAGE_URL}/${a.projectId}`,
         note: a.note,
-        reviewerSlackId: reviewerToTag(a.reviewerSlackId, a.revealName),
+        reviewerSlackId: reviewer,
         pixels: a.pixels,
         creditNote: a.creditNote,
       });
-      if (await postToReviewChannel(message)) return true;
+      if (await postToReviewChannel(message, ccReply(reviewer))) return true;
       failure = "Pixorpheus could not post it";
     }
   } catch (e) {

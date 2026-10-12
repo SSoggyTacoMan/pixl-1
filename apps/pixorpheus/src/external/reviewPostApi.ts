@@ -35,6 +35,21 @@ http.post("/api/external/review-post", express.json(), requireExternalApiKey, as
       unfurl_links: false,
       unfurl_media: false,
     });
+    // Optional thread reply (e.g. a cc ping). Best effort: the verdict is already posted.
+    const reply = typeof req.body?.reply === "string" ? req.body.reply.trim().slice(0, 500) : "";
+    if (reply && posted.ts) {
+      try {
+        await app.client.chat.postMessage({
+          channel: PIXL_REVIEW_CHANNEL,
+          thread_ts: posted.ts,
+          text: reply,
+          unfurl_links: false,
+          unfurl_media: false,
+        });
+      } catch (e: any) {
+        console.error("[review-post] thread reply failed:", e?.data?.error ?? e?.message ?? e);
+      }
+    }
     res.json({ ok: true, ts: posted.ts });
   } catch (e: any) {
     console.error("[review-post] send failed:", e?.data?.error ?? e?.message ?? e);
