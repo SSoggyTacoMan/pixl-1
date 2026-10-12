@@ -10,7 +10,7 @@ import { startAuthFlow } from "@/lib/actions/flows";
 import { shipProject, unshipProject } from "../actions";
 import { hcaRecheckCopy, projectError, trialHoursCopy } from "../errors";
 import type { ActionDetails } from "@/lib/guarded-action-core";
-import type { BlackoutState, HtStats, Project } from "../types";
+import { canUnship, type BlackoutState, type HtStats, type Project } from "../types";
 import { BlackoutPanel } from "./blackout-panel";
 import type { FormState } from "./editor-state";
 import { CountedTextarea } from "./form-bits";
@@ -154,14 +154,20 @@ export function ShipPanel({
         ) : null}
         {inReview ? (
           <>
-            <Notice>This project is in the review queue, you can&apos;t edit it until it&apos;s reviewed. Unship it if you need to make changes.</Notice>
+            <Notice>
+              {canUnship(project)
+                ? "This project is in the review queue, you can't edit it until it's reviewed. Unship it if you need to make changes."
+                : "A reviewer has already started on this project, so it can't be unshipped or edited until the review is done."}
+            </Notice>
             <div className="flex flex-wrap gap-2">
               <button type="button" className="btn dark" disabled>
                 IN REVIEW
               </button>
-              <button type="button" className="btn" disabled={pending} onClick={() => setDialog("unship")}>
-                UNSHIP TO EDIT
-              </button>
+              {canUnship(project) ? (
+                <button type="button" className="btn" disabled={pending} onClick={() => setDialog("unship")}>
+                  UNSHIP TO EDIT
+                </button>
+              ) : null}
             </div>
           </>
         ) : (
