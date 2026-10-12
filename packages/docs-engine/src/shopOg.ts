@@ -19,7 +19,7 @@ export interface ItemCardInput {
   footer?: string;
 }
 
-export function renderItemCard({ name, price, imageBytes, footer = "PIXL.RSVP/SHOP" }: ItemCardInput): Uint8Array {
+export function renderItemCard({ name, price, imageBytes, footer = "PIXL.HACKCLUB.COM/SHOP" }: ItemCardInput): Uint8Array {
   const canvas = new Canvas(W, H, BG);
 
   const pad = 48;
@@ -76,7 +76,7 @@ export function renderItemCard({ name, price, imageBytes, footer = "PIXL.RSVP/SH
 
   // No trailing accent block here (renderCard has one) - the right column is
   // narrower than a full-width card, and short item names left it colliding
-  // with the "PIXL.RSVP/SHOP" text.
+  // with the footer text.
   canvas.fill(left, footY, maxWidth, 2, STROKE);
   drawText(canvas, footer.toUpperCase(), left, footY + 26, 3, DIM, 2);
 
