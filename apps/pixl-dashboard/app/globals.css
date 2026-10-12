@@ -376,7 +376,7 @@ select.field { cursor: pointer; }
 .gate-card { display: flex; flex-direction: column; align-items: center; text-align: center; max-width: 620px; }
 .gate-splash {
   --sw: min(1000px, 92vw);
-  display: block; width: var(--sw); height: auto; image-rendering: pixelated;
+  display: block; width: var(--sw); max-width: none; height: auto; image-rendering: pixelated;
   margin-top: calc(var(--sw) * -0.19);
   margin-bottom: calc(var(--sw) * -0.20);
 }
