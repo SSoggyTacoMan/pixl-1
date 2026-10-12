@@ -20,6 +20,6 @@ You can buy colour themes for one with pixels (Autumn, Blossom and Verdant at 50
 
 The Explore feed lists every approved ship. It's the quickest way to see how other people lay out their repos, demos and writeups.
 
-## Notifications and timeline
+## Notifications
 
-Notifications tell you when a project is approved, an order ships, or someone invites you onto a build. Your Timeline is your own shipping history in order.
+Notifications tell you when a project is approved, an order ships, or someone invites you onto a build.
