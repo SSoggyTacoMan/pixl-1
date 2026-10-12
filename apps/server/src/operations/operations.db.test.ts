@@ -18,6 +18,7 @@ let admin: ReturnType<typeof postgres>;
 let sql: ReturnType<typeof postgres>;
 let dbName = "";
 let testUrl = "";
+let setJwtSecret = false;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -110,15 +111,21 @@ d("operations (real Postgres)", () => {
     await admin.unsafe(`create database ${dbName}`);
     testUrl = ADMIN_URL!.replace(/\/[^/?]*(\?|$)/, `/${dbName}$1`);
     sql = postgres(testUrl, { max: 8, onnotice: () => {} });
-    process.env.DATABASE_URL = testUrl;
-    process.env.JWT_SECRET ||= "test-secret";
+    if (process.env.JWT_SECRET === undefined) {
+      process.env.JWT_SECRET = "test-secret";
+      setJwtSecret = true;
+    }
     await sql.unsafe(loadSql("testdb/base-schema.sql"));
     await sql.unsafe(loadSql("../../drizzle/0183_operations.sql"));
     await sql.unsafe(loadSql("../../drizzle/0184_blackout_window_fix.sql"));
     await sql.unsafe(loadSql("../../drizzle/0210_blackout_withdraw_needs_changes.sql"));
+    await sql.unsafe(loadSql("../../drizzle/0214_audit_log.sql"));
+    await (await import("../db/pgCompat.js")).connectForTests(testUrl);
   });
 
   afterAll(async () => {
+    await (await import("../db/pgCompat.js")).connectForTests(null);
+    if (setJwtSecret) delete process.env.JWT_SECRET;
     await sql?.end({ timeout: 2 });
     if (admin) {
       await admin.unsafe(`drop database if exists ${dbName} with (force)`);
@@ -170,8 +177,6 @@ d("operations (real Postgres)", () => {
 
   test("3+4. work between join and Blackout's end counts, whenever it ships; only work not yet in the past is excluded (real evidence code, mocked Hackatime)", async () => {
     await setOp(-48, 48);
-    process.env.DATABASE_URL = testUrl;
-    process.env.JWT_SECRET ||= "test-secret";
     const { recordShipForOperations } = await import("./service.js");
 
     const uid = await mkUser();
@@ -242,8 +247,6 @@ d("operations (real Postgres)", () => {
   // reship -> the reviewer's decision still sees all 10h, whether that
   // review happens after Blackout ends or while it's still active.
   test("evidence refresh at review time (no reship): 4h before ship + 6h after ship, all the way to Blackout's end", async () => {
-    process.env.DATABASE_URL = testUrl;
-    process.env.JWT_SECRET ||= "test-secret";
     const { recordShipForOperations, refreshEntryEvidence } = await import("./service.js");
     const realFetch = globalThis.fetch;
     const withEmptySpans = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -707,8 +710,8 @@ d("operations (real Postgres)", () => {
     expect(e.system_reason).toBe("Project banned");
   });
 
-  test("top-up examples: 1 approved hour at $4 adds about $1, at $5 and $6 adds nothing", async () => {
-    await setOp(-2, 24);
+  test("floor mode top-up examples: 1 approved hour at $4 adds about $1, at $5 and $6 adds nothing", async () => {
+    await setOp(-2, 24, { rate: 5, mode: "floor" });
     const out: Record<number, { uplift: number; rows: number }> = {};
     for (const normal of [4, 5, 6]) {
       const { uid, pid } = await shippedProject({ hours: 1 });
@@ -724,8 +727,8 @@ d("operations (real Postgres)", () => {
     expect(out[6]).toEqual({ uplift: 0, rows: 0 });
   });
 
-  test("normal payout plus top-up lands on the floor, and the cost stat counts only the top-up", async () => {
-    await setOp(-2, 24, { rate: 5 });
+  test("floor mode: normal payout plus top-up lands on the floor, and the cost stat counts only the top-up", async () => {
+    await setOp(-2, 24, { rate: 5, mode: "floor" });
     const { uid, pid } = await shippedProject({ hours: 10 });
     const normalPx = Math.round((10 * 4) / PX);
     await sql`insert into pixel_transactions (user_id, project_id, amount, hours, reason) values (${uid}, ${pid}, ${normalPx}, 10, 'project_approved')`;
@@ -937,7 +940,8 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
     expect(e.first_qualified_ship_at).toBeNull();
     expect(new Date(e.joined_at).getTime()).toBeGreaterThan(Date.now() - 60_000);
     expect(Number(e.operation_id)).not.toBe(999);
-    expect((await post(`/api/operations/Not_A_Slug/entries`, token(uid), { projectId: pid })).status).toBe(404);
+    expect((await post(`/api/operations/Not_A_Slug/entries`, token(uid), { projectId: pid })).status).toBe(400);
+    expect((await post(`/api/operations/operation-missing/entries`, token(uid), { projectId: pid })).status).toBe(404);
     expect((await post(`/api/operations/nope/entries`, token(uid), { projectId: pid })).status).toBe(404);
   });
 
