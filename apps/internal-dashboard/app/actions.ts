@@ -102,6 +102,8 @@ import {
   type ReviewQueueScope,
 } from "@/lib/guard";
 import { audit } from "@/lib/audit";
+import { parseStaffSettings, type StaffSettings } from "@/lib/staffSettings";
+import { saveStaffSettingsRow } from "@/lib/db";
 import { GUIDELINES_VERSION } from "@/lib/guidelines";
 import { applyBlackoutDecision } from "@/lib/operationsReview";
 import { BLACKOUT_SLUG, getBlackoutEntry, operationRpc } from "@/lib/operations";
@@ -3112,6 +3114,14 @@ export const setLiveMode = guardedAction("setLiveMode", "staff", async (access, 
   // Every new live session starts with other reviewers' names hidden again.
   jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
   revalidatePath("/", "layout");
+});
+
+// The settings menu in the top bar. Cosmetic preferences only, stored against
+// the signed-in staff member, so the input is re-parsed rather than trusted.
+export const saveStaffSettings = guardedAction("saveStaffSettings", "staff", async (access, input: StaffSettings): Promise<{ ok: boolean }> => {
+  const ok = await saveStaffSettingsRow(access.session.slackId, parseStaffSettings(input));
+  if (ok) revalidatePath("/", "layout");
+  return { ok };
 });
 
 // The "Show reviewer names" button: while live, reveals (or re-hides) other

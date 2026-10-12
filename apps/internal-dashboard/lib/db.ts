@@ -1,4 +1,5 @@
 import { queueWaitStartMs, type QueueWaitInput } from "./queueWait";
+import { DEFAULT_STAFF_SETTINGS, parseStaffSettings, type StaffSettings } from "./staffSettings";
 import { randomBytes } from "node:crypto";
 import { decryptPII } from "./crypto";
 import { reForProject } from "@/app/_generated/config";
@@ -279,6 +280,26 @@ export async function getGuidelinesAck(slackId: string): Promise<number | null> 
     return null;
   }
   return data ? Number((data as { version: number }).version) : null;
+}
+
+// Dashboard preferences for one staff member (theme, accent, confetti...).
+// Falls back to the defaults on any error, so a missing row or table can never
+// take the dashboard down.
+export async function getStaffSettings(slackId: string): Promise<StaffSettings> {
+  const { data, error } = await db.from("staff_settings").select("settings").eq("slack_id", slackId).maybeSingle();
+  if (error) {
+    console.error("getStaffSettings", error.message);
+    return DEFAULT_STAFF_SETTINGS;
+  }
+  return parseStaffSettings((data as { settings: unknown } | null)?.settings);
+}
+
+export async function saveStaffSettingsRow(slackId: string, settings: StaffSettings): Promise<boolean> {
+  const { error } = await db
+    .from("staff_settings")
+    .upsert({ slack_id: slackId, settings, updated_at: new Date().toISOString() }, { onConflict: "slack_id" });
+  if (error) console.error("saveStaffSettings", error.message);
+  return !error;
 }
 
 export async function ackGuidelines(slackId: string, version: number): Promise<void> {

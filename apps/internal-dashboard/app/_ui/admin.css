@@ -80,8 +80,9 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Light theme: when the OS asks for it (theme "system") or when forced. */
 @media (prefers-color-scheme: light) {
-  .admin-shell {
+  html:not([data-theme="dark"]) .admin-shell {
     --background: var(--hc-snow);
     --surface: var(--hc-white);
     --surface-hover: #f2f4f8;
@@ -95,6 +96,21 @@
     --hc-cream: var(--hc-black);
     --on-cream: var(--hc-white);
   }
+}
+
+html[data-theme="light"] .admin-shell {
+  --background: var(--hc-snow);
+  --surface: var(--hc-white);
+  --surface-hover: #f2f4f8;
+  --sunken: #eef1f5;
+  --border: var(--hc-smoke);
+  --border-strong: #cfd6df;
+  --text: var(--hc-black);
+  --secondary: var(--hc-slate);
+  --placeholder: var(--hc-muted);
+  --accent: var(--hc-blue);
+  --hc-cream: var(--hc-black);
+  --on-cream: var(--hc-white);
 }
 
 .admin-shell ::selection {
@@ -1239,10 +1255,15 @@ html:has(.admin-shell)::-webkit-scrollbar-corner,
 }
 
 @media (prefers-color-scheme: light) {
-  html:has(.admin-shell) {
+  html:not([data-theme="dark"]):has(.admin-shell) {
     background: var(--hc-snow, #f9fafc);
     scrollbar-color: #cfd6df #f9fafc;
   }
+}
+
+html[data-theme="light"]:has(.admin-shell) {
+  background: var(--hc-snow, #f9fafc);
+  scrollbar-color: #cfd6df #f9fafc;
 }
 
 .hc-tabs,
@@ -1529,4 +1550,131 @@ html:has(.admin-shell)::-webkit-scrollbar-corner,
   background: var(--sunken);
   color: var(--muted);
   font-size: 12px;
+}
+
+/* ---- Settings menu (app/_ui/SettingsMenu.tsx) ---- */
+
+html[data-accent="orange"] .admin-shell { --primary: #e8590c; }
+html[data-accent="green"] .admin-shell { --primary: #12a37b; }
+html[data-accent="cyan"] .admin-shell { --primary: #1f8fb3; }
+html[data-accent="blue"] .admin-shell { --primary: var(--hc-blue); }
+html[data-accent="purple"] .admin-shell { --primary: var(--hc-purple); }
+
+html[data-density="compact"] .admin-shell {
+  font-size: 14px;
+}
+
+html[data-density="compact"] .hc-table th,
+html[data-density="compact"] .hc-table td {
+  padding: 6px 12px;
+}
+
+html[data-density="compact"] .hc-card {
+  padding: 14px;
+}
+
+html[data-density="compact"] .hc-card[data-density="flush"] {
+  padding: 0;
+}
+
+html[data-density="compact"] .hc-main {
+  padding-top: 20px;
+}
+
+.hc-btn-icon {
+  width: 32px;
+  padding: 0;
+}
+
+.hc-btn-icon svg {
+  margin: 0;
+}
+
+.hc-settings-dialog {
+  width: min(440px, calc(100vw - 32px));
+  margin: 12vh auto auto;
+  border-radius: 12px;
+}
+
+.hc-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hc-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.hc-swatch {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--swatch);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.hc-swatch:hover {
+  transform: scale(1.1);
+}
+
+.hc-swatch[aria-pressed="true"] {
+  border-color: var(--surface);
+  box-shadow: 0 0 0 2px var(--swatch);
+}
+
+.hc-swatch[data-accent="red"] { --swatch: var(--hc-red); }
+.hc-swatch[data-accent="orange"] { --swatch: #e8590c; }
+.hc-swatch[data-accent="green"] { --swatch: #12a37b; }
+.hc-swatch[data-accent="cyan"] { --swatch: #1f8fb3; }
+.hc-swatch[data-accent="blue"] { --swatch: var(--hc-blue); }
+.hc-swatch[data-accent="purple"] { --swatch: var(--hc-purple); }
+
+.hc-switch {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.hc-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--hc-white);
+  transition: transform 0.15s ease;
+}
+
+.hc-switch:checked {
+  background: var(--primary);
+}
+
+.hc-switch:checked::after {
+  transform: translateX(16px);
+}
+
+.hc-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

@@ -5,7 +5,7 @@ import { JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import "./_ui/admin.css";
 import { getAccess } from "@/lib/guard";
-import { countPendingReviews, countOpenReports, countPendingOrders } from "@/lib/db";
+import { countPendingReviews, countOpenReports, countPendingOrders, getStaffSettings } from "@/lib/db";
 import { ticketStats } from "@/lib/tickets";
 import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
 import { setLiveMode } from "@/app/actions";
@@ -13,6 +13,7 @@ import { LiveModeProvider } from "@/app/_components/LiveMode";
 import { ReviewCelebration } from "@/app/_components/ReviewCelebration";
 import TopNav from "@/app/_ui/TopNav";
 import CommandPalette from "@/app/_ui/CommandPalette";
+import SettingsMenu from "@/app/_ui/SettingsMenu";
 import { buildNav } from "@/app/_ui/nav";
 import { ActionButton, Button, Mono } from "@/app/_ui/ui";
 
@@ -70,15 +71,21 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const live = await getLiveMode();
   const hideReviewers = await getHideReviewers();
   const nav = buildNav(access, live);
-  const counts = await navCounts(access, live);
+  const [counts, settings] = await Promise.all([navCounts(access, live), getStaffSettings(session.slackId)]);
   const firstName = session.name.split(" ")[0] || "Staff";
 
   return (
-    <html lang="en" className={jetbrainsMono.variable}>
+    <html
+      lang="en"
+      className={jetbrainsMono.variable}
+      data-theme={settings.theme}
+      data-accent={settings.accent}
+      data-density={settings.compact ? "compact" : "normal"}
+    >
       <body>
         <LiveModeProvider live={live} hideReviewers={hideReviewers} viewer={session.slackId}>
           <div className="admin-shell">
-            <ReviewCelebration />
+            <ReviewCelebration confetti={settings.confetti} />
             <header className="hc-topbar sticky top-0 z-20">
               <div className="hc-topbar-inner mx-auto flex min-h-14 max-w-[1840px] flex-wrap items-center gap-x-6 gap-y-2 px-6 py-2">
                 <Link href="/" className="flex shrink-0 items-center gap-2">
@@ -92,10 +99,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <div className="flex shrink-0 items-center gap-3">
                   <form action={setLiveMode} className="flex items-center gap-2">
                     <input type="hidden" name="on" value={live ? "0" : "1"} />
-                    {live && <span className="hc-live-pill">LIVE, PII hidden</span>}
-                    <ActionButton variant={live ? "primary" : "ghost"} size="sm" icon="view" pendingLabel="Switching...">
-                      {live ? "Exit live mode" : "Live mode"}
-                    </ActionButton>
+                    <span
+                      title={
+                        live
+                          ? "Live mode is on: names, emails, addresses and other personal details are hidden. Click to turn it off."
+                          : "Hides names, emails, addresses and other personal details, for when you are streaming or sharing your screen."
+                      }
+                    >
+                      <ActionButton variant={live ? "primary" : "ghost"} size="sm" icon="view" pendingLabel="Switching...">
+                        {live ? "Live" : "Live mode"}
+                      </ActionButton>
+                    </span>
                   </form>
                   <span className="hidden text-sm 2xl:inline">
                     <span className="font-bold">{firstName}</span>{" "}
@@ -103,6 +117,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                       (<Mono>{session.slackId}</Mono>)
                     </span>
                   </span>
+                  <SettingsMenu initial={settings} />
                   <form action="/api/auth/logout" method="post">
                     <Button type="submit" variant="ghost" size="sm" icon="door-leave">
                       Log out
