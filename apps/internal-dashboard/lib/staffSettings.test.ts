@@ -14,14 +14,17 @@ describe("parseStaffSettings", () => {
   });
 
   test("keeps valid values and drops unknown ones", () => {
-    expect(parseStaffSettings({ theme: "light", accent: "blue", compact: true, confetti: true })).toEqual({
-      theme: "light",
-      accent: "blue",
-      compact: true,
-      confetti: true,
-    });
+    expect(
+      parseStaffSettings({ theme: "light", accent: "blue", compact: true, confetti: true, reviewPanelWidth: 620 }),
+    ).toEqual({ theme: "light", accent: "blue", compact: true, confetti: true, reviewPanelWidth: 620 });
     expect(parseStaffSettings({ theme: "neon", accent: "javascript:alert(1)", extra: 1 })).toEqual(
       DEFAULT_STAFF_SETTINGS,
     );
+  });
+
+  test("review panel width is clamped to a sane range", () => {
+    expect(parseStaffSettings({ reviewPanelWidth: 5 }).reviewPanelWidth).toBe(360);
+    expect(parseStaffSettings({ reviewPanelWidth: 99999 }).reviewPanelWidth).toBe(1000);
+    expect(parseStaffSettings({ reviewPanelWidth: "wide" }).reviewPanelWidth).toBe(460);
   });
 });

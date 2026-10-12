@@ -46,6 +46,8 @@ import { ReviewPipelineSteps } from "@/app/_components/ReviewPipelineSteps";
 import { SecondPassChecklist } from "@/app/_components/SecondPassChecklist";
 import { hackatimeCutoffUnix, hackatimeCutoffLabel } from "@/app/_generated/config";
 import { ReviewDetailTabs } from "@/app/_components/ReviewDetailTabs";
+import { ReviewSplit } from "./ReviewSplit";
+import { getStaffSettings } from "@/lib/db";
 import { ReviewHeartbeat } from "@/app/_components/ReviewHeartbeat";
 import { ProjectNotes } from "@/app/_components/ProjectNotes";
 import { LevelBadge, TypeBadge, ShipBadges, StatusBadge, BeaconBadge, FundingBadge } from "@/app/_components/ProjectBadges";
@@ -179,6 +181,7 @@ export default async function ReviewDetail({
   // While live, other reviewers' names are "Reviewer" unless revealed with
   // the Show reviewer names button (the viewer's own name always shows).
   const hideReviewers = await getHideReviewers();
+  const staffSettings = await getStaffSettings(access.session.slackId);
   const rn = (label: string | null | undefined, fallback?: string) =>
     reviewerName(label, viewer, hideReviewers, fallback);
 
@@ -957,7 +960,7 @@ export default async function ReviewDetail({
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_460px] xl:gap-8">
+      <ReviewSplit initialWidth={staffSettings.reviewPanelWidth}>
         <div className="flex min-w-0 flex-col gap-6">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1343,7 +1346,7 @@ export default async function ReviewDetail({
 
           <Tabs variant="segmented" sticky tabs={rightTabs} />
         </aside>
-      </div>
+      </ReviewSplit>
 
       <nav className="sticky bottom-0 z-10 -mx-6 flex items-center gap-4 border-t border-[var(--border)] bg-[var(--background)] px-6 py-3">
         <Suspense fallback={<QueueNav prevId={null} nextId={null} label="Loading queue..." />}>

@@ -1838,3 +1838,63 @@ html[data-density="compact"] .hc-main {
 .hc-table tbody tr.hc-diff-row:hover {
   background: transparent;
 }
+
+/* ---- Review page columns with a draggable divider (ReviewSplit.tsx) ---- */
+
+.hc-review-split {
+  position: relative;
+  display: grid;
+  gap: 24px;
+}
+
+.hc-review-handle {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .hc-review-split {
+    grid-template-columns: minmax(0, 1fr) var(--review-right, 460px);
+  }
+
+  .hc-review-handle {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: calc(var(--review-right, 460px) + 6px);
+    width: 12px;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  /* The grip stays in view however far the page is scrolled. */
+  .hc-review-handle > span {
+    position: sticky;
+    top: 45vh;
+    display: block;
+    width: 4px;
+    height: 56px;
+    margin: 0 auto;
+    border-radius: 999px;
+    background: var(--border-strong);
+    transition:
+      background 0.1s ease,
+      height 0.1s ease;
+  }
+
+  .hc-review-handle:hover > span,
+  .hc-review-handle:focus-visible > span,
+  .hc-review-split[data-dragging] .hc-review-handle > span {
+    background: var(--primary);
+    height: 88px;
+  }
+
+  .hc-review-handle:focus-visible {
+    outline: none;
+  }
+
+  .hc-review-split[data-dragging] {
+    user-select: none;
+    cursor: col-resize;
+  }
+}

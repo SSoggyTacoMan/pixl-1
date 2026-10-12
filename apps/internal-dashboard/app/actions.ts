@@ -102,8 +102,8 @@ import {
   type ReviewQueueScope,
 } from "@/lib/guard";
 import { audit } from "@/lib/audit";
-import { parseStaffSettings, type StaffSettings } from "@/lib/staffSettings";
-import { saveStaffSettingsRow } from "@/lib/db";
+import { clampReviewPanelWidth, parseStaffSettings, type StaffSettings } from "@/lib/staffSettings";
+import { getStaffSettings, saveStaffSettingsRow } from "@/lib/db";
 import { GUIDELINES_VERSION } from "@/lib/guidelines";
 import { applyBlackoutDecision } from "@/lib/operationsReview";
 import { BLACKOUT_SLUG, getBlackoutEntry, operationRpc } from "@/lib/operations";
@@ -3026,8 +3026,21 @@ export const setLiveMode = guardedAction("setLiveMode", "staff", async (access, 
 // The settings menu in the top bar. Cosmetic preferences only, stored against
 // the signed-in staff member, so the input is re-parsed rather than trusted.
 export const saveStaffSettings = guardedAction("saveStaffSettings", "staff", async (access, input: StaffSettings): Promise<{ ok: boolean }> => {
-  const ok = await saveStaffSettingsRow(access.session.slackId, parseStaffSettings(input));
+  // The menu doesn't own the review panel width, so keep whatever is stored.
+  const current = await getStaffSettings(access.session.slackId);
+  const next = parseStaffSettings({ ...input, reviewPanelWidth: current.reviewPanelWidth });
+  const ok = await saveStaffSettingsRow(access.session.slackId, next);
   if (ok) revalidatePath("/", "layout");
+  return { ok };
+});
+
+// The draggable divider on the review page (app/review/[id]/ReviewSplit.tsx).
+export const saveReviewPanelWidth = guardedAction("saveReviewPanelWidth", "reviewer", async (access, width: number): Promise<{ ok: boolean }> => {
+  const current = await getStaffSettings(access.session.slackId);
+  const ok = await saveStaffSettingsRow(access.session.slackId, {
+    ...current,
+    reviewPanelWidth: clampReviewPanelWidth(width),
+  });
   return { ok };
 });
 

@@ -8,7 +8,7 @@ export default function Loading() {
   return (
     <div className="hc-review flex flex-col gap-6">
       <Bar w="120px" />
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_460px] xl:gap-8">
+      <div className="hc-review-split">
         <div className="flex min-w-0 flex-col gap-6">
           <div className="flex flex-col gap-3">
             <Bar w="260px" />
