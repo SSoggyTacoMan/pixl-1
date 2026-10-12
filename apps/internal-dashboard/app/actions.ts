@@ -3975,16 +3975,6 @@ export const removeFulfillerAction = guardedAction("team.removeFulfiller", "owne
   revalidatePath("/admins");
 });
 
-export const kickPlayer = guardedAction("kickPlayer", "owner", async (access, formData: FormData): Promise<void> => {
-  const by = actorName(access);
-  const userId = String(formData.get("userId") ?? "");
-  const reason = String(formData.get("reason") ?? "").trim().slice(0, 100);
-  if (!userId) return;
-  const kicked = await kickOnlinePlayer(userId, reason);
-  if (kicked) await logModAction(userId, "kick", reason || "(no reason)", by);
-  revalidatePath("/online");
-});
-
 // Clears every saved (user, scene) row so the player spawns at each scene's
 // default next time they connect. If they're currently online we also kick
 // them , otherwise their in-memory position just gets written straight back
@@ -5876,73 +5866,6 @@ export const deleteVaultLevel = guardedAction("deleteVaultLevel", "owner", async
   const { error } = await db.from("vault_levels").delete().eq("id", id);
   if (error) console.error("deleteVaultLevel", error.message);
   revalidatePath("/community-goals");
-});
-
-// posted_at is writable so a post can be backdated to when the thing actually
-// happened, rather than when someone got round to writing it up.
-function newsPostedAt(formData: FormData): string | undefined {
-  const raw = String(formData.get("posted_at") ?? "").trim();
-  if (!raw) return undefined;
-  const at = new Date(raw);
-  return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
-}
-
-export const addNews = guardedAction("addNews", "owner", async (access, formData: FormData): Promise<void> => {
-  const body = String(formData.get("body") ?? "").trim().slice(0, 500);
-  const link_url = String(formData.get("link_url") ?? "").trim().slice(0, 500);
-  if (!body)
-    redirect(`/news?error=${encodeURIComponent("A post needs something to say.")}`);
-  const posted_at = newsPostedAt(formData);
-  const { error } = await db.from("news").insert({
-    body,
-    link_url: link_url || null,
-    active: true,
-    ...(posted_at ? { posted_at } : {}),
-  });
-  if (error) {
-    console.error("addNews", error.message);
-    redirect(`/news?error=${encodeURIComponent("Couldn't save , is migration 0117 applied?")}`);
-  }
-  revalidatePath("/news");
-  redirect("/news?saved=1");
-});
-
-export const updateNews = guardedAction("updateNews", "owner", async (access, formData: FormData): Promise<void> => {
-  const id = Number(formData.get("id") ?? 0);
-  if (!id) return;
-  const link_url = String(formData.get("link_url") ?? "").trim().slice(0, 500);
-  const posted_at = newsPostedAt(formData);
-  const patch = {
-    body: String(formData.get("body") ?? "").trim().slice(0, 500),
-    link_url: link_url || null,
-    ...(posted_at ? { posted_at } : {}),
-  };
-  const { error } = await db.from("news").update(patch).eq("id", id);
-  if (error) {
-    console.error("updateNews", error.message);
-    redirect(`/news?error=${encodeURIComponent("Couldn't update that post.")}`);
-  }
-  revalidatePath("/news");
-  redirect("/news?saved=1");
-});
-
-export const toggleNews = guardedAction("toggleNews", "owner", async (access, formData: FormData): Promise<void> => {
-  const id = Number(formData.get("id") ?? 0);
-  if (!id) return;
-  const { error } = await db
-    .from("news")
-    .update({ active: formData.get("active") === "1" })
-    .eq("id", id);
-  if (error) console.error("toggleNews", error.message);
-  revalidatePath("/news");
-});
-
-export const deleteNews = guardedAction("deleteNews", "owner", async (access, formData: FormData): Promise<void> => {
-  const id = Number(formData.get("id") ?? 0);
-  if (!id) return;
-  const { error } = await db.from("news").delete().eq("id", id);
-  if (error) console.error("deleteNews", error.message);
-  revalidatePath("/news");
 });
 
 export const addStoryNode = guardedAction("addStoryNode", "owner", async (access, formData: FormData): Promise<void> => {

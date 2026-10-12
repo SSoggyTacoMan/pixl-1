@@ -5,6 +5,9 @@
 
 html {
   color-scheme: dark light;
+  /* Always reserve the scrollbar's space, so pages don't shift sideways when
+     one page scrolls and the next doesn't. */
+  scrollbar-gutter: stable;
 }
 
 body {

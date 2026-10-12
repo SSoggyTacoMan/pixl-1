@@ -3,40 +3,11 @@ import { sniffFormat } from "./imageSniff";
 // Talks to the live PixlServer admin API (/api/admin/*), authenticated with
 // this app's own service key (x-pixl-service-key = SERVICE_KEY_INTERNAL_DASHBOARD).
 
-export interface OnlinePlayer {
-  userId: string;
-  displayName: string;
-  scene: string;
-  skin: string;
-}
-
 function config(): { url: string; key: string } | null {
   const url = process.env.PIXL_SERVER_URL;
   const key = process.env.SERVICE_KEY_INTERNAL_DASHBOARD;
   if (!url || !key) return null;
   return { url: url.replace(/\/$/, ""), key };
-}
-
-export function gameServerConfigured(): boolean {
-  return config() !== null;
-}
-
-export async function fetchOnlinePlayers(): Promise<OnlinePlayer[] | null> {
-  const cfg = config();
-  if (!cfg) return null;
-  try {
-    const res = await fetch(`${cfg.url}/api/admin/online`, {
-      headers: { "x-pixl-service-key": cfg.key },
-      cache: "no-store",
-      signal: AbortSignal.timeout(5000),
-    });
-    const json = (await res.json()) as { ok: boolean; players?: OnlinePlayer[] };
-    if (!json.ok) return null;
-    return json.players ?? [];
-  } catch (e) {
-    console.error("fetchOnlinePlayers", (e as Error).message);
-    return null;
-  }
 }
 
 // Refreshes an Operation Blackout entry's tracked evidence against its live

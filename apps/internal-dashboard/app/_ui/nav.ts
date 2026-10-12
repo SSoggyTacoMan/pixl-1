@@ -61,9 +61,7 @@ export function buildNav(access: AdminAccess, live: boolean): NavModel {
         [owner, { href: "/sidequests", label: "Trials & NPCs", glyph: "compass" }],
         [owner, { href: "/story", label: "Story", glyph: "docs" }],
         [owner, { href: "/community-goals", label: "Community goals", glyph: "rep" }],
-        [owner, { href: "/news", label: "News", glyph: "announcement" }],
         [owner, { href: "/show-n-tell", label: "Show & Tell", glyph: "photo" }],
-        [owner, { href: "/online", label: "Online", glyph: "welcome" }],
       ]),
     },
     {
@@ -83,9 +81,7 @@ export function buildNav(access: AdminAccess, live: boolean): NavModel {
         [owner, { href: "/reviewers", label: "Reviewers", glyph: "checkmark" }],
         [owner, { href: "/admins", label: "Team & roles", glyph: "person" }],
         [owner, { href: "/notify", label: "Notify", glyph: "notification" }],
-        [!live && owner, { href: "/slack-lookup", label: "Slack lookup", glyph: "slack" }],
         [owner, { href: "/forms", label: "Forms", glyph: "list" }],
-        [owner, { href: "/audit", label: "Audit log", glyph: "history" }],
       ]),
     },
   ];
