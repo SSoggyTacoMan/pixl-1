@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition, type FormEvent, type ReactNode } from "react";
+import { ReadmePanel } from "@/app/_components/ReadmePanel";
 import type { CommitResult } from "@/lib/commits";
 import type { HackatimeReport } from "@/lib/hackatime";
 import type { JournalRow, ReviewAuditRow } from "@/lib/db";
@@ -154,7 +155,7 @@ function Section({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-type TabKey = "commits" | "journals" | "reviews" | "ysws" | "hackatime" | "fraud";
+type TabKey = "commits" | "readme" | "journals" | "reviews" | "ysws" | "hackatime" | "fraud";
 
 export function ReviewDetailTabs({
   projectId,
@@ -211,6 +212,7 @@ export function ReviewDetailTabs({
 
   const tabs: { key: TabKey; label: string; count?: number }[] = [
     { key: "commits", label: "Commits", count: commits.commits.length },
+    ...(repoUrl ? [{ key: "readme" as const, label: "README" }] : []),
     { key: "journals", label: "Journals", count: journals.length },
     ...(hackatime?.ok
       ? [{ key: "hackatime" as const, label: "Hackatime", count: hackatime.projects.filter((p) => p.linked).length }]
@@ -250,7 +252,11 @@ export function ReviewDetailTabs({
       </div>
 
       <div role="tabpanel" hidden={tab !== "commits"}>
-        <CommitList result={commits} />
+        <CommitList result={commits} projectId={projectId} />
+      </div>
+
+      <div role="tabpanel" hidden={tab !== "readme"}>
+        <ReadmePanel projectId={projectId} active={tab === "readme"} />
       </div>
 
       {hackatime && (

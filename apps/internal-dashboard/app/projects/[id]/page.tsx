@@ -127,8 +127,8 @@ async function CommitCount({ commits }: { commits: Promise<CommitResult> }) {
   return <>{(await commits).commits.length}</>;
 }
 
-async function Commits({ commits }: { commits: Promise<CommitResult> }) {
-  return <CommitList result={await commits} />;
+async function Commits({ commits, projectId }: { commits: Promise<CommitResult>; projectId: number }) {
+  return <CommitList result={await commits} projectId={projectId} />;
 }
 
 async function AirtableRecord({
@@ -424,7 +424,7 @@ export default async function ProjectPage({
           <Card padding="flush">
             <CardHeader title="Commits" icon="github" />
             <Suspense fallback={<EmptyState title="Loading commits..." icon="github" />}>
-              <Commits commits={commits} />
+              <Commits commits={commits} projectId={project.id} />
             </Suspense>
           </Card>
 

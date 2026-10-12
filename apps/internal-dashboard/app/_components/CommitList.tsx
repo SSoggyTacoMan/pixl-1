@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import type { CommitResult } from "@/lib/commits";
-import { Badge, Button, Callout, EmptyState, formatDate, Mono, Muted } from "@/app/_ui/ui";
+import { useEffect, useRef, useState } from "react";
+import type { Commit, CommitDiff, CommitResult } from "@/lib/commits";
+import { Badge, Button, Callout, EmptyState, formatDate, Icon, Mono, Muted } from "@/app/_ui/ui";
 
 const PER_PAGE = 8;
 
@@ -51,7 +51,194 @@ function Notice({ tone, children }: { tone: "danger" | "warning" | "neutral"; ch
   );
 }
 
-export function CommitList({ result }: { result: CommitResult }) {
+// One fetch per commit per page view, shared by the hover preview and the
+// inline view. A commit never changes, so there is nothing to invalidate.
+const diffRequests = new Map<string, Promise<CommitDiff>>();
+
+function loadDiff(projectId: number, sha: string): Promise<CommitDiff> {
+  const key = `${projectId}:${sha}`;
+  let request = diffRequests.get(key);
+  if (!request) {
+    request = fetch(`/api/projects/${projectId}/commits/${sha}`)
+      .then(async (res) => (res.ok ? ((await res.json()) as CommitDiff) : { files: [], moreFiles: 0, error: `http_${res.status}` }))
+      .catch(() => ({ files: [], moreFiles: 0, error: "fetch_failed" }));
+    diffRequests.set(key, request);
+    // Let a failed load be retried on the next open.
+    void request.then((d) => {
+      if (d.error) diffRequests.delete(key);
+    });
+  }
+  return request;
+}
+
+const DIFF_ERRORS: Record<string, string> = {
+  unsupported: "This git host doesn't expose commit diffs. Open the commit to read it there.",
+  rate_limited: "The git host's rate limit was hit. Try again in a bit.",
+  not_found: "That commit couldn't be found on the host.",
+};
+
+function lineKind(line: string): string | undefined {
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return undefined;
+}
+
+function DiffView({ projectId, sha }: { projectId: number; sha: string }) {
+  const [diff, setDiff] = useState<CommitDiff | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void loadDiff(projectId, sha).then((d) => {
+      if (live) setDiff(d);
+    });
+    return () => {
+      live = false;
+    };
+  }, [projectId, sha]);
+
+  if (!diff) return <p className="hc-caption p-4 text-sm">Loading diff...</p>;
+  if (diff.error) return <p className="hc-caption p-4 text-sm">{DIFF_ERRORS[diff.error] ?? "Couldn't load this diff right now."}</p>;
+  if (diff.files.length === 0) return <p className="hc-caption p-4 text-sm">This commit changed no files.</p>;
+
+  return (
+    <div className="hc-diff">
+      {diff.files.map((file) => (
+        <section key={file.path} className="hc-diff-file">
+          <header>
+            <Mono>{file.path}</Mono>
+            {file.status !== "modified" && <Badge>{file.status}</Badge>}
+            <span className="hc-mono ml-auto shrink-0 text-xs tabular-nums">
+              <span className="text-[var(--hc-green)]">+{file.additions}</span>{" "}
+              <span className="text-[var(--hc-red)]">-{file.deletions}</span>
+            </span>
+          </header>
+          {file.patch ? (
+            <pre>
+              {file.patch.split("\n").map((line, i) => (
+                <span key={i} data-kind={lineKind(line)}>
+                  {line || " "}
+                  {"\n"}
+                </span>
+              ))}
+            </pre>
+          ) : (
+            <p className="hc-caption px-3 py-2 text-xs">Binary file, or too large for the host to show inline.</p>
+          )}
+          {file.truncated && <p className="hc-caption px-3 py-2 text-xs">Diff cut off here. Open the commit for the rest.</p>}
+        </section>
+      ))}
+      {diff.moreFiles > 0 && (
+        <p className="hc-caption p-3 text-xs">And {diff.moreFiles} more files. Open the commit to see them all.</p>
+      )}
+    </div>
+  );
+}
+
+// A commit row. Hovering the hash previews the diff in a popover; clicking the
+// message opens it inline, where it stays until closed.
+function CommitRow({
+  commit: c,
+  dump,
+  gap,
+  projectId,
+}: {
+  commit: Commit;
+  dump: boolean;
+  gap?: number;
+  projectId?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [preview, setPreview] = useState(false);
+  const timer = useRef<number | null>(null);
+  const canDiff = projectId !== undefined;
+
+  function schedule(show: boolean, delay: number) {
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setPreview(show), delay);
+  }
+
+  useEffect(
+    () => () => {
+      if (timer.current) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  return (
+    <li className="relative border-b border-[var(--border)] text-sm last:border-b-0">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3">
+        <a
+          href={c.url}
+          target="_blank"
+          rel="noreferrer"
+          className="hc-link shrink-0"
+          onMouseEnter={canDiff && !open ? () => schedule(true, 350) : undefined}
+          onMouseLeave={canDiff ? () => schedule(false, 200) : undefined}
+        >
+          <Mono>{c.sha}</Mono>
+        </a>
+        {canDiff ? (
+          <button
+            type="button"
+            className="hc-commit-toggle min-w-0 flex-1"
+            aria-expanded={open}
+            title={open ? "Hide the diff" : "Show the diff"}
+            onClick={() => {
+              setPreview(false);
+              setOpen((o) => !o);
+            }}
+          >
+            <Icon glyph={open ? "down-caret" : "right-caret"} size={16} className="hc-muted shrink-0" />
+            <span className="min-w-0 break-words">{c.message}</span>
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 break-words">{c.message}</span>
+        )}
+        {c.ai && (
+          <span title="Signed by an AI tool (co-author trailer, bot author or generated-with footer). Check the AI-used disclosure.">
+            <Badge tone="purple">AI commit</Badge>
+          </span>
+        )}
+        {c.additions !== undefined && (
+          <span
+            className={`hc-mono shrink-0 text-xs tabular-nums ${dump ? "font-bold" : ""}`}
+            title={dump ? "Huge amount of code vs almost no tracked coding time: possible paste or AI dump." : "Lines added / removed"}
+          >
+            <span className="text-[var(--hc-green)]">+{c.additions}</span>{" "}
+            <span className="text-[var(--hc-red)]">-{c.deletions ?? 0}</span>
+          </span>
+        )}
+        {gap !== undefined && (
+          <span className="shrink-0 text-xs tabular-nums" title="Wall-clock time since the previous commit">
+            <Muted>+{fmtGap(gap)}</Muted>
+          </span>
+        )}
+        <TrackedBadge secs={c.tracked} />
+        <Muted className="hidden shrink-0 text-xs sm:inline">{c.author}</Muted>
+        <Muted className="shrink-0 text-xs">{c.date ? formatDate(c.date) : ""}</Muted>
+      </div>
+
+      {canDiff && open && (
+        <div className="border-t border-[var(--border)]">
+          <DiffView projectId={projectId} sha={c.sha} />
+        </div>
+      )}
+      {canDiff && preview && !open && (
+        <div
+          className="hc-diff-popover"
+          onMouseEnter={() => schedule(true, 0)}
+          onMouseLeave={() => schedule(false, 200)}
+        >
+          <DiffView projectId={projectId} sha={c.sha} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+// Pass projectId to let reviewers read each commit's diff in place.
+export function CommitList({ result, projectId }: { result: CommitResult; projectId?: number }) {
   const [page, setPage] = useState(0);
 
   // Not a repo url, or a host that answers neither the Forgejo (Gitea/Codeberg)
@@ -121,37 +308,7 @@ export function CommitList({ result }: { result: CommitResult }) {
             c.additions >= 200 &&
             c.additions / (Math.max(c.tracked, 60) / 3600) > 1500;
           return (
-            <li
-              key={c.sha}
-              className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-[var(--border)] px-4 py-3 text-sm last:border-b-0"
-            >
-              <a href={c.url} target="_blank" rel="noreferrer" className="hc-link shrink-0">
-                <Mono>{c.sha}</Mono>
-              </a>
-              <span className="min-w-0 flex-1 break-words">{c.message}</span>
-              {c.ai && (
-                <span title="Signed by an AI tool (co-author trailer, bot author or generated-with footer). Check the AI-used disclosure.">
-                  <Badge tone="purple">AI commit</Badge>
-                </span>
-              )}
-              {c.additions !== undefined && (
-                <span
-                  className={`hc-mono shrink-0 text-xs tabular-nums ${dump ? "font-bold" : ""}`}
-                  title={dump ? "Huge amount of code vs almost no tracked coding time: possible paste or AI dump." : "Lines added / removed"}
-                >
-                  <span className="text-[var(--hc-green)]">+{c.additions}</span>{" "}
-                  <span className="text-[var(--hc-red)]">−{c.deletions ?? 0}</span>
-                </span>
-              )}
-              {gaps.has(c.sha) && (
-                <span className="shrink-0 text-xs tabular-nums" title="Wall-clock time since the previous commit">
-                  <Muted>+{fmtGap(gaps.get(c.sha)!)}</Muted>
-                </span>
-              )}
-              <TrackedBadge secs={c.tracked} />
-              <Muted className="hidden shrink-0 text-xs sm:inline">{c.author}</Muted>
-              <Muted className="shrink-0 text-xs">{c.date ? formatDate(c.date) : ""}</Muted>
-            </li>
+            <CommitRow key={c.sha} commit={c} dump={dump} gap={gaps.get(c.sha)} projectId={projectId} />
           );
         })}
       </ul>

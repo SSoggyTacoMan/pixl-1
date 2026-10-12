@@ -1690,3 +1690,93 @@ html[data-density="compact"] .hc-main {
   border-radius: var(--radius-lg);
   background: var(--sunken);
 }
+
+/* ---- Commit diffs (app/_components/CommitList.tsx) ---- */
+
+.hc-commit-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hc-commit-toggle svg {
+  align-self: center;
+}
+
+.hc-commit-toggle:hover {
+  color: var(--primary);
+}
+
+.hc-diff {
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--sunken);
+}
+
+.hc-diff-file + .hc-diff-file {
+  border-top: 1px solid var(--border);
+}
+
+.hc-diff-file > header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.hc-diff-file pre {
+  margin: 0;
+  padding: 4px 0;
+  min-width: max-content;
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hc-diff-file pre span {
+  display: block;
+  padding: 0 12px;
+  white-space: pre;
+}
+
+.hc-diff-file pre span[data-kind="add"] {
+  background: color-mix(in srgb, var(--hc-green) 16%, transparent);
+}
+
+.hc-diff-file pre span[data-kind="del"] {
+  background: color-mix(in srgb, var(--hc-red) 16%, transparent);
+}
+
+.hc-diff-file pre span[data-kind="hunk"] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.hc-diff-popover {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% - 4px);
+  left: 12px;
+  right: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.hc-diff-popover .hc-diff {
+  max-height: 46vh;
+}
