@@ -235,7 +235,7 @@ export function ReviewDetailTabs({
 
   return (
     <Card padding="flush">
-      <div className="hc-tabs" role="tablist">
+      <div className="hc-tabs hc-tabs-fill" role="tablist">
         {tabs.map((t) => (
           <button
             key={t.key}
