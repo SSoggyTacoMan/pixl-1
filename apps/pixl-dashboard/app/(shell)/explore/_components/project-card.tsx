@@ -1,6 +1,7 @@
 // One project as the pixel-art trading card from the old explore page.
-// Cards don't link anywhere: the public project permalink isn't part of the
-// hardened relaunch (see app/(shell)/projects/[id]/page.tsx).
+// The title links to the project page (full view for your own projects,
+// read-only public view for everyone else's).
+import Link from "next/link";
 import { SafeImage } from "@/components/safe-image";
 import { hours, statusInfo, timeAgo } from "../lib";
 import type { ExploreProject, Owner } from "../types";
@@ -32,7 +33,9 @@ export function ProjectCard({ p, owner, canVote = true }: { p: ExploreProject; o
       </div>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img className="pc-frame" src="/img/pixl-ui/card_template.png" alt="" />
-      <div className="pc-title">{p.name}</div>
+      <div className="pc-title">
+        <Link href={`/projects/${Number(p.id)}`}>{p.name}</Link>
+      </div>
       {p.is_peak ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img className="pc-star" src={icon("star")} alt="Beacon" />

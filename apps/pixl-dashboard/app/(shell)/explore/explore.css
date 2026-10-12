@@ -53,6 +53,8 @@
 .pc-photo img { width: 100%; height: 100%; object-fit: cover; image-rendering: auto; }
 .pc-title, .pc-by, .pc-date span, .pc-status span, .pc-pill span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pc-title { --x: 12; --y: 114; --w: 150; --h: 18; font-size: calc(13 * var(--u)); line-height: calc(18 * var(--u)); }
+.pc-title a { color: inherit; text-decoration: none; }
+.pc-title a:hover { text-decoration: underline; }
 .proj-card .pc-star { --x: 165; --y: 115; --w: 16; --h: 16; }
 .pc-avatar { --x: 18; --y: 136; --w: 18; --h: 18; overflow: hidden; }
 .pc-avatar .avatar { width: 100%; height: 100%; border: 0; font-size: calc(10 * var(--u)); background: #ece0bd; color: #16161e; }
