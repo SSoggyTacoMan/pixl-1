@@ -21,12 +21,10 @@ const ALLOWED_PATHS := [
 	"explore/leaderboard",
 	"ideas",
 	"show-n-tell",
-	"timeline",
 	"calc",
 	"vault",
 	"collectibles",
 	"refers",
-	"hackatime",
 ]
 
 # Browsers only allow window.open while the page has a recent user gesture.

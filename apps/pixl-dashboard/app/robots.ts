@@ -9,7 +9,7 @@ export default function robots(): MetadataRoute.Robots {
       disallow: [
         "/api/", "/login", "/journals/",
         "/dashboard", "/projects", "/shop", "/orders", "/quests", "/trials", "/account", "/report",
-        "/explore", "/ideas", "/vault", "/timeline", "/calc", "/show-n-tell", "/collectibles", "/refers", "/hackatime",
+        "/explore", "/ideas", "/vault", "/calc", "/show-n-tell", "/collectibles", "/refers",
       ],
     },
     sitemap: `${config.urls.site}/sitemap.xml`,
