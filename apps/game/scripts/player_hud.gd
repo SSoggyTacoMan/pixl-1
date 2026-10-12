@@ -714,6 +714,16 @@ func _refresh_list() -> void:
 			you.add_theme_color_override("font_color", PixlTheme.color("gold"))
 			you.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			row.add_child(you)
+		var pid := String(entry[2])
+		if WebPages.is_allowed("explore/players/" + pid):
+			var view := Button.new()
+			view.theme_type_variation = &"StepButton"
+			view.text = "View"
+			_ssize(view, 14)
+			view.pressed.connect(func():
+				_list_root.visible = false
+				WebPages.open("explore/players/" + pid))
+			row.add_child(view)
 		_list_box.add_child(row)
 
 func _on_logged_in(display_name: String) -> void:

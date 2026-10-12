@@ -17,6 +17,16 @@ const ALLOWED_PATHS := [
 	"account",
 	"report",
 	"docs",
+	"explore",
+	"explore/leaderboard",
+	"ideas",
+	"show-n-tell",
+	"timeline",
+	"calc",
+	"vault",
+	"collectibles",
+	"refers",
+	"hackatime",
 ]
 
 # Browsers only allow window.open while the page has a recent user gesture.
@@ -95,7 +105,22 @@ static func is_allowed(path: String) -> bool:
 			if not ((c >= "a" and c <= "z") or (c >= "0" and c <= "9") or c == "-"):
 				return false
 		return true
+	# explore/players/<uuid>: a player's profile, the id strictly UUID-shaped.
+	if path.begins_with("explore/players/"):
+		return _is_uuid(path.substr(16))
 	return false
+
+static func _is_uuid(s: String) -> bool:
+	if s.length() != 36:
+		return false
+	for i in s.length():
+		var c := s[i]
+		if i == 8 or i == 13 or i == 18 or i == 23:
+			if c != "-":
+				return false
+		elif not ((c >= "a" and c <= "f") or (c >= "A" and c <= "F") or (c >= "0" and c <= "9")):
+			return false
+	return true
 
 func _in_gameplay() -> bool:
 	var cur := get_tree().current_scene

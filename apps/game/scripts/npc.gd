@@ -234,8 +234,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if opens_projects:
 			WebPages.open("projects")
 		elif opens_explore:
-			# The explore boards aren't a core page anymore; land on the dashboard.
-			WebPages.open("dashboard")
+			WebPages.open("explore")
 		elif quest_trial:
 			_start_trial_quest()
 		elif quest_project:

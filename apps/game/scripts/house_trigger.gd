@@ -79,8 +79,9 @@ func _process(_delta: float) -> void:
 	match action:
 		"projects":
 			WebPages.open("projects")
-		"explore", "leaderboard":
-			# The explore boards and leaderboard aren't core pages anymore.
-			WebPages.open("dashboard")
+		"explore":
+			WebPages.open("explore")
+		"leaderboard":
+			WebPages.open("explore/leaderboard")
 		"shop":
 			WebPages.open("shop")
