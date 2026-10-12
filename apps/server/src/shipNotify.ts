@@ -1,4 +1,6 @@
 import { DASH_URL } from "./reports.js";
+import { pixorpheusUrl } from "./pixoUrl.js";
+import { callPixo, type PixoCallDeps } from "./pixoCall.js";
 import { escapeMrkdwn, escapeMrkdwnWithin, safeHttpUrl, slackLinkUrl } from "./slackEscape.js";
 
 // Pings the team's ship-alerts channel with a rich preview whenever a project
@@ -134,19 +136,20 @@ export function resubmitMessage(project: { id: number; name: string }): string {
 export async function dmReviewerOfResubmit(
   reviewerSlackId: string,
   project: { id: number; name: string },
+  deps?: PixoCallDeps,
 ): Promise<void> {
   const key = process.env.EXTERNAL_API_KEY;
-  const base = process.env.PIXORPHEUS_URL;
-  if (!key || !base || !/^[UW][A-Z0-9]{5,20}$/.test(reviewerSlackId)) return;
-  try {
-    const r = await fetch(new URL("/api/external/dm", base), {
+  const base = pixorpheusUrl();
+  if (!key || !/^[UW][A-Z0-9]{5,20}$/.test(reviewerSlackId)) return;
+  // Never throws; a stopped Pixo is logged + audited by callPixo.
+  await callPixo(
+    "resubmit.dm",
+    `${base}/api/external/dm`,
+    {
       method: "POST",
       headers: { "x-api-key": key, "Content-Type": "application/json" },
       body: JSON.stringify({ userId: reviewerSlackId, message: resubmitMessage(project) }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!r.ok) console.error("dmReviewerOfResubmit: Pixorpheus rejected the DM", r.status);
-  } catch (e) {
-    console.error("dmReviewerOfResubmit failed", e);
-  }
+    },
+    deps,
+  );
 }

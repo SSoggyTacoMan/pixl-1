@@ -1,4 +1,4 @@
-import { supabase } from "./db/client.js";
+import { db } from "./db/client.js";
 import {
   MAX_LEVEL,
   levelForRe,
@@ -66,7 +66,7 @@ export async function approvedHoursFor(
  * apps/server/src/routes/vault.ts), but any future flat RE grant belongs here
  * too, not stapled onto a project row the way trialBonusRe is. */
 export async function bonusReFor(userId: string): Promise<number> {
-  const { data } = await supabase
+  const { data } = await db
     .from("vault_chapter_awards")
     .select("re_awarded")
     .eq("user_id", userId);
@@ -92,12 +92,12 @@ export async function lifetimeRe(userId: string, excludeProjectId?: number): Pro
 // an aggregate this size).
 export async function totalCommunityRe(): Promise<number> {
   const [{ data: projects }, { data: awards }] = await Promise.all([
-    supabase
+    db
       .from("projects")
       .select("approved_hours, hackatime_seconds, level, sidequest_id")
       .eq("status", "approved")
       .is("banned_at", null),
-    supabase.from("vault_chapter_awards").select("re_awarded"),
+    db.from("vault_chapter_awards").select("re_awarded"),
   ]);
   const projectRe = ((projects ?? []) as ProjectRow[]).reduce((s, p) => s + reOf(p), 0);
   const bonusRe = (awards ?? []).reduce((s, r) => s + (Number(r.re_awarded) || 0), 0);
@@ -108,7 +108,7 @@ async function approvedProjectsFor(
   userId: string,
   excludeProjectId?: number,
 ): Promise<ProjectRow[]> {
-  let q = supabase
+  let q = db
     .from("projects")
     .select("id, approved_hours, hackatime_seconds, level, sidequest_id")
     .eq("user_id", userId)
@@ -131,7 +131,7 @@ export async function topChapterContributors(
   windowStart: Date | null,
   limit: number,
 ): Promise<{ userId: string; re: number }[]> {
-  let q = supabase
+  let q = db
     .from("review_audits")
     .select(
       "project_id, created_at, projects(user_id, approved_hours, hackatime_seconds, level, sidequest_id, status, banned_at)",
@@ -179,12 +179,12 @@ export async function levelFor(userId: string, excludeProjectId?: number): Promi
 // factor moves with the mix - the thresholds were flagged as guesses anyway).
 export async function communityEnergy(): Promise<number> {
   const [{ data }, { data: awards }] = await Promise.all([
-    supabase
+    db
       .from("projects")
       .select("approved_hours, hackatime_seconds, level, sidequest_id")
       .eq("status", "approved")
       .is("banned_at", null),
-    supabase.from("vault_chapter_awards").select("re_awarded"),
+    db.from("vault_chapter_awards").select("re_awarded"),
   ]);
   const projectRe = (data ?? []).reduce((s, p) => s + reOf(p as ProjectRow), 0);
   const awardRe = (awards ?? []).reduce((s, r) => s + (Number(r.re_awarded) || 0), 0);
@@ -199,7 +199,7 @@ export async function communityEnergy(): Promise<number> {
 // vault page can show it as a separate, distinctly-colored "in review" figure
 // rather than folding it into the confirmed total.
 export async function pendingCommunityEnergy(): Promise<number> {
-  const { data } = await supabase
+  const { data } = await db
     .from("projects")
     .select("approved_hours, hackatime_seconds, level, sidequest_id")
     .in("status", ["second_review", "fraud_review"])

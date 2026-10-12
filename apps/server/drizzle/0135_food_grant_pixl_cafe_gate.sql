@@ -11,7 +11,7 @@
 -- semantics, per 0129).
 --
 -- NOTE: this file documents what was already run directly against the
--- Orchard/CNPG database (psql, not Supabase) on 2026-08-21. It's still
+-- Orchard/CNPG database (psql) on 2026-08-21. It's still
 -- idempotent / safe to run again — INSERT is guarded by NOT EXISTS.
 --
 -- Target: the orchard/CNPG database. Run in psql.

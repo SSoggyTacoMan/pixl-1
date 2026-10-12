@@ -9,6 +9,7 @@ const {
   scopePersonalItems,
   NEW_ITEM_DAYS,
   BUYERS_VISIBLE_MIN,
+  approvedTrialIds,
 } = await import("./shop.js");
 
 describe("regionMismatch", () => {
@@ -129,5 +130,28 @@ describe("scopePersonalItems", () => {
 
   test("items from before the column existed (no key) stay in the catalog", () => {
     expect(scopePersonalItems([{ id: 9, name: "Old" }], null)).toHaveLength(1);
+  });
+});
+
+describe("approvedTrialIds (Trial-gated unlocks)", () => {
+  const p = (id: number, sidequest_id: number | null, status: string, banned_at: string | null = null) => ({ id, sidequest_id, status, banned_at });
+
+  test("a project only in the review queue (unshippable) unlocks nothing", () => {
+    expect([...approvedTrialIds([p(1, 5, "shipped"), p(2, 6, "second_review")], [])]).toEqual([]);
+  });
+
+  test("an approved project unlocks its Trial", () => {
+    expect([...approvedTrialIds([p(1, 5, "approved")], [])]).toEqual([5]);
+  });
+
+  test("approved at some point still counts after an update ship or a needs_changes", () => {
+    const approvals = [{ project_id: 1, amount: 120 }];
+    expect([...approvedTrialIds([p(1, 5, "needs_changes")], approvals)]).toEqual([5]);
+    expect([...approvedTrialIds([p(1, 5, "shipped")], approvals)]).toEqual([5]);
+  });
+
+  test("a reverted approval or a ban takes it away", () => {
+    expect([...approvedTrialIds([p(1, 5, "draft")], [{ project_id: 1, amount: 120 }, { project_id: 1, amount: -120 }])]).toEqual([]);
+    expect([...approvedTrialIds([p(1, 5, "approved", "2026-10-01")], [{ project_id: 1, amount: 120 }])]).toEqual([]);
   });
 });

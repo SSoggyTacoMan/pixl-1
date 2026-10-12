@@ -1,18 +1,22 @@
 import { app } from "../slack/app.js";
-import { GABIN_ID } from "../constants.js";
 import { aiPost } from "../ai/client.js";
 import { sanitizeAIOutput } from "../ai/outputFilter.js";
 import { checkAiRateLimit, AI_RATE_LIMIT_MESSAGE } from "../ai/rateLimit.js";
-import { userMemory, personalityMemory, parseFacts, getDisplayName, GARBAGE_PATTERNS } from "../memory/users.js";
+import { getSafeFacts, getSafeTraits, getDisplayName, GARBAGE_PATTERNS } from "../memory/users.js";
+import { isSlackAdmin } from "../slack/admins.js";
+import { audit } from "../audit.js";
 import { programMemory, addProgramFact, removeProgramFact } from "../memory/program.js";
-import { checkIsHelper, checkIsInTicketChannel } from "../tickets/service.js";
+import { checkIsHelper } from "../tickets/service.js";
 
-app.command("/pixl-remember", async ({ command, ack, respond, client }) => {
+// Program facts are injected into every prompt Pixo builds, for everyone,
+// so writing them is an admin-only power (SLACK_ADMIN_USER_IDS): not helpers,
+// not ticket-channel members, and no hardcoded per-person bypass.
+app.command("/pixl-remember", async ({ command, ack, respond }) => {
   await ack();
-  const isAdmin = await checkIsHelper(command.user_id);
-  const isInTicketChannel = await checkIsInTicketChannel(command.user_id, client);
-  if (!isAdmin && !isInTicketChannel && command.user_id !== GABIN_ID) {
-    await respond({ text: "Only support team members can add to my memory." });
+  const admin = isSlackAdmin(command.user_id);
+  if (!admin) {
+    await audit({ action: "program_memory.add", slackId: command.user_id, result: "denied" }, false);
+    await respond({ text: "Only Pixl admins can add to my memory." });
     return;
   }
   const fact = command.text?.trim();
@@ -21,15 +25,15 @@ app.command("/pixl-remember", async ({ command, ack, respond, client }) => {
     return;
   }
   await addProgramFact(fact);
+  await audit({ action: "program_memory.add", slackId: command.user_id, result: "ok" }, true);
   await respond({ text: `got it, i'll remember: _${fact}_` });
 });
 
-app.command("/pixl-forget", async ({ command, ack, respond, client }) => {
+app.command("/pixl-forget", async ({ command, ack, respond }) => {
   await ack();
-  const isAdmin = await checkIsHelper(command.user_id);
-  const isInTicketChannel = await checkIsInTicketChannel(command.user_id, client);
-  if (!isAdmin && !isInTicketChannel) {
-    await respond({ text: "Only support team members can modify my memory." });
+  if (!isSlackAdmin(command.user_id)) {
+    await audit({ action: "program_memory.remove", slackId: command.user_id, result: "denied" }, false);
+    await respond({ text: "Only Pixl admins can modify my memory." });
     return;
   }
   if (!programMemory.length) {
@@ -45,14 +49,13 @@ app.command("/pixl-forget", async ({ command, ack, respond, client }) => {
   }
   const removed = programMemory[idx];
   await removeProgramFact(idx);
+  await audit({ action: "program_memory.remove", slackId: command.user_id, result: "ok" }, true);
   await respond({ text: `forgot: _${removed}_` });
 });
 
-app.command("/pixl-memories", async ({ command, ack, respond, client }) => {
+app.command("/pixl-memories", async ({ command, ack, respond }) => {
   await ack();
-  const isAdmin = await checkIsHelper(command.user_id);
-  const isInTicketChannel = await checkIsInTicketChannel(command.user_id, client);
-  if (!isAdmin && !isInTicketChannel) {
+  if (!(await checkIsHelper(command.user_id))) {
     await respond({
       text: "Only support team members can view stored memories.",
     });
@@ -80,16 +83,24 @@ app.command("/pixl-mymemory", async ({ command, ack, respond }) => {
   const targetId = mentionMatch ? mentionMatch[1] : command.user_id;
   const isSelf = targetId === command.user_id;
 
-  // Memory is harvested from private DMs and can contain sensitive facts,
-  // only the subject themself or a helper/admin can look it up.
-  if (!isSelf && !(await checkIsHelper(command.user_id))) {
-    await respond({ text: "you can only look up your own memory.", response_type: "ephemeral" });
-    return;
+  // Memory is harvested from private DMs, so only the subject themself or a
+  // Pixl admin (SLACK_ADMIN_USER_IDS, env only) can look it up. Helpers and
+  // ticket-channel members no longer can, and every cross-user lookup is
+  // audited.
+  if (!isSelf) {
+    const admin = isSlackAdmin(command.user_id);
+    await audit(
+      { action: "memory.read_other", slackId: command.user_id, target: `slack:${targetId}`, result: admin ? "ok" : "denied" },
+      admin,
+    );
+    if (!admin) {
+      await respond({ text: "you can only look up your own memory.", response_type: "ephemeral" });
+      return;
+    }
   }
 
-  const list = parseFacts(userMemory.get(targetId));
-  const traitList = parseFacts(personalityMemory.get(targetId));
-  const cleanFacts = list.filter((f) => !GARBAGE_PATTERNS.some((p) => p.test(f)));
+  const traitList = getSafeTraits(targetId);
+  const cleanFacts = getSafeFacts(targetId).filter((f) => !GARBAGE_PATTERNS.some((p) => p.test(f)));
 
   const displayName = getDisplayName(targetId) || (isSelf ? "you" : `<@${targetId}>`);
 

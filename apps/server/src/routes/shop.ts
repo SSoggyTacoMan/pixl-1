@@ -1,13 +1,31 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { orValue } from "../db/pgCompat.js";
 import { activeEvents } from "../events.js";
 import { levelFor } from "../xp.js";
 import { addNotification } from "./notifications.js";
 import { decryptPII, encryptPII } from "../crypto.js";
+import { z } from "zod";
+import { validate, v, optStr, optNum, params } from "../http/validate.js";
 
 const router = Router();
+
+// Structured configurator picks (shop_items.config_options). A flat object
+// of short scalars or short lists, nothing deeper.
+const shopConfig = z
+  .record(
+    z.string().max(100),
+    z.union([
+      z.string().max(1000),
+      z.number(),
+      z.boolean(),
+      z.null(),
+      z.array(z.union([z.string().max(1000), z.number()])).max(50),
+    ]),
+  )
+  .refine((o) => Object.keys(o).length <= 50, "too many options")
+  .nullable()
+  .optional();
 
 const SHOP_REGIONS = ["US", "ASIA", "NORTH_AMERICA", "SOUTH_AMERICA", "EUROPE", "INDIA", "AFRICA", "BANGLADESH"];
 
@@ -55,7 +73,7 @@ export function regionForCountry(country: string): string {
 }
 
 async function regionFor(userId: string): Promise<string> {
-  const { data } = await supabase
+  const { data } = await db
     .from("users")
     .select("region, region_auto, address_country")
     .eq("id", userId)
@@ -150,7 +168,7 @@ export function scopePersonalItems<T extends Record<string, unknown>>(
 // XP requirement regardless of region , never scope them to a region.
 async function fetchItems(filterIds?: number[], region?: string) {
   const build = (cols: string, withRegion: boolean) => {
-    let q = supabase.from("shop_items").select(cols);
+    let q = db.from("shop_items").select(cols);
     if (filterIds) q = q.in("id", filterIds);
     else q = q.eq("active", true);
     // A personal item (reserved_user_id) is not tied to a region, it is
@@ -186,7 +204,7 @@ async function fetchItems(filterIds?: number[], region?: string) {
 async function attachStock(items: Record<string, unknown>[]): Promise<void> {
   const ids = items.map((i) => Number(i.id)).filter((id) => Number.isFinite(id));
   if (!ids.length) return;
-  const { data } = await supabase
+  const { data } = await db
     .from("shop_option_stock")
     .select("item_id, choice, total, remaining")
     .in("item_id", ids);
@@ -212,7 +230,7 @@ async function attachStock(items: Record<string, unknown>[]): Promise<void> {
 // exist, and a shop that won't load is a far worse outcome than a shop with no
 // buyer counts. Same spirit as ITEM_COLUMNS_FALLBACK above.
 async function attachBuyerCounts(items: Record<string, unknown>[]): Promise<void> {
-  const { data, error } = await supabase.rpc("shop_item_buyer_counts");
+  const { data, error } = await db.rpc("shop_item_buyer_counts");
   const byItem = new Map<number, number>();
   if (error) {
     console.error("[shop] buyer counts failed", error);
@@ -263,6 +281,44 @@ function applyDiscount(items: Record<string, unknown>[]): void {
   }
 }
 
+// The Trials a player has unlocked for Trial-gated items: a project linked
+// to the Trial that a reviewer approved, now or at some point (its net
+// approval payout still stands), and that isn't banned. Merely sitting in
+// the review queue doesn't count any more: a "shipped" project can be
+// withdrawn (unship) straight after a purchase, so ship -> buy -> unship got
+// the prize for a placeholder project. A DB error unlocks nothing.
+export function approvedTrialIds(
+  projects: { id: unknown; sidequest_id: unknown; status: unknown; banned_at: unknown }[],
+  approvals: { project_id: unknown; amount: unknown }[],
+): Set<number> {
+  const net = new Map<number, number>();
+  for (const t of approvals) net.set(Number(t.project_id), (net.get(Number(t.project_id)) ?? 0) + Number(t.amount || 0));
+  const out = new Set<number>();
+  for (const p of projects) {
+    if (p.sidequest_id == null || p.banned_at) continue;
+    if (p.status === "approved" || (net.get(Number(p.id)) ?? 0) > 0) out.add(Number(p.sidequest_id));
+  }
+  return out;
+}
+
+export async function unlockedTrialIds(userId: string): Promise<Set<number>> {
+  const { data: projects, error } = await db
+    .from("projects")
+    .select("id, sidequest_id, status, banned_at")
+    .eq("user_id", userId)
+    .not("sidequest_id", "is", null);
+  if (error || !projects || projects.length === 0) return new Set();
+  const ids = projects.map((p) => Number((p as { id: unknown }).id));
+  const { data: approvals, error: txError } = await db
+    .from("pixel_transactions")
+    .select("project_id, amount")
+    .eq("user_id", userId)
+    .in("project_id", ids)
+    .in("reason", ["project_approved", "review_reverted"]);
+  if (txError) return approvedTrialIds(projects as never[], []);
+  return approvedTrialIds(projects as never[], (approvals ?? []) as never[]);
+}
+
 // How many Beacon-locked items this player can still unlock: one unlock per
 // Beacon project they have (projects.is_peak, live/not banned/rejected/
 // archived), minus however many distinct beacon_locked items they already
@@ -272,7 +328,7 @@ function applyDiscount(items: Record<string, unknown>[]): void {
 // buying it again never spends another unlock.
 async function beaconUnlocks(userId: string): Promise<{ available: number; owned: Set<number> }> {
   const [{ count: beaconCount }, { data: beaconItemIds }] = await Promise.all([
-    supabase
+    db
       .from("projects")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
@@ -280,11 +336,11 @@ async function beaconUnlocks(userId: string): Promise<{ available: number; owned
       .is("archived_at", null)
       .is("rejected_at", null)
       .is("banned_at", null),
-    supabase.from("shop_items").select("id").eq("beacon_locked", true),
+    db.from("shop_items").select("id").eq("beacon_locked", true),
   ]);
   const ids = ((beaconItemIds ?? []) as { id: number }[]).map((i) => i.id);
   if (ids.length === 0) return { available: beaconCount ?? 0, owned: new Set() };
-  const { data: orders } = await supabase
+  const { data: orders } = await db
     .from("shop_orders")
     .select("item_id")
     .eq("user_id", userId)
@@ -303,10 +359,10 @@ async function beaconUnlocks(userId: string): Promise<{ available: number; owned
 // of that up against. Buying/saving/claiming still require a session, same
 // as before.
 router.get("/api/shop/items", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
-  // invalid token != guest
-  const sessionExpired = !!token && !session;
+  const session = req.session;
+  // Kept in the response for older clients; an expired session is now a 401
+  // from the auth gate before this handler runs.
+  const sessionExpired = false;
 
   const region = session ? await regionFor(session.userId) : "US";
   const { data, error } = await fetchItems(undefined, region);
@@ -345,7 +401,7 @@ router.get("/api/shop/items", async (req, res) => {
     ? new Map(
         (
           (
-            await supabase
+            await db
               .from("shop_saves")
               .select("item_id, option, config")
               .eq("user_id", session.userId)
@@ -371,15 +427,15 @@ router.get("/api/shop/items", async (req, res) => {
   if (hasTrophies && session) {
     const [level, { data: claims }] = await Promise.all([
       levelFor(session.userId),
-      supabase.from("shop_claims").select("item_id").eq("user_id", session.userId),
+      db.from("shop_claims").select("item_id").eq("user_id", session.userId),
     ]);
     xp = level;
     claimed = ((claims ?? []) as { item_id: number }[]).map((c) => c.item_id);
   }
 
   // Trial-gated items: an item with unlock_trial_ids is locked until the player
-  // has shipped (reached review on) a project linked to at least one of those
-  // Trials. We attach `locked` and the Trial names so the client can show what
+  // has had a project linked to at least one of those Trials approved (see
+  // unlockedTrialIds). We attach `locked` and the Trial names so the client can show what
   // to build to unlock it.
   const gatedIds = [
     ...new Set(
@@ -392,18 +448,10 @@ router.get("/api/shop/items", async (req, res) => {
     // A signed-out visitor hasn't shipped anything, so every gated item is
     // locked for them , skip the shipped-projects lookup entirely rather than
     // querying it against no user.
-    const [{ data: shipped }, { data: trials }] = await Promise.all([
-      session
-        ? supabase
-            .from("projects")
-            .select("sidequest_id")
-            .eq("user_id", session.userId)
-            .not("sidequest_id", "is", null)
-            .in("status", ["shipped", "fraud_review", "second_review", "approved"])
-        : Promise.resolve({ data: [] as { sidequest_id: number }[] }),
-      supabase.from("sidequests").select("id, name, active").in("id", gatedIds),
+    const [done, { data: trials }] = await Promise.all([
+      session ? unlockedTrialIds(session.userId) : Promise.resolve(new Set<number>()),
+      db.from("sidequests").select("id, name, active").in("id", gatedIds),
     ]);
-    const done = new Set(((shipped ?? []) as { sidequest_id: number }[]).map((r) => Number(r.sidequest_id)));
     const trialRows = (trials ?? []) as { id: number; name: string; active: boolean }[];
     const nameById = new Map(trialRows.map((t) => [Number(t.id), t.name]));
     const activeById = new Map(trialRows.map((t) => [Number(t.id), !!t.active]));
@@ -460,16 +508,15 @@ router.get("/api/shop/items", async (req, res) => {
 });
 
 // Switch which regional catalog the player shops from.
-router.post("/api/shop/region", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/region", validate({ query: v.noQuery, body: z.object({ region: optStr(16) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const region = typeof req.body?.region === "string" ? req.body.region : "";
   if (!SHOP_REGIONS.includes(region))
     return res.status(400).json({ ok: false, error: "invalid_region" });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ region, region_auto: false })
     .eq("id", session.userId);
@@ -488,7 +535,7 @@ router.get("/api/shop/item/:id/public", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("shop_items")
     .select("id, name, description, price, image_url")
     .eq("id", id)
@@ -507,14 +554,13 @@ router.get("/api/shop/item/:id/public", async (req, res) => {
 // "Ridit" Signed Org Photos are left) , polled from the item detail page so
 // counts stay current as other players buy without a full page reload.
 router.get("/api/shop/stock/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("shop_option_stock")
     .select("choice, total, remaining")
     .eq("item_id", id);
@@ -528,15 +574,14 @@ router.get("/api/shop/stock/:id", async (req, res) => {
 // Claim a trophy the player has earned. Server-authoritative: it re-checks the
 // XP requirement, so a client can't claim early. Idempotent via the unique
 // (user_id, item_id) constraint.
-router.post("/api/shop/claim/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/claim/:id", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: item } = await supabase
+  const { data: item } = await db
     .from("shop_items")
     .select("id, name, unlock_xp, active")
     .eq("id", id)
@@ -549,7 +594,7 @@ router.post("/api/shop/claim/:id", async (req, res) => {
   if (xp < unlockXp)
     return res.status(400).json({ ok: false, error: "not_eligible", xp, need: unlockXp });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("shop_claims")
     .upsert(
       { user_id: session.userId, item_id: id },
@@ -573,9 +618,8 @@ router.post("/api/shop/claim/:id", async (req, res) => {
 // every group. Re-posting while already saved overwrites the stored picks ,
 // the detail page calls this again on every config change once an item is
 // pinned, so a saved build stays in sync as the player keeps deciding.
-router.post("/api/shop/save/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/save/:id", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ option: optStr(1000), config: shopConfig }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -584,7 +628,7 @@ router.post("/api/shop/save/:id", async (req, res) => {
   const config =
     req.body?.config && typeof req.body.config === "object" ? req.body.config : null;
 
-  const { error } = await supabase
+  const { error } = await db
     .from("shop_saves")
     .upsert(
       { user_id: session.userId, item_id: id, option, config },
@@ -597,15 +641,14 @@ router.post("/api/shop/save/:id", async (req, res) => {
   res.json({ ok: true, saved: true });
 });
 
-router.delete("/api/shop/save/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/shop/save/:id", validate({ query: v.noQuery, params: params({ id: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("shop_saves")
     .delete()
     .eq("user_id", session.userId)
@@ -626,12 +669,11 @@ const ORDER_COLUMNS_FALLBACK =
   "id, item_name, option, price, status, note, created_at, fulfilled_at";
 
 router.get("/api/shop/orders", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const build = (cols: string) =>
-    supabase
+    db
       .from("shop_orders")
       .select(cols)
       .eq("user_id", session.userId)
@@ -652,7 +694,7 @@ router.get("/api/shop/orders", async (req, res) => {
   // how many orders (anyone's) are ahead of theirs.
   const pendingIds = new Set(orders.filter((o) => o.status === "pending").map((o) => o.id));
   if (pendingIds.size > 0) {
-    const { data: queue, error: queueError } = await supabase
+    const { data: queue, error: queueError } = await db
       .from("shop_orders")
       .select("id, created_at")
       .eq("status", "pending")
@@ -682,15 +724,14 @@ router.get("/api/shop/orders", async (req, res) => {
 // it's idempotent), just reached from the player's own Orders tab instead of
 // /fulfillment - p_by is tagged "(self-cancel)" so the fulfillment log can
 // tell the two apart.
-router.post("/api/shop/orders/:id/cancel", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/orders/:id/cancel", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: order } = await supabase
+  const { data: order } = await db
     .from("shop_orders")
     .select("user_id, status")
     .eq("id", id)
@@ -700,7 +741,7 @@ router.post("/api/shop/orders/:id/cancel", async (req, res) => {
   if (order.status !== "pending")
     return res.status(400).json({ ok: false, error: "not_cancellable" });
 
-  const { data: refunded, error } = await supabase.rpc("cancel_shop_order", {
+  const { data: refunded, error } = await db.rpc("cancel_shop_order", {
     p_order_id: id,
     p_by: `${session.displayName} (self-cancel)`,
   });
@@ -715,14 +756,13 @@ router.post("/api/shop/orders/:id/cancel", async (req, res) => {
 // pixels deducted) happen inside buy_shop_item under a row lock, so a
 // double-click can't overspend. On success we open a pending order the team
 // fulfils from the dashboard and tell the player to expect us.
-router.post("/api/shop/buy/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ phone: optStr(64), option: optStr(1000), config: shopConfig, quantity: optNum, note: optStr(2000), stockChoice: optStr(500) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   // We physically ship every order, so an address has to be on file before we
   // let the purchase through , see /account in apps/game/web.
-  const { data: buyer } = await supabase
+  const { data: buyer } = await db
     .from("users")
     .select("address_line1, address_city, address_country, address_postal, phone")
     .eq("id", session.userId)
@@ -748,7 +788,7 @@ router.post("/api/shop/buy/:id", async (req, res) => {
     const rawPhone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
     if (rawPhone.length < 7 || rawPhone.length > 20)
       return res.status(400).json({ ok: false, error: "phone_required" });
-    const { error: phoneErr } = await supabase
+    const { error: phoneErr } = await db
       .from("users")
       .update({ phone: encryptPII(rawPhone) })
       .eq("id", session.userId);
@@ -776,7 +816,7 @@ router.post("/api/shop/buy/:id", async (req, res) => {
   // unlocking Trials (mirrors the `locked` flag computed for the catalog).
   // A manual lock (see updateShopItem in the dashboard) blocks purchase
   // outright, independent of any Trial.
-  const { data: gateRow } = await supabase
+  const { data: gateRow } = await db
     .from("shop_items")
     .select("unlock_trial_ids, manual_locked, region, unlock_xp, beacon_locked, reserved_user_id")
     .eq("id", id)
@@ -799,18 +839,12 @@ router.post("/api/shop/buy/:id", async (req, res) => {
     ? ((gateRow as { unlock_trial_ids: unknown[] }).unlock_trial_ids).map(Number).filter((n) => Number.isFinite(n) && n > 0)
     : [];
   if (gateIds.length > 0) {
-    const { data: shipped } = await supabase
-      .from("projects")
-      .select("sidequest_id")
-      .eq("user_id", session.userId)
-      .not("sidequest_id", "is", null)
-      .in("status", ["shipped", "fraud_review", "second_review", "approved"]);
-    const done = new Set(((shipped ?? []) as { sidequest_id: number }[]).map((r) => Number(r.sidequest_id)));
+    const done = await unlockedTrialIds(session.userId);
     if (!gateIds.some((tid) => done.has(tid)))
       return res.status(403).json({ ok: false, error: "locked" });
   }
 
-  const { data, error } = await supabase.rpc("buy_shop_item", {
+  const { data, error } = await db.rpc("buy_shop_item", {
     p_user_id: session.userId,
     p_item_id: id,
     p_option: option,
@@ -833,7 +867,10 @@ router.post("/api/shop/buy/:id", async (req, res) => {
     quantity?: number;
   };
   if (!result.ok) {
-    return res.status(result.error === "insufficient" ? 400 : 409).json(result);
+    // "locked" comes from the Beacon check buy_shop_item runs under the row
+    // lock (0217), same meaning as the route's own 403 locked above.
+    const status = result.error === "insufficient" ? 400 : result.error === "locked" ? 403 : 409;
+    return res.status(status).json(result);
   }
 
   const qtyPrefix = (result.quantity ?? 1) > 1 ? `${result.quantity}x ` : "";

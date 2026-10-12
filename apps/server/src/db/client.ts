@@ -1,9 +1,6 @@
-import { db } from "./pgCompat.js";
-
-// Talks straight to Orchard Postgres over DATABASE_URL. The name is kept so
-// the existing call sites don't all have to change at once; the builder API
-// it exposes is the same subset they were already using.
-export const supabase = db;
+// Talks straight to Orchard Postgres over DATABASE_URL through the query
+// builder in pgCompat.ts.
+export { db } from "./pgCompat.js";
 
 // --- Types matching the table shapes (snake_case, matching Postgres columns) ---
 export interface UserRow {

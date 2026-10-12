@@ -1,6 +1,10 @@
-import { supabase } from "./db/client.js";
+import { db } from "./db/client.js";
 import { orValue } from "./db/pgCompat.js";
 import { verifySessionToken } from "./auth/session.js";
+import { bearerToken } from "./http/bearer.js";
+import { auditRequestThrottled } from "./audit.js";
+import { externalDmUrl } from "./pixoUrl.js";
+import { callPixo, type PixoCallDeps } from "./pixoCall.js";
 
 // Normalized roots (see normalize below): lowercase, leetspeak folded, symbols
 // stripped. Substring match, so common evasions like f.u-c_k or sh1t still hit.
@@ -298,31 +302,41 @@ export function censorChat(text: string): string {
 const WARN_AFTER = 3;
 const BAN_AFTER = 7;
 
-// Defaults to Pixorpheus's own DM endpoint (a domain we run, unlike the
-// personal-domain fallback removed in 8d3d133), same URL the dashboard uses.
-const EXTERNAL_DM_URL = process.env.EXTERNAL_DM_URL || "https://pixo.pixl.rsvp/api/external/dm";
+// Defaults to Pixo's DM endpoint at its in-cluster address (see pixoUrl.ts),
+// same endpoint the dashboard uses.
+const EXTERNAL_DM_URL = externalDmUrl();
 
-// Slack DM as Pixo (same external API the dashboard uses). Fire-and-forget:
-// moderation must never fail because the DM did.
-async function dmSlack(userId: string, text: string): Promise<void> {
+// Slack DM as Pixo (same external API the dashboard uses). Never throws and
+// is never awaited by the moderation path: a stopped or unreachable Pixo is
+// logged and audited by callPixo and the warn/ban still lands.
+export async function sendModerationDm(slackId: string, text: string, deps?: PixoCallDeps): Promise<boolean> {
   const key = process.env.EXTERNAL_API_KEY;
-  if (!key || !EXTERNAL_DM_URL) return;
-  const { data: user } = await supabase
-    .from("users")
-    .select("slack_id")
-    .eq("id", userId)
-    .maybeSingle();
-  const slackId = (user?.slack_id as string) ?? "";
-  if (!slackId) return;
-  try {
-    await fetch(EXTERNAL_DM_URL, {
+  if (!key || !EXTERNAL_DM_URL || !slackId) return false;
+  const r = await callPixo(
+    "moderation.dm",
+    EXTERNAL_DM_URL,
+    {
       method: "POST",
       headers: { "x-api-key": key, "Content-Type": "application/json" },
       body: JSON.stringify({ userId: slackId, message: text }),
-      signal: AbortSignal.timeout(8000),
-    });
+    },
+    deps,
+  );
+  return r.ok;
+}
+
+async function dmSlack(userId: string, text: string): Promise<void> {
+  try {
+    if (!process.env.EXTERNAL_API_KEY) return;
+    const { data: user } = await db
+      .from("users")
+      .select("slack_id")
+      .eq("id", userId)
+      .maybeSingle();
+    const slackId = (user?.slack_id as string) ?? "";
+    if (slackId) await sendModerationDm(slackId, text);
   } catch (e) {
-    console.error("moderation dm failed", e);
+    console.error("moderation dm failed", (e as Error).message);
   }
 }
 
@@ -338,10 +352,10 @@ export async function recordChatViolation(
   userId: string,
   content: string,
 ): Promise<ViolationOutcome> {
-  await supabase
+  await db
     .from("violations")
     .insert({ user_id: userId, kind: "chat", content });
-  const { count } = await supabase
+  const { count } = await db
     .from("violations")
     .select("id", { count: "exact", head: true })
     .eq("user_id", userId)
@@ -353,13 +367,13 @@ export async function recordChatViolation(
     if (!existing) {
       const expiresAt = new Date(Date.now() + 7 * 24 * 3600_000).toISOString();
       const reason = `Automatic 1-week ban: ${n} chat filter violations.`;
-      await supabase.from("bans").insert({
+      await db.from("bans").insert({
         user_id: userId,
         reason,
         banned_by: "Auto-mod",
         expires_at: expiresAt,
       });
-      const { data: recent } = await supabase
+      const { data: recent } = await db
         .from("violations")
         .select("content")
         .eq("user_id", userId)
@@ -373,24 +387,24 @@ export async function recordChatViolation(
         `Your most recent flagged messages:\n${list}\n\n` +
         `Your ban lifts automatically on ${new Date(expiresAt).toUTCString()}. ` +
         `If you believe this is a mistake, contact the Pixl team.`;
-      await supabase.from("notifications").insert({
+      await db.from("notifications").insert({
         user_id: userId,
         title: "Banned from Pixl (1 week)",
         body,
       });
-      await dmSlack(userId, `You've been banned from Pixl for 1 week.\n\n${body}`);
+      void dmSlack(userId, `You've been banned from Pixl for 1 week.\n\n${body}`);
       return { count: n, warned: false, banned: true };
     }
     return { count: n, warned: true, banned: false };
   }
   if (n >= WARN_AFTER) {
     const body = `Warning ${n}/${BAN_AFTER}: keep the chat clean. At ${BAN_AFTER} violations you're banned automatically.`;
-    await supabase.from("notifications").insert({
+    await db.from("notifications").insert({
       user_id: userId,
       title: "Chat warning",
       body,
     });
-    await dmSlack(userId, `⚠ ${body}`);
+    void dmSlack(userId, `⚠ ${body}`);
     return { count: n, warned: true, banned: false };
   }
   return { count: n, warned: false, banned: false };
@@ -402,7 +416,7 @@ export function logViolation(
   kind: "chat" | "name",
   content: string,
 ): void {
-  void supabase
+  void db
     .from("violations")
     .insert({ user_id: userId, kind, content })
     .then(({ error }) => {
@@ -423,7 +437,7 @@ export interface BanRow {
 export type BanLookup = { ok: true; ban: BanRow | null } | { ok: false };
 
 export async function lookupActiveBan(userId: string): Promise<BanLookup> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("bans")
     .select("*")
     .eq("user_id", userId)
@@ -492,13 +506,11 @@ export interface EnforceActiveBansDeps {
   verify?: (token: string) => ReturnType<typeof verifySessionToken>;
 }
 
-// Express middleware, mounted globally in index.ts. Reads the same
-// `?token=` every route already reads; a request with no token, or one that
-// fails signature/expiry verification, is left untouched - that's the
-// existing per-route "not authenticated" handling's job, not this
-// middleware's. This only ever acts on a token that verifies successfully
-// but names a currently-banned user, which every route handler skips being
-// reached for entirely.
+// Part of requireSession (http/requireSession.ts), after the Bearer token is
+// verified. A request with no verified session is left untouched - rejecting
+// it is verifyBearer's job, not this middleware's. This only ever acts on a
+// token that verifies successfully but names a currently-banned user, which
+// every route handler skips being reached for entirely.
 export function enforceActiveBans(deps: EnforceActiveBansDeps = {}) {
   const banState = deps.banState ?? currentBanState;
   const verify = deps.verify ?? verifySessionToken;
@@ -507,9 +519,9 @@ export function enforceActiveBans(deps: EnforceActiveBansDeps = {}) {
     res: import("express").Response,
     next: import("express").NextFunction,
   ): Promise<void> => {
-    const token = typeof req.query.token === "string" ? req.query.token : "";
-    if (!token) return next();
-    const session = verify(token);
+    // requireSession has normally verified the Bearer token already.
+    const token = req.session ? null : bearerToken(req);
+    const session = req.session ?? (token ? verify(token) : null);
     if (!session) return next();
     let state: BanState;
     try {
@@ -518,6 +530,14 @@ export function enforceActiveBans(deps: EnforceActiveBansDeps = {}) {
       state = "unknown";
     }
     if (state === "banned") {
+      auditRequestThrottled(req, {
+        action: "auth.session_rejected",
+        actorType: "player",
+        actorId: session.userId,
+        target: req.method,
+        result: "denied",
+        meta: { reason: "banned", client: session.client },
+      });
       res.status(403).json({ ok: false, error: "banned" });
       return;
     }

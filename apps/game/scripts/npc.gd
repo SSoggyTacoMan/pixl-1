@@ -251,7 +251,7 @@ func _start_project_quest() -> void:
 	_quest_pending = true
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/projects?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/projects"
 	req.request_completed.connect(func(_result, code, _headers, data):
 		_quest_pending = false
 		req.queue_free()
@@ -270,7 +270,7 @@ func _start_project_quest() -> void:
 			Dialogue.open(npc_name, quest_done.split("\n"))
 		_update_prompt()
 	)
-	if req.request(url) != OK:
+	if req.request(url, NetworkManager.auth_headers()) != OK:
 		_quest_pending = false
 		req.queue_free()
 		Dialogue.open(npc_name, dialogue.split("\n"))
@@ -295,10 +295,10 @@ func _start_trial_quest() -> void:
 
 	var completed := bool(trial.get("completed", false))
 	var unlocked := bool(trial.get("unlocked", false))
-	# Carry the Trial id to the Builder Terminal so it shows the brief and helps
-	# the player build to spec (and defaults the ship picker to this Trial).
 	var tid := int(trial.get("id", 0))
-	var proj_path := "projects?trial=%d" % tid if tid > 0 else "projects"
+	# Pages open without a query string, so the Terminal no longer gets the
+	# Trial id; the projects page shows the player's Trials itself.
+	var proj_path := "projects"
 
 	if completed:
 		Dialogue.open(npc_name, quest_done.split("\n"))
@@ -338,9 +338,7 @@ func _start_trial_quest() -> void:
 		await get_tree().create_timer(0.35).timeout
 		set_present(false)
 		Dialogue.open(npc_name, ["Then it's yours. Get building, I'll be around your village if you need me."])
-		# Fresh accept → run the Builder Terminal walkthrough, tuned to this Trial.
-		var accept_path := "projects?onboard=first-project&trial=%d" % tid if tid > 0 else "projects?onboard=first-project"
-		Dialogue.closed.connect(func(): WebPages.open(accept_path), CONNECT_ONE_SHOT)
+		Dialogue.closed.connect(func(): WebPages.open("projects"), CONNECT_ONE_SHOT)
 	elif choice == "own":
 		Dialogue.open(npc_name, ["Off-map, huh? The frontier respects that. Build your own thing, same loop, ship it when it's ready."])
 		Dialogue.closed.connect(func(): WebPages.open("projects"), CONNECT_ONE_SHOT)
@@ -363,8 +361,8 @@ func _fetch_sidequests() -> Array:
 		return []
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/sidequests?token=" + NetworkManager.session_token.uri_encode()
-	if req.request(url) != OK:
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/sidequests"
+	if req.request(url, NetworkManager.auth_headers()) != OK:
 		req.queue_free()
 		return []
 	var r: Array = await req.request_completed
@@ -382,8 +380,8 @@ func _accept_trial(id: int) -> void:
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/sidequests/%d/accept?token=%s" % [id, NetworkManager.session_token.uri_encode()]
-	if req.request(url, PackedStringArray(["Content-Type: application/json"]), HTTPClient.METHOD_POST, "{}") != OK:
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/sidequests/%d/accept" % id
+	if req.request(url, NetworkManager.auth_headers(["Content-Type: application/json"]), HTTPClient.METHOD_POST, "{}") != OK:
 		req.queue_free()
 		return
 	await req.request_completed

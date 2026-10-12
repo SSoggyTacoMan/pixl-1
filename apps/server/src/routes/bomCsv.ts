@@ -94,9 +94,11 @@ function parseCsvRow(row: string): string[] {
 // export/route.ts). Reviewers open a shipped BOM straight in a spreadsheet
 // via the "Download BOM" link, so a player-uploaded CSV needs the same
 // treatment before it's stored, not just data staff generate themselves.
-function csvCell(value: string): string {
-  const safe = /^[=+\-@]/.test(value) ? `'${value}` : value;
-  return /["\n,]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe;
+// A leading tab or carriage return counts too: spreadsheets strip it and then
+// evaluate what follows ("\t=HYPERLINK(...)").
+export function csvCell(value: string): string {
+  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  return /["\n\r,]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe;
 }
 
 // Assumes the buffer already passed validateBomCsv - only called after that.

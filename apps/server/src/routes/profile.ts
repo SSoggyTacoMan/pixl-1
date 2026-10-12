@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { issueSessionToken, verifySessionToken } from "../auth/session.js";
+import { issueSessionToken } from "../auth/session.js";
 import { containsBlocked, logViolation } from "../moderation.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import {
   approvedHoursFor,
   lifetimeRe,
@@ -12,6 +12,9 @@ import {
   MAX_LEVEL,
 } from "../xp.js";
 import { decryptPII } from "../crypto.js";
+import { allowedImageUrl } from "../http/imageUrls.js";
+import { z } from "zod";
+import { validate, v, optStr, optBool, optNum } from "../http/validate.js";
 
 const router = Router();
 
@@ -27,9 +30,8 @@ export function nameProblem(raw: string): string | null {
   return null;
 }
 
-router.post("/api/profile/name", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/name", validate({ query: v.noQuery, body: z.object({ name: optStr(200) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false, reason: "Not signed in." });
 
   const raw = typeof req.body?.name === "string" ? req.body.name : "";
@@ -40,7 +42,7 @@ router.post("/api/profile/name", async (req, res) => {
     return res.json({ ok: false, reason: problem });
   }
 
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ display_name: name })
     .eq("id", session.userId);
@@ -49,8 +51,23 @@ router.post("/api/profile/name", async (req, res) => {
     return res.status(500).json({ ok: false, reason: "Database error." });
   }
 
-  // Re-issue the session token so the embedded displayName matches the new one.
-  const fresh = issueSessionToken({ userId: session.userId, displayName: name });
+  // The game shows the name embedded in its token (the WebSocket reads it
+  // from there), so a real change re-issues the token for the same client -
+  // but only on a change, and ending exactly when the old one would have:
+  // renaming must never be a way to keep a session alive past its 14 days.
+  // It also keeps the old token's iat: a fresh one would let a token
+  // re-issued just after a revocation (while the revocation lookup is still
+  // cached as "not revoked") outlive that revocation.
+  if (name === session.displayName || session.exp === undefined || !session.iat) return res.json({ ok: true, name });
+  const fresh = issueSessionToken(
+    {
+      userId: session.userId,
+      displayName: name,
+      client: session.client,
+      ...(session.slackId ? { slackId: session.slackId } : {}),
+    },
+    { expiresAtSec: session.exp, issuedAtSec: session.iat },
+  );
   res.json({ ok: true, name, token: fresh });
 });
 
@@ -58,12 +75,11 @@ router.post("/api/profile/name", async (req, res) => {
 // are only ever changed server-side (by the dashboard on final approval), so
 // the game just displays whatever this returns.
 router.get("/api/profile/wallet", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: user }, approvedHours, re] = await Promise.all([
-    supabase.from("users").select("pixels").eq("id", session.userId).single(),
+    db.from("users").select("pixels").eq("id", session.userId).single(),
     approvedHoursFor(session.userId),
     lifetimeRe(session.userId),
   ]);
@@ -77,6 +93,9 @@ router.get("/api/profile/wallet", async (req, res) => {
     re,
     level: levelForRe(re),
     maxLevel: MAX_LEVEL,
+    // Where the current level started and where the next one starts, so a
+    // client can draw progress without re-implementing the level bands.
+    reForCurrentLevel: reForLevel(levelForRe(re)),
     reForNextLevel: reForLevel(Math.min(levelForRe(re) + 1, MAX_LEVEL)),
     pxPerHour: pxPerHourFor(re),
     usdPerHour: payoutUsdPerHour(re),
@@ -90,11 +109,10 @@ const EXPERIENCE_VALUES = ["beginner", "intermediate", "advanced"] as const;
 type Experience = (typeof EXPERIENCE_VALUES)[number];
 
 router.get("/api/profile/experience", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("users")
     .select("coding_experience")
     .eq("id", session.userId)
@@ -107,16 +125,15 @@ router.get("/api/profile/experience", async (req, res) => {
   res.json({ ok: true, experience });
 });
 
-router.post("/api/profile/experience", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/experience", validate({ query: v.noQuery, body: z.object({ experience: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const value = typeof req.body?.experience === "string" ? req.body.experience : "";
   if (!EXPERIENCE_VALUES.includes(value as Experience))
     return res.status(400).json({ ok: false, error: "bad_experience" });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ coding_experience: value })
     .eq("id", session.userId);
@@ -129,11 +146,10 @@ router.post("/api/profile/experience", async (req, res) => {
 
 // The player's own pixel ledger, newest first, with project names attached.
 router.get("/api/profile/transactions", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("pixel_transactions")
     .select("id, project_id, amount, hours, reason, created_at")
     .eq("user_id", session.userId)
@@ -149,7 +165,7 @@ router.get("/api/profile/transactions", async (req, res) => {
   ];
   const names = new Map<number, string>();
   if (projectIds.length > 0) {
-    const { data: projects } = await supabase
+    const { data: projects } = await db
       .from("projects")
       .select("id, name")
       .in("id", projectIds);
@@ -170,17 +186,16 @@ router.get("/api/profile/transactions", async (req, res) => {
 // Player-card photo settings. The photo itself goes through /api/uploads
 // (or comes from Slack at sign-up); these just point the card at it.
 router.get("/api/profile/card", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  let { data: user, error } = await supabase
+  let { data: user, error } = await db
     .from("users")
     .select("avatar_url, card_pixelate")
     .eq("id", session.userId)
     .maybeSingle();
   if (error)
-    ({ data: user } = (await supabase
+    ({ data: user } = (await db
       .from("users")
       .select("avatar_url")
       .eq("id", session.userId)
@@ -192,27 +207,16 @@ router.get("/api/profile/card", async (req, res) => {
   });
 });
 
-router.post("/api/profile/card-image", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/card-image", validate({ query: v.noQuery, body: z.object({ url: optStr(2000) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const raw = typeof req.body?.url === "string" ? req.body.url.trim() : "";
-  // Parse it rather than prefix-match it. This value is rendered back into
-  // other players' pages, so anything that is not a plain https url (quotes,
-  // angle brackets, whitespace, a second scheme) has no business being stored.
-  let url = "";
-  try {
-    const parsed = new URL(raw);
-    // Store the normalized form, which percent-encodes anything exotic in the
-    // path/query rather than carrying it through verbatim.
-    if (parsed.protocol === "https:") url = parsed.href;
-  } catch {
-    url = "";
-  }
-  if (!url || url.length > 500 || /["'<>\s\\]/.test(url))
-    return res.status(400).json({ ok: false, error: "bad_url" });
-  const { error } = await supabase
+  // Rendered on other players' pages, so only a Hack Club CDN upload or the
+  // Slack photo the card was seeded with (http/imageUrls.ts): an arbitrary
+  // host would log the IP of every player who views this card.
+  const url = allowedImageUrl(req.body?.url, { avatar: true });
+  if (!url) return res.status(400).json({ ok: false, error: "invalid_image_url" });
+  const { error } = await db
     .from("users")
     .update({ avatar_url: url })
     .eq("id", session.userId);
@@ -238,11 +242,10 @@ const ONBOARDING_DONE = 2;
 const ONBOARDING_ALLOWLIST = new Set<string>([]);
 
 router.get("/api/profile/onboarding", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("users")
     .select("onboarding_step, slack_id")
     .eq("id", session.userId)
@@ -262,9 +265,8 @@ router.get("/api/profile/onboarding", async (req, res) => {
   res.json({ ok: true, step, done: step >= ONBOARDING_DONE });
 });
 
-router.post("/api/profile/onboarding", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/onboarding", validate({ query: v.noQuery, body: z.object({ step: optNum }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const raw = Number(req.body?.step);
@@ -273,14 +275,14 @@ router.post("/api/profile/onboarding", async (req, res) => {
 
   // Forward-only: a stale client (older tab, a replay) must never rewind a
   // player who's already further along.
-  const { data: cur } = await supabase
+  const { data: cur } = await db
     .from("users")
     .select("onboarding_step")
     .eq("id", session.userId)
     .maybeSingle();
   const step = Math.max(Math.max(0, Number(cur?.onboarding_step) || 0), want);
 
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ onboarding_step: step })
     .eq("id", session.userId);
@@ -291,13 +293,12 @@ router.post("/api/profile/onboarding", async (req, res) => {
   res.json({ ok: true, step, done: step >= ONBOARDING_DONE });
 });
 
-router.post("/api/profile/card-pixelate", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/profile/card-pixelate", validate({ query: v.noQuery, body: z.object({ pixelate: optBool }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const pixelate = req.body?.pixelate === true;
-  const { error } = await supabase
+  const { error } = await db
     .from("users")
     .update({ card_pixelate: pixelate })
     .eq("id", session.userId);
@@ -341,11 +342,10 @@ function ageOn(birthday: Date, at: Date): number {
 }
 
 router.get("/api/profile/eligibility", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("users")
     .select(["birthday", ...ADDRESS_FIELDS, "phone"].join(", "))
     .eq("id", session.userId)
@@ -365,20 +365,20 @@ router.get("/api/profile/eligibility", async (req, res) => {
       yswsEligible = age < 19;
     }
   }
-  res.json({
-    ok: true,
-    birthday: birthday || null,
-    age,
-    yswsEligible,
-    addressLine1: decryptPII(row.address_line1 as string | null),
-    addressLine2: decryptPII(row.address_line2 as string | null),
+  res.json({ ok: true, birthday: birthday || null, age, yswsEligible, ...maskedAddress(row) });
+});
+
+// The street lines, postal code and phone never leave the server: a stolen
+// session (or a mis-bound HCA flow) must not be enough to read a minor's
+// home address. The Pixl Dashboard only shows city + country as a "this is
+// roughly where we'd ship" hint, plus two flags for the checkout gate.
+export function maskedAddress(row: Record<string, unknown>) {
+  return {
     addressCity: decryptPII(row.address_city as string | null),
-    addressState: decryptPII(row.address_state as string | null),
     addressCountry: decryptPII(row.address_country as string | null),
-    addressPostal: decryptPII(row.address_postal as string | null),
     hasAddress: hasAddress(row),
     hasPhone: String(decryptPII(row.phone as string | null) ?? "").trim() !== "",
-  });
-});
+  };
+}
 
 export default router;

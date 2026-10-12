@@ -1,0 +1,6118 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
+import { LIVE_MODE_COOKIE, LIVE_SHOW_REVIEWERS_COOKIE } from "@/lib/liveMode";
+import { unshipResetFields, UNSHIPPABLE_STATUSES } from "@/lib/unship";
+import {
+  config,
+  levelForRe,
+  pxPerHourOver,
+  reForHours,
+  projectPayoutPx,
+  hackatimeCutoffUnix,
+  hackatimeCutoffLabel,
+} from "./_generated/config";
+import { orValue } from "@/lib/pgCompat";
+import {
+  notifyShopInsert,
+  notifyShopDelete,
+  notifyShopUpdates,
+  type ShopRowSnapshot,
+} from "@/lib/shopNotify";
+import {
+  db,
+  getAdmin,
+  listAdmins,
+  ackGuidelines,
+  playerLabel,
+  logModAction,
+  creditProjectPixels,
+  revokeProjectPixels,
+  projectPixelTotal,
+  lifetimeRe,
+  creditReviewerPixels,
+  debitReviewerPixels,
+  creditFulfillerPixels,
+  type CreditReviewerResult,
+  activeDashEvents,
+  communityGoalShipCount,
+  addHelper,
+  removeHelper,
+  addFulfiller,
+  removeFulfiller,
+  getBanProposal,
+  getTeamChange,
+  decideBanProposal,
+  nextReviewId,
+  EVENT_TYPES,
+  REFERRAL_BOOST_PX_PER_HOUR,
+  REFERRAL_BOOST_SHIP_CAP,
+  REFERRAL_MILESTONE_EVERY,
+  REFERRAL_MILESTONE_PX,
+  referralTierFor,
+  turnedNineteenSinceShipping,
+  type DashEventRow,
+  getReviewPayoutSettings,
+  ensureJournalShareToken,
+  recentApprovedJustifications,
+  type JournalRow,
+} from "@/lib/db";
+import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
+import { decryptPII } from "@/lib/crypto";
+import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
+import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
+import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
+import { fetchHackatimeReport, fetchTrackedSecondsSince, fetchTrustFactor } from "@/lib/hackatime";
+import { fetchCommits, attachCommitStats } from "@/lib/commits";
+import { yswsShipsFor } from "@/lib/ysws";
+import { generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
+import { serializeGroups } from "@/lib/shopOptions";
+import { SHOP_REGIONS, type ShopRegion } from "@/lib/shopRegions";
+import { SHOP_CATEGORIES, type ShopCategory } from "@/lib/shopCategories";
+import { kickOnlinePlayer, uploadSubmissionImage, uploadImageBuffer } from "@/lib/gameServer";
+import { sniffFormat } from "@/lib/imageSniff";
+import { dmOrEmail } from "@/lib/notify";
+import { announceReview } from "@/lib/reviewChannel";
+import { REVIEW_REWARD_COOKIE, REVIEW_REWARD_MAX_AGE } from "@/lib/reviewReward";
+import { assertSafeExternalUrl } from "@/lib/urlSafety";
+import { safeBinaryGet } from "@/lib/ssrfGuard";
+import { canFlagOrder, isOwnOrder } from "@/lib/fulfillmentAccess";
+import {
+  canSetHold,
+  isOwnOrCollaborator,
+  proposedBanDecision,
+  queueAllows,
+  slackIdFromActorName,
+} from "@/lib/reviewAccess";
+import { safeRedirectPath, isSafeUrl } from "@/lib/safeUrl";
+import {
+  guardedAction,
+  ownerSlackIds,
+  secondPassSlackIds,
+  reviewerPermsOnly,
+  REVIEW,
+  NO_REVIEW,
+  SECOND_PASS,
+  EDIT_SUBMISSION,
+  REVIEW_HARDWARE_ONLY,
+  REVIEW_SOFTWARE_ONLY,
+  type AdminAccess,
+  type ReviewQueueScope,
+} from "@/lib/guard";
+import { audit } from "@/lib/audit";
+import { GUIDELINES_VERSION } from "@/lib/guidelines";
+import { applyBlackoutDecision } from "@/lib/operationsReview";
+import { BLACKOUT_SLUG, getBlackoutEntry, operationRpc } from "@/lib/operations";
+
+const DEFAULT_WARNING =
+  "Please keep chat messages and display names appropriate. Continued violations may result in a ban from Pixl.";
+
+// Was hardcoded to a stale personal dev domain (pixl-dash.ridit.space) that
+// no longer resolves to anything real , BASE_URL is already set to the real
+// production dashboard URL in every deployment's env (see lib/session.ts for
+// the other place this app reads it), so use that instead of a second
+// hand-maintained copy of the same fact.
+const DASH_URL = process.env.BASE_URL ?? "https://dash.pixl.hackclub.com";
+
+function actorName(access: AdminAccess): string {
+  return `${access.session.name} (${access.session.slackId})`;
+}
+
+// Where to send a reviewer after they finish a verdict: straight to the next
+// project in their queue if there is one, otherwise back to the list. `stage`
+// is the stage of the project they just closed, so we keep them in the same
+// pass (first vs final) when possible. Never throws, returns a path to redirect.
+async function nextReviewPath(
+  access: AdminAccess,
+  by: string,
+  stage: string,
+  justReviewedId: number,
+): Promise<string> {
+  try {
+    const nextId = await nextReviewId({
+      viewer: access.session.slackId,
+      by,
+      canSecondPass: access.canSecondPass,
+      isSuper: access.isOwner,
+      excludeId: justReviewedId,
+      prefer: stage === "second_review" ? "second_review" : "shipped",
+      reviewQueues: access.reviewQueues,
+      // A real approve/needs_changes/ban verdict only ever fires at
+      // stage=second_review from Spot check now - Robert's fraud review
+      // (lib/robertSync.ts) happens out of band while a project sits in
+      // fraud_review, never through here.
+      spotCheck: stage === "second_review",
+    });
+    return nextId ? `/review/${nextId}` : "/review";
+  } catch {
+    return "/review";
+  }
+}
+
+// A project's tier (1-4) sets how much Restoration Energy each of its hours is
+// worth; lifetime RE sets the player's hourly rate, ramping from basePayoutUsd
+// to maxPayoutUsd. A player's rate for a ship comes from their RE *before* that
+// ship. All of it is generated from packages/config/pixl.json - this file used
+// to carry its own copy of the rate table and drifted from the server's (40/60
+// vs the real 50/79, fixed 2026-08-01), which is exactly why it no longer does.
+//
+// Note: the DB column is `projects.level` but holds the tier (1-4). It predates
+// the player-facing 1-100 level and isn't worth a migration to rename.
+
+// A reviewer (owners included) may never act on their own submission, nor on
+// one they're a collaborator on (self-review = cheating; collaborators are
+// paid on approval too). A PENDING invite counts: it can be accepted the
+// moment the review lands. The session carries a Slack id; every users row
+// with that slack_id counts as "me". Pass projectId so collaborators are
+// checked too.
+async function isOwnProject(access: AdminAccess, ownerUserId: string, projectId: number): Promise<boolean> {
+  const { data: me } = await db.from("users").select("id").eq("slack_id", access.session.slackId);
+  const myIds = ((me ?? []) as { id: string }[]).map((r) => r.id).filter(Boolean);
+  if (myIds.length === 0) return false;
+  const { data: collabs } = await db
+    .from("project_collaborators")
+    .select("user_id")
+    .eq("project_id", projectId)
+    .in("status", ["pending", "accepted"]);
+  const collaborators = (collabs ?? []).map((r) => r.user_id as string);
+  return isOwnOrCollaborator(myIds, ownerUserId, collaborators);
+}
+
+function denyProjectAction(back: string | null, message: string): never {
+  if (back) redirect(`${back}${back.includes("?") ? "&" : "?"}error=${encodeURIComponent(message)}`);
+  throw new Error(message);
+}
+
+// Shared authorization for reviewer actions on one project, enforced inside
+// the action (not only by the page that renders the form):
+// - queue scope: a reviewer restricted to hardware/software (reviewQueues)
+//   may only touch projects of that kind;
+// - self-review: unless allowOwn, nobody (owners included) may act on a
+//   project they own or collaborate on (pending invites too).
+// Returns the project's owner/kind/name; denies via redirect to `back` with an
+// error (or a thrown Error when there's no page to go back to).
+async function authorizeProjectAction(
+  access: AdminAccess,
+  projectId: number,
+  back: string | null,
+  opts: { allowOwn?: boolean; ownMessage?: string } = {},
+): Promise<{ user_id: string; kind: string | null; name: string }> {
+  const { data: project } = await db
+    .from("projects")
+    .select("user_id, kind, name")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!project) denyProjectAction(back, "Project not found.");
+  const row = project as { user_id: string; kind: string | null; name: string };
+  if (!queueAllows(access.reviewQueues, row.kind))
+    denyProjectAction(back, "This project isn't in your review queue.");
+  if (!opts.allowOwn && (await isOwnProject(access, row.user_id, projectId)))
+    denyProjectAction(back, opts.ownMessage ?? "You can't review a project you own or collaborate on.");
+  return row;
+}
+
+// Time-bounded exception to the "can't first-pass your own project" guard
+// (see self_review_exceptions in 0166_self_review_exceptions.sql). Deliberately
+// only checked at the first-pass proposal gate below - it never touches the
+// ownership-based payout gate or the "different reviewer must do the final
+// pass" check, so a self-first-passed project still needs an independent
+// final reviewer before anything is approved or paid out.
+async function hasSelfReviewException(slackId: string): Promise<boolean> {
+  const { data } = await db
+    .from("self_review_exceptions")
+    .select("expires_at")
+    .eq("slack_id", slackId)
+    .maybeSingle();
+  return !!data && new Date(data.expires_at as string).getTime() > Date.now();
+}
+
+export const grantSelfReviewException = guardedAction("grantSelfReviewException", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const days = Math.max(1, Math.min(30, Number(formData.get("days") ?? 7) || 7));
+  if (!slackId) return;
+  const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await db
+    .from("self_review_exceptions")
+    .upsert({ slack_id: slackId, granted_by: actorName(access), expires_at: expiresAt });
+  if (error) throw new Error(error.message);
+  revalidatePath("/admins");
+});
+
+export const revokeSelfReviewException = guardedAction("revokeSelfReviewException", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  if (!slackId) return;
+  await db.from("self_review_exceptions").delete().eq("slack_id", slackId);
+  revalidatePath("/admins");
+});
+
+export const warnPlayer = guardedAction("warnPlayer", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const userId = String(formData.get("userId") ?? "");
+  const message = String(formData.get("message") ?? "").trim() || DEFAULT_WARNING;
+  if (!userId) return;
+
+  const { error } = await db.from("notifications").insert({
+    user_id: userId,
+    title: "Moderation warning",
+    body: message,
+  });
+  if (error) console.error("warn notification failed", error.message);
+
+  await dmOrEmail(
+    userId,
+    "Moderation warning",
+    [
+      "You've received a moderation warning from Pixl.",
+      message,
+      "If you believe this is a mistake, reach out to the Pixl team.",
+    ].join("\n\n"),
+  );
+  await logModAction(userId, "warn", message, by);
+  revalidatePath("/", "layout");
+});
+
+function readSeconds(value: FormDataEntryValue | null): number {
+  const n = Number(String(value ?? "0"));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(Math.round(n), 86400);
+}
+
+// `raw` returns what the player actually logged, ignoring any per-journal
+// deflation a reviewer applied from the Journals tab. Without it (the default)
+// the total is the post-deflation figure, which is the cap on what a verdict can
+// credit. Audit rows and the "approved of N logged" text use the raw one, so a
+// project shipped at 16.7h and trimmed to 10h reads "10h approved of 16.7h".
+async function claimedHoursFor(projectId: number, opts: { raw?: boolean } = {}): Promise<number> {
+  const [{ data: journals }, { data: proj }] = await Promise.all([
+    db.from("project_journals").select("hours, approved_hours, user_id").eq("project_id", projectId),
+    db.from("projects").select("hackatime_seconds, kind, user_id").eq("id", projectId).single(),
+  ]);
+  // approved_hours is a reviewer's per-entry deflation (set from the
+  // Journals tab) - null means "use the player's own claimed hours for this
+  // entry", so it's the fallback, not a second number added on top.
+  const journalHours =
+    Math.round(
+      (journals ?? []).reduce(
+        (s, j) => s + (Number((opts.raw ? j.hours : (j.approved_hours ?? j.hours))) || 0),
+        0,
+      ) * 10,
+    ) / 10;
+  const rawTrackedHours =
+    Math.round(((Number(proj?.hackatime_seconds) || 0) / 3600) * 10) / 10;
+  // Hardware already folds journal hours into hackatime_seconds at ship time
+  // (see apps/server/src/routes/projects.ts: trackedSeconds = htSeconds +
+  // round(ownerJournalHours * 3600), owner-only, not collaborators). That
+  // fold used the RAW hours at the moment of shipping, so subtract that same
+  // raw (owner-only) sum back out to isolate the real, never-changing
+  // Hackatime-only portion, then add today's journalHours (which reflects
+  // any later reviewer deflation) on top. Returning rawTrackedHours directly
+  // - or adding journalHours back after subtracting itself - cancels out any
+  // approved_hours edit, which is exactly why deflating a journal entry had
+  // no visible effect on what got credited for hardware ships.
+  if (proj?.kind === "hardware") {
+    const rawOwnerJournalHours =
+      Math.round(
+        (journals ?? [])
+          .filter((j) => j.user_id === proj.user_id)
+          .reduce((s, j) => s + (Number(j.hours) || 0), 0) * 10,
+      ) / 10;
+    const hackatimeOnlyHours = Math.max(
+      0,
+      Math.round((rawTrackedHours - rawOwnerJournalHours) * 10) / 10,
+    );
+    return hackatimeOnlyHours + journalHours;
+  }
+  return rawTrackedHours + journalHours;
+}
+
+async function insertReviewAudit(
+  formData: FormData,
+  projectId: number,
+  userId: string,
+  reviewer: string,
+  verdict: string,
+  note: string,
+  loggedHours: number,
+  claimedHours: number,
+  approvedHours: number | null,
+): Promise<void> {
+  const { error } = await db.from("review_audits").insert({
+    project_id: projectId,
+    user_id: userId,
+    reviewer,
+    verdict,
+    note,
+    audit_note: String(formData.get("auditNote") ?? "").trim().slice(0, 5000),
+    // What the player logged, so "10h approved from 16.7h" reads true. When
+    // journal deflation already trimmed it and the reviewer left the credited
+    // hours blank, the credit is the post-deflation total, recorded explicitly
+    // so a blank override isn't read back as "credited as logged".
+    claimed_hours: loggedHours,
+    approved_hours: approvedHours ?? (loggedHours !== claimedHours ? claimedHours : null),
+    repo_opened: formData.get("repoOpened") === "1",
+    demo_opened: formData.get("demoOpened") === "1",
+    repo_seconds: readSeconds(formData.get("repoSeconds")),
+    demo_seconds: readSeconds(formData.get("demoSeconds")),
+    total_seconds: readSeconds(formData.get("totalSeconds")),
+  });
+  if (error) console.error("review audit insert failed", error.message);
+}
+
+// Base pixels per review verdict are admin-configurable (review_payout_settings,
+// migration 0162 - edited from the Admins page), replacing what used to be a
+// flat PAYOUT_PIXELS=3-on-approval-only constant. Every review pays this rate
+// in full , there is no cut for a rushed review, an unopened repo, an
+// overturned first pass, or a sharp hours correction (removed 2026-09-05: a
+// reviewer's payout should never depend on how the case turned out later).
+// First-pass payouts stay pending until the final verdict settles.
+function payoutVerdictKey(verdict: string): "approved" | "needs_changes" | "banned" | null {
+  if (verdict === "approved" || verdict === "first_pass_approved") return "approved";
+  if (verdict === "needs_changes") return "needs_changes";
+  if (verdict === "banned") return "banned";
+  return null;
+}
+
+// A confirmed ban pays the reviewer a flat rate, not admin-configurable like
+// the other verdicts , banning is still a full review of the project.
+const BAN_PAYOUT_PIXELS = 2;
+
+// During a Review Blitz event every review's base payout is multiplied, so
+// full_pixels is locked in at review time and settlement math uses the row.
+// Returns both the multiplied amount and whether a multiplier actually
+// applied, so dmPayout can call out the blitz bonus without needing its own
+// copy of the base rate.
+async function payoutBasePixels(
+  verdict: string,
+): Promise<{ full: number; blitzApplied: boolean }> {
+  const key = payoutVerdictKey(verdict);
+  if (!key) return { full: 0, blitzApplied: false };
+  if (key === "banned") return { full: BAN_PAYOUT_PIXELS, blitzApplied: false };
+  const settings = await getReviewPayoutSettings();
+  const base = key === "approved" ? settings.approvedPixels : settings.needsChangesPixels;
+  const [blitz] = await activeDashEvents(["review_blitz"]);
+  const mult = blitz ? Math.min(Math.max(Number(blitz.config.mult) || 1, 1), 3) : 1;
+  return { full: Math.round(base * mult), blitzApplied: mult > 1 };
+}
+
+async function dmPayout(
+  slackId: string,
+  projectName: string,
+  paid: number,
+  full: number,
+  credited: CreditReviewerResult,
+  blitzApplied: boolean,
+): Promise<void> {
+  const dollars = `$${(full * config.economy.pixelValueUsd).toFixed(2)}`;
+  let text = `You earned ${paid} pixels (${dollars}) for reviewing "${projectName}". Thanks for keeping the queue moving!`;
+  if (blitzApplied) text += `\n\n⚡ Review Blitz bonus included!`;
+  // Only actually true when it's true , "nothing to credit" (the configured
+  // rate is 0) isn't a missing account, it's just nothing to credit this
+  // time, and shouldn't tell the reviewer their account is broken.
+  if (credited === "no_account")
+    text += `\n\nHeads up: there's no Pixl game account linked to your Slack, so the pixels couldn't be credited yet. Contact the team to get it sorted.`;
+  await dmUser(slackId, text);
+}
+
+// Records and pays out immediately - approved, first_pass_approved, and
+// needs_changes all settle right away, each reviewer paid and DMed for their
+// own pass regardless of what a later pass decides (no pending/clawback
+// state for any verdict anymore). Skips entirely (no row, no DM) when the
+// configured rate for this verdict is 0, so setting a rate to 0 keeps
+// payouts off for that verdict with no special-casing at call sites.
+async function recordSettledPayout(
+  projectId: number,
+  access: AdminAccess,
+  verdict: string,
+  projectName: string,
+): Promise<number> {
+  // Excluded reviewer (see DM_EXCLUDED_SLACK_IDS in lib/slack.ts) - reviews
+  // without being paid or DMed for it. No payout row at all, same as the
+  // "skip entirely" convention below for a verdict whose rate is 0.
+  if (DM_EXCLUDED_SLACK_IDS.has(access.session.slackId)) return 0;
+  const { full, blitzApplied } = await payoutBasePixels(verdict);
+  if (full <= 0) return 0;
+  const credited = await creditReviewerPixels(access.session.slackId, full);
+  const { error } = await db.from("review_payouts").insert({
+    project_id: projectId,
+    reviewer: actorName(access),
+    reviewer_slack_id: access.session.slackId,
+    verdict,
+    status: "paid",
+    full_pixels: full,
+    paid_pixels: full,
+    credited: credited === "credited",
+    settled_at: new Date().toISOString(),
+  });
+  if (error) {
+    console.error("review payout insert failed", error.message);
+    return credited === "credited" ? full : 0;
+  }
+  await dmPayout(access.session.slackId, projectName, full, full, credited, blitzApplied);
+  // What the reviewer actually got, for the "+6 pixels" celebration.
+  return credited === "credited" ? full : 0;
+}
+
+// Hands the pixels this verdict paid to the page the reviewer lands on next
+// (ReviewCelebration reads and clears it): a short-lived, JS-readable cookie.
+// Set even when the verdict paid nothing, the celebration then just says the
+// review was submitted.
+async function flagReviewReward(px: number): Promise<void> {
+  const jar = await cookies();
+  jar.set(REVIEW_REWARD_COOKIE, String(Math.max(0, Math.round(px))), {
+    httpOnly: false,
+    secure: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: REVIEW_REWARD_MAX_AGE,
+  });
+}
+
+// A first-pass approval now pays immediately (see reviewProject's first-pass
+// branch), so this only ever finds anything to do for a payout row from
+// before that change, or one explicitly left pending by sendBackToFirstPass's
+// voidPayout=false path - a no-op otherwise. Kept as the one place that
+// transitions 'pending' -> 'paid', guarded on the row still being pending so
+// a double-submit can never double-pay.
+async function settleFirstPassPayouts(projectId: number, projectName: string): Promise<void> {
+  const { data: pending } = await db
+    .from("review_payouts")
+    .select("id, reviewer_slack_id, full_pixels, blitz_applied")
+    .eq("project_id", projectId)
+    .eq("status", "pending");
+  for (const p of pending ?? []) {
+    // Excluded reviewer (see DM_EXCLUDED_SLACK_IDS): still close the row out
+    // so it doesn't sit pending forever, just for 0 pixels, and skip the
+    // credit/DM entirely.
+    const excluded = DM_EXCLUDED_SLACK_IDS.has(p.reviewer_slack_id);
+    const full = excluded ? 0 : Number(p.full_pixels) || 0;
+    const { data: claimed } = await db
+      .from("review_payouts")
+      .update({
+        status: "paid",
+        paid_pixels: full,
+        settled_at: new Date().toISOString(),
+      })
+      .eq("id", p.id)
+      .eq("status", "pending")
+      .select("id");
+    if (!claimed || claimed.length === 0 || excluded) continue;
+    const credited = await creditReviewerPixels(p.reviewer_slack_id, full);
+    if (credited === "credited")
+      await db.from("review_payouts").update({ credited: true }).eq("id", p.id);
+    await dmPayout(p.reviewer_slack_id, projectName, full, full, credited, !!p.blitz_applied);
+  }
+}
+
+// A first-pass approval pays immediately now (see reviewProject), so a later
+// needs_changes/ban verdict never claws it back and those callers only void
+// legacy pending rows. The send-back / unship "this was the first-pass
+// reviewer's mistake" box passes clawBackPaid, which also voids the already
+// paid first-pass approval and takes the credited pixels back.
+async function voidFirstPassPayouts(
+  projectId: number,
+  reason = "sent back for a redo before a final verdict",
+  opts: { clawBackPaid?: boolean } = {},
+): Promise<void> {
+  if (opts.clawBackPaid) {
+    const { data: paid } = await db
+      .from("review_payouts")
+      .select("id, reviewer_slack_id, paid_pixels, credited")
+      .eq("project_id", projectId)
+      .eq("verdict", "first_pass_approved")
+      .eq("status", "paid");
+    for (const row of paid ?? []) {
+      // Guarded on still being paid so a double submit can't debit twice.
+      const { data: claimed } = await db
+        .from("review_payouts")
+        .update({
+          status: "voided",
+          paid_pixels: 0,
+          cut_pct: 100,
+          cut_reason: reason,
+          settled_at: new Date().toISOString(),
+        })
+        .eq("id", row.id)
+        .eq("status", "paid")
+        .select("id");
+      if (!claimed || claimed.length === 0) continue;
+      const amount = Number(row.paid_pixels) || 0;
+      if (!row.credited || amount <= 0) continue;
+      if (!(await debitReviewerPixels(row.reviewer_slack_id, amount)))
+        console.error("voidFirstPassPayouts: could not claw back", row.id, row.reviewer_slack_id, amount);
+    }
+  }
+  const { error } = await db
+    .from("review_payouts")
+    .update({
+      status: "voided",
+      paid_pixels: 0,
+      cut_pct: 100,
+      cut_reason: reason,
+      settled_at: new Date().toISOString(),
+    })
+    .eq("project_id", projectId)
+    .eq("status", "pending");
+  if (error) console.error("voidFirstPassPayouts failed", error.message);
+}
+
+// Lets an owner change the per-verdict reviewer payout rate from the
+// Admins page without a code change/redeploy - e.g. temporarily paying out
+// on needs_changes during a review push, or adjusting the approval rate for
+// a particular occasion. Both fields are clamped to a sane non-negative
+// range; 0 disables payouts for that verdict entirely (recordSettledPayout
+// skips entirely when the resolved rate is 0).
+export const updateReviewPayoutSettings = guardedAction("updateReviewPayoutSettings", "owner", async (access, formData: FormData): Promise<void> => {
+  const clamp = (raw: FormDataEntryValue | null): number => {
+    const n = Number(String(raw ?? "0"));
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.round(Math.min(n, 1000) * 10) / 10;
+  };
+  const approvedPixels = clamp(formData.get("approvedPixels"));
+  const needsChangesPixels = clamp(formData.get("needsChangesPixels"));
+  const { error } = await db
+    .from("review_payout_settings")
+    .update({
+      approved_pixels: approvedPixels,
+      needs_changes_pixels: needsChangesPixels,
+      updated_by: actorName(access),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", 1);
+  if (error) console.error("updateReviewPayoutSettings failed", error.message);
+  revalidatePath("/admins");
+});
+
+// How a reviewer is credited in maker-facing notes. Prefers the Slack @handle;
+// never leaks a raw Slack user id (login stores the id as the name when Slack
+// gives us no real name), attribute it to the review team instead.
+// "Name (U0ABC123)" -> "U0ABC123", the format actorName() stamps into
+// first_pass_by (and review_audits.reviewer, mod_actions.actor, ...).
+function slackIdFromActorLabel(label: string): string | null {
+  const m = label.match(/\(([^()]+)\)\s*$/);
+  return m ? m[1] : null;
+}
+
+async function reviewerLabel(slackId: string, name: string): Promise<string> {
+  const handle = await slackHandle(slackId);
+  if (handle) return handle;
+  return /^[UW][A-Z0-9]{6,}$/.test(name) ? "the review team" : name;
+}
+
+async function notifyOwner(
+  userId: string,
+  title: string,
+  body: string,
+): Promise<void> {
+  const { error } = await db.from("notifications").insert({ user_id: userId, title, body });
+  if (error) console.error("review notification failed", error.message);
+  await dmOrEmail(userId, title, body);
+}
+
+// In-app notification only. Review verdicts are announced in the public review
+// channel (announceReview) instead of by DM; the DM is only the fallback.
+async function notifyInApp(userId: string, title: string, body: string): Promise<void> {
+  const { error } = await db.from("notifications").insert({ user_id: userId, title, body });
+  if (error) console.error("review notification failed", error.message);
+}
+
+// Same "hackatime if tracked, else journal" source as claimedHoursFor(), but
+// scoped to one collaborator's own journal entries and their own tracked
+// Hackatime seconds (project_collaborators.hackatime_seconds), not the
+// project as a whole.
+async function claimedHoursForCollaborator(
+  projectId: number,
+  userId: string,
+  hackatimeSeconds: number | null,
+): Promise<number> {
+  const { data: journals } = await db
+    .from("project_journals")
+    .select("hours, approved_hours")
+    .eq("project_id", projectId)
+    .eq("user_id", userId);
+  const journalHours =
+    Math.round(
+      (journals ?? []).reduce((s, j) => s + (Number(j.approved_hours ?? j.hours) || 0), 0) * 10,
+    ) / 10;
+  const hackatimeHours = Math.round(((hackatimeSeconds || 0) / 3600) * 10) / 10;
+  return hackatimeHours > 0 ? hackatimeHours : journalHours;
+}
+
+// Deflate (never inflate) a single journal entry's credited hours, straight
+// from the Journals tab - claimedHoursFor() and claimedHoursForCollaborator()
+// both fall back to approved_hours ?? hours per entry, so this immediately
+// changes the overall claimed/credited total shown and enforced everywhere
+// else on the review page, no separate "recompute total" step needed.
+export const setJournalHours = guardedAction("setJournalHours", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const journalId = Number(formData.get("journalId") ?? 0);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  if (!journalId || !projectId) return;
+  await authorizeProjectAction(access, projectId, null, {
+    ownMessage: "You can't change journal hours on a project you own or collaborate on.",
+  });
+  // Scoped to the project that was just authorized: without the project_id
+  // filter, any journal id could be edited by naming a different project.
+  const { data: journal } = await db
+    .from("project_journals")
+    .select("hours, approved_hours")
+    .eq("id", journalId)
+    .eq("project_id", projectId)
+    .maybeSingle();
+  if (!journal) return;
+  const rawHours = Number(journal.hours) || 0;
+  const raw = String(formData.get("hours") ?? "").trim();
+  // Empty input clears the override back to the player's own claimed hours.
+  const approvedHours =
+    raw === "" ? null : Math.max(0, Math.min(rawHours, Math.round(Number(raw) * 10) / 10));
+  if (raw !== "" && !Number.isFinite(Number(raw))) return;
+  // Same requirement as the main verdict form's deflationReason: lowering
+  // credited hours below what was claimed needs a written reason. The
+  // Journals tab form only renders the textarea once the typed value would
+  // deflate, but that's a client-side nicety - enforce it here too rather
+  // than trusting the client sent one.
+  const deflating = approvedHours != null && approvedHours < rawHours;
+  const deflationReason = String(formData.get("deflationReason") ?? "").trim();
+  if (deflating && !deflationReason) return;
+  const { error } = await db
+    .from("project_journals")
+    .update({
+      approved_hours: approvedHours,
+      // Only a deflating value has a reason to show - clearing the override
+      // or raising it back to (or above) the claimed hours clears the old
+      // reason too, rather than leaving a stale explanation for a number
+      // that's no longer in effect.
+      deflation_reason: deflating ? deflationReason : null,
+    })
+    .eq("id", journalId)
+    .eq("project_id", projectId);
+  if (error) throw new Error(error.message);
+
+  // Deflating a journal entry moves real money, and until now it was the one
+  // reviewer action that left no trace anywhere - it didn't go through
+  // reviewProject, so no review_audits row, and nothing wrote mod_actions.
+  const { data: project } = await db
+    .from("projects")
+    .select("user_id, name")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (project) {
+    const before = journal.approved_hours == null ? `${rawHours}h claimed` : `${journal.approved_hours}h`;
+    const after = approvedHours == null ? `${rawHours}h claimed` : `${approvedHours}h`;
+    const reasonSuffix = deflating ? ` , ${deflationReason}` : "";
+    await logModAction(
+      project.user_id as string,
+      "journal_hours_set",
+      `${project.name}: entry #${journalId} ${before} → ${after}${reasonSuffix}`,
+      actorName(access),
+    );
+  }
+
+  revalidatePath(`/review/${projectId}`);
+});
+
+async function acceptedCollaboratorUserIds(projectId: number): Promise<string[]> {
+  const { data } = await db
+    .from("project_collaborators")
+    .select("user_id")
+    .eq("project_id", projectId)
+    .eq("status", "accepted");
+  return (data ?? []).map((r) => r.user_id as string);
+}
+
+// The Trial a project was shipped for (see [[trial-ship-review-reward]] in
+// project memory) , carries an optional min-hours gate and a prize.
+type LinkedTrial = {
+  id: number;
+  name: string;
+  reward: string;
+  min_hours: number | null;
+  prize_shop_item_id: number | null;
+};
+
+// What a Trial actually hands over: its linked catalog item if it has one,
+// otherwise the free-text reward, fulfilled by hand as a $0 custom order.
+async function trialPrizeFor(trial: LinkedTrial): Promise<{ itemId: number | null; name: string }> {
+  if (trial.prize_shop_item_id) {
+    const { data: prizeItem } = await db
+      .from("shop_items")
+      .select("id, name")
+      .eq("id", trial.prize_shop_item_id)
+      .maybeSingle();
+    if (prizeItem) return { itemId: prizeItem.id as number, name: prizeItem.name as string };
+  }
+  return { itemId: null, name: trial.reward || trial.name };
+}
+
+interface BeneficiaryPayout {
+  totalPx: number;
+  deltaPx: number;
+  pxRate: number;
+  xpBefore: number;
+  goalNote: string;
+  referralNote: string;
+  alreadyPx: number;
+  /** RE this ship earned, for the "you're now level N" line. */
+  projectRe: number;
+  /** Community-goal multiplier applied to the payout (1 = none). */
+  goalMult: number;
+  /** Pixels withheld from this payout for a hardware funding grant (0 = none). */
+  fundingPx: number;
+  /** The person's RE-derived $/hr on this ship, before referral boosts or goal
+   * multipliers , the "normal rate" Operation Blackout compares its floor to. */
+  baseUsdRate: number;
+}
+
+// Credits one beneficiary (the project owner, or an accepted collaborator)
+// at their own rate tier for their own share of credited hours. This is what
+// "split payout" means for a collaborative project, each person is treated
+// like an independent earner (own lifetime-hours rate, own referral boost),
+// just for their own hours slice instead of the whole project.
+async function creditBeneficiary(
+  userId: string,
+  projectId: number,
+  projectType: string,
+  creditHours: number,
+  shippedAt: string | null,
+  by: string,
+  otherBeneficiaryIds: string[] = [],
+  tier = 1,
+  holdPixels = false,
+  fundingUsd = 0,
+): Promise<BeneficiaryPayout> {
+  let goalMult = 1;
+  let goalNote = "";
+  if (shippedAt) {
+    const { data: goals } = await db
+      .from("events")
+      .select("*")
+      .eq("type", "community_goal")
+      .is("stopped_at", null)
+      .lte("starts_at", shippedAt)
+      .gt("ends_at", shippedAt);
+    for (const g of (goals ?? []) as DashEventRow[]) {
+      const target = Number(g.config.target) || 0;
+      const bonusPct = Number(g.config.bonusPct) || 0;
+      const wantType = String(g.config.projectType ?? "");
+      if (wantType && wantType !== projectType) continue;
+      if (target > 0 && bonusPct > 0 && (await communityGoalShipCount(g)) >= target) {
+        goalMult *= 1 + bonusPct / 100;
+        goalNote += ` The "${g.name}" community goal was hit , +${bonusPct}% on this project!`;
+      }
+    }
+  }
+
+  // The RE-driven rate averaged across the RE this ship earns on top of the
+  // player's lifetime RE (xpBefore -> xpBefore + projectRe), so RE is
+  // player-specific and banked forever - once a player has earned enough
+  // lifetime RE to sit at the $6.00 cap, every future ship pays at that rate
+  // too (RE announced, Gabin/Ridit/Ricky, 2026-08-25).
+  const xpBefore = await lifetimeRe(userId, projectId);
+  const projectRe = reForHours(creditHours, tier);
+  let pxRate = pxPerHourOver(xpBefore, xpBefore + projectRe);
+  const baseUsdRate = pxRate * config.economy.pixelValueUsd;
+  const alreadyPx = await projectPixelTotal(projectId, userId);
+  // A project only counts as a "new ship" for referral purposes the first
+  // time it earns any pixels , re-approvals of an already-credited project
+  // (edits, overturned first passes, etc.) don't re-trigger the boost/reward.
+  const isNewShip = alreadyPx === 0;
+  const { data: referral } = isNewShip
+    ? await db
+        .from("referrals")
+        .select("id, referrer_id, rewarded_at, boosted_ships")
+        .eq("referred_id", userId)
+        .maybeSingle()
+    : { data: null };
+
+  let referralNote = "";
+  if (referral && referral.boosted_ships < REFERRAL_BOOST_SHIP_CAP) {
+    // Conditioned on the boosted_ships value we just read, so two ships for
+    // the same referred player approved at the same instant can't both pass
+    // the check before either write lands , only the update that still
+    // matches the value it read wins the boost.
+    const { data: claimed } = await db
+      .from("referrals")
+      .update({ boosted_ships: referral.boosted_ships + 1, boost_project_id: projectId })
+      .eq("id", referral.id)
+      .eq("boosted_ships", referral.boosted_ships)
+      .select("id")
+      .maybeSingle();
+    if (claimed) {
+      pxRate += REFERRAL_BOOST_PX_PER_HOUR;
+      // Worded as "already included" and not just "+4px/hr referral boost"
+      // because this note is appended after "Your rate: ..." in the DM below
+      // - read on its own, a trailing "+4px/hr" reads like an additional
+      // bonus stacked on top of the rate already shown, when pxRate above
+      // already has it added in. That misreading is exactly what got
+      // reported as "math ain't mathing" (expecting rate+4 on top of a rate
+      // that already included it).
+      referralNote += ` Your rate above already includes a one-time +${REFERRAL_BOOST_PX_PER_HOUR}px/hr referral boost (${referral.boosted_ships + 1}/${REFERRAL_BOOST_SHIP_CAP} ships used).`;
+    }
+  }
+
+  const grossPx = Math.round(creditHours * pxRate * goalMult);
+  // Hardware funding grant: the reviewer-approved dollar amount comes out of
+  // pixels rather than the maker's own wallet, converted at today's rate , so
+  // the more they ask the shop to front, the fewer pixels they're credited.
+  // Clamped so a grant can never push the payout negative.
+  const fundingPx = fundingUsd > 0 ? Math.min(Math.round(fundingUsd / config.economy.pixelValueUsd), grossPx) : 0;
+  const totalPx = grossPx - fundingPx;
+  const deltaPx = totalPx - alreadyPx;
+  // Trial ships settle later: the maker picks the Trial prize *or* these
+  // pixels, so the payout is computed now and only credited once they choose
+  // (projects.trial_reward_choice). Everything below still runs , the referral
+  // boost and the referrer's own payout aren't the maker's pixels to hold.
+  if (!holdPixels) await creditProjectPixels(userId, projectId, totalPx, creditHours, by);
+
+  // Referrer payout: pays once per referral, on the first qualifying ship.
+  // Skipped if the referrer is also a credited beneficiary (owner or
+  // collaborator) on this same project , otherwise a referrer could invite
+  // themselves onto the referred user's project (or vice versa) and collect
+  // both their own collaborator pay and the referral bonus off one ship.
+  // Left un-rewarded so the referral still pays out on a genuinely
+  // independent ship later.
+  const referrerRidingAlong = otherBeneficiaryIds.includes(referral?.referrer_id ?? "");
+  if (referral && !referral.rewarded_at && !referrerRidingAlong) {
+    const tier = referralTierFor(creditHours);
+    if (tier) {
+      // Conditioned on rewarded_at still being null, so two qualifying ships
+      // for the same referred player approved at the same instant can't both
+      // pay the referrer , only the update that still finds it unrewarded wins.
+      const { data: claimed } = await db
+        .from("referrals")
+        .update({
+          rewarded_at: new Date().toISOString(),
+          reward_tier: tier.key,
+          reward_pixels: tier.px,
+          reward_project_id: projectId,
+        })
+        .eq("id", referral.id)
+        .is("rewarded_at", null)
+        .select("id")
+        .maybeSingle();
+      if (!claimed) return { totalPx, deltaPx, pxRate, xpBefore, goalNote, referralNote, alreadyPx, projectRe, goalMult, fundingPx, baseUsdRate };
+      await db.rpc("adjust_user_pixels", {
+        p_user_id: referral.referrer_id,
+        p_amount: tier.px,
+        p_reason: "referral_reward",
+        p_created_by: by,
+      });
+      await db.from("notifications").insert({
+        user_id: referral.referrer_id,
+        title: "Referral reward!",
+        body: `Someone you referred shipped a ${creditHours}h project , you earned ${tier.px} pixels ($${(tier.px * config.economy.pixelValueUsd).toFixed(2)})!`,
+      });
+
+      const { count: rewardedCount } = await db
+        .from("referrals")
+        .select("id", { count: "exact", head: true })
+        .eq("referrer_id", referral.referrer_id)
+        .not("rewarded_at", "is", null);
+      if (rewardedCount && rewardedCount % REFERRAL_MILESTONE_EVERY === 0) {
+        await db.rpc("adjust_user_pixels", {
+          p_user_id: referral.referrer_id,
+          p_amount: REFERRAL_MILESTONE_PX,
+          p_reason: "referral_milestone",
+          p_created_by: by,
+        });
+        await db.from("notifications").insert({
+          user_id: referral.referrer_id,
+          title: "Referral milestone!",
+          body: `${rewardedCount} of your referrals have shipped , bonus ${REFERRAL_MILESTONE_PX} pixels ($${(REFERRAL_MILESTONE_PX * config.economy.pixelValueUsd).toFixed(2)})!`,
+        });
+      }
+    }
+  }
+
+  return { totalPx, deltaPx, pxRate, xpBefore, goalNote, referralNote, alreadyPx, projectRe, goalMult, fundingPx, baseUsdRate };
+}
+
+// Admin-only: drafts review notes with AI (Claude Sonnet via OpenRouter, see
+// lib/aiReview.ts) from the same objective facts a reviewer already has open
+// on the page - commits, journals, Hackatime numbers, trust factor, cross-YSWS
+// duplicate check. The button is visible to every reviewer (so they know the
+// feature exists and can ask an admin to run it), but only owners
+// actually generate a draft - this never proposes a verdict or
+// credited hours, and nothing it returns is saved/submitted on its own, the
+// reviewer copies whatever they want into the real form fields themselves.
+export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftAction", "owner", async (access, projectId: number,
+  reviewerHours?: number,): Promise<AiReviewDraft> => {
+  if (!projectId) throw new Error("Missing project id");
+
+  const { data: p, error } = await db
+    .from("projects")
+    .select("name, description, repo_url, demo_url, kind, ai_notes, user_id, hackatime_projects")
+    .eq("id", projectId)
+    .single();
+  if (error || !p) throw new Error("Project not found");
+
+  const { data: users } = await db
+    .from("users")
+    .select("slack_id, hackatime_token")
+    .eq("id", p.user_id)
+    .maybeSingle();
+  const slackId = (users?.slack_id as string | undefined) ?? null;
+  const hackatimeToken = (users?.hackatime_token as string | undefined) ?? null;
+  const hackatimeProjects = (p.hackatime_projects as string[] | null) ?? [];
+
+  const { data: journalRows } = await db
+    .from("project_journals")
+    .select("id, project_id, user_id, title, content, hours, approved_hours, created_at, edited_at")
+    .eq("project_id", projectId);
+
+  const [commits, hackatime, trust, claimedHours, yswsMatches, styleExamples] = await Promise.all([
+    (async () => {
+      const c = await fetchCommits(p.repo_url as string | null);
+      await attachCommitStats(c);
+      return c;
+    })(),
+    hackatimeProjects.length
+      ? fetchHackatimeReport(slackId, hackatimeToken, hackatimeProjects)
+      : Promise.resolve(null),
+    fetchTrustFactor(slackId),
+    claimedHoursFor(projectId),
+    yswsShipsFor(slackId, p.repo_url as string | null, p.demo_url as string | null).then((rows) =>
+      rows.filter((s) => s.urlMatch),
+    ),
+    recentApprovedJustifications(),
+  ]);
+
+  return generateAiReviewDraft({
+    projectName: p.name as string,
+    description: (p.description as string | null) ?? "",
+    repoUrl: p.repo_url as string | null,
+    demoUrl: p.demo_url as string | null,
+    kind: p.kind as string,
+    aiNotes: (p.ai_notes as string | null) ?? "",
+    claimedHours,
+    reviewerHours: reviewerHours ?? claimedHours,
+    commits,
+    journals: (journalRows ?? []) as unknown as JournalRow[],
+    hackatime,
+    trust,
+    yswsMatches,
+    styleExamples,
+  });
+});
+
+// Two-pass review. A shipped project always gets a first pass from *some*
+// reviewer , even a final reviewer's first look on a fresh 'shipped' project is
+// only a proposal, same as anyone else's. It moves to 'second_review' and needs
+// a DIFFERENT final reviewer to confirm or overturn it before pixels are
+// credited. "Request changes" bounces it back to the maker from either stage.
+export const reviewProject = guardedAction("reviewProject", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  // Pixels this verdict pays the reviewer, shown as "+N pixels" on their next page.
+  let rewardPx = 0;
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const verdict = String(formData.get("verdict") ?? "");
+  const note = String(formData.get("note") ?? "").trim().slice(0, 1000);
+  if (!projectId || !["approved", "needs_changes", "ban"].includes(verdict)) return;
+
+  const { data: current } = await db
+    .from("projects")
+    .select(
+      "status, user_id, kind, name, description, image_url, first_pass_by, first_pass_hours, first_pass_verdict, second_pass_hours, second_pass_verdict, shipped_at, sidequest_id, trial_reward_choice, needs_funding, funding_usd, robert_project_id, robert_state",
+    )
+    .eq("id", projectId)
+    .single();
+  if (!current) return;
+  const { data: submitter } = await db
+    .from("users")
+    .select("birthday")
+    .eq("id", current.user_id)
+    .maybeSingle();
+  const ageFlag = turnedNineteenSinceShipping(submitter?.birthday ?? null, current.shipped_at);
+  const stage = String(current.status);
+  const back = `/review/${projectId}`;
+  // A real verdict at second_review is the Spot check step itself now, so
+  // giving one marks the project checked (see spot_checked_at on ProjectRow).
+  const spotCheckFields =
+    stage === "second_review" ? { spot_checked_at: new Date().toISOString(), spot_checked_by: by } : {};
+
+  let linkedTrial: LinkedTrial | null = null;
+  if (current.sidequest_id) {
+    const { data: sq } = await db
+      .from("sidequests")
+      .select("id, name, reward, min_hours, prize_shop_item_id")
+      .eq("id", current.sidequest_id)
+      .maybeSingle();
+    linkedTrial = sq as LinkedTrial | null;
+  }
+  // Queue scope (hardware-only / software-only reviewers), enforced here and
+  // not only on the page.
+  if (!queueAllows(access.reviewQueues, (current as { kind?: string | null }).kind ?? null))
+    redirect(`${back}?error=${encodeURIComponent("This project isn't in your review queue.")}`);
+  const own = await isOwnProject(access, current.user_id, projectId);
+  // Self-review is denied for everyone, owners included. The only carve-out is
+  // a self_review_exceptions row, and only at first pass (see
+  // hasSelfReviewException); a spot check / final verdict on your own project
+  // is never allowed.
+  if (
+    stage === "shipped" &&
+    own &&
+    !(await hasSelfReviewException(access.session.slackId))
+  )
+    redirect(`${back}?error=${encodeURIComponent("You can't first-pass your own project , another reviewer has to take it.")}`);
+  if (stage === "second_review" && own)
+    redirect(`${back}?error=${encodeURIComponent("You can't give the final verdict on a project you own or collaborate on.")}`);
+  if (stage !== "shipped" && stage !== "second_review")
+    redirect(`${back}?error=${encodeURIComponent("This project isn't awaiting review anymore.")}`);
+  // A first-pass reviewer proposing a ban is a separate, older flow the fraud
+  // triage redesign doesn't touch - it skips fraud triage entirely and goes
+  // straight to a different canSecondPass reviewer confirming or overturning
+  // it here, same as before this redesign.
+  const isProposedBan = stage === "second_review" && current.first_pass_verdict === "banned";
+  // A non-owner final reviewer overturning a ban proposal doesn't get to
+  // final-approve: the project re-enters the normal pipeline (fraud_review ->
+  // Robert -> owner Spot check) through the first-pass approval branch below.
+  // Ban decisions themselves are owner-only. See proposedBanDecision.
+  let rerouteToPipeline = false;
+  if (isProposedBan) {
+    const decision = proposedBanDecision(access, verdict, {
+      own,
+      proposedBy: String(current.first_pass_by ?? ""),
+      actor: by,
+    });
+    if (decision.kind === "deny") redirect(`${back}?error=${encodeURIComponent(decision.reason)}`);
+    rerouteToPipeline = decision.kind === "reroute_to_pipeline";
+  } else if (stage === "second_review") {
+    // A real approve/needs_changes/ban verdict at second_review is now the
+    // Spot check step - it only fires once a second-pass reviewer has
+    // triaged the project "not fraud" (Robert's fraud review), and only a super
+    // gives it, same as the rest of Spot check's gating.
+    if (current.second_pass_verdict !== "not_fraud")
+      redirect(`${back}?error=${encodeURIComponent("This still needs a fraud triage (Fraud / Not fraud) before a final verdict.")}`);
+    if (!access.isOwner)
+      redirect(`${back}?error=${encodeURIComponent("Only an owner gives the final verdict, in Spot check.")}`);
+  }
+  if (!note)
+    redirect(`${back}?error=${encodeURIComponent("Feedback is required for every verdict.")}`);
+
+  const claimedHours = await claimedHoursFor(projectId);
+  const loggedHours = await claimedHoursFor(projectId, { raw: true });
+  const hoursRaw = String(formData.get("approvedHours") ?? "").trim();
+  let approvedHours: number | null = null;
+  if (hoursRaw !== "") {
+    const n = Number(hoursRaw);
+    if (!Number.isFinite(n) || n < 0)
+      redirect(`${back}?error=${encodeURIComponent("Credited hours must be a number of 0 or more.")}`);
+    approvedHours = Math.min(Math.round(n * 10) / 10, claimedHours);
+  }
+
+  // The tier rides along with the verdict so a reviewer sets hours and tier in
+  // one place and sees the resulting RE before submitting, instead of using the
+  // separate re-grade form and guessing. Absent (older form, or a non-approve
+  // verdict) means leave whatever is stored alone.
+  const tierRaw = String(formData.get("tier") ?? "").trim();
+  if (tierRaw !== "") {
+    const t = Number(tierRaw);
+    if (!Number.isInteger(t) || t < 1 || t > 4)
+      redirect(`${back}?error=${encodeURIComponent("Tier must be between 1 and 4.")}`);
+    const { data: cur } = await db
+      .from("projects")
+      .select("user_id, level")
+      .eq("id", projectId)
+      .maybeSingle();
+    if (cur && Number(cur.level) !== t) {
+      if (await isOwnProject(access, cur.user_id as string, projectId))
+        redirect(
+          `${back}?error=${encodeURIComponent("You can't change the tier of your own project.")}`,
+        );
+      await db.from("projects").update({ level: t }).eq("id", projectId);
+      await logModAction(
+        cur.user_id as string,
+        "project_level_changed",
+        `tier set to T${t} (was T${cur.level ?? 1}) with the verdict`,
+        by,
+      );
+    }
+  }
+
+  // Structured internal audit note (Hack Club's YSWS "override hours spent
+  // justification" guidance) , the form submits each section separately so we
+  // can validate the parts that matter, then store them as one string under
+  // the existing auditNote field.
+  // Technical features / additional notes are only mandatory for a verdict
+  // that actually needs to hold up as an audit trail (approve, or a proposed/
+  // confirmed ban) - a "request changes" bounce-back has its own player-facing
+  // note field for that, and reviewers kept typing a throwaway line here just
+  // to satisfy the requirement.
+  const auditSectionsRequired = verdict !== "needs_changes";
+  const technicalFeatures = String(formData.get("technicalFeatures") ?? "").trim();
+  if (auditSectionsRequired && technicalFeatures.length < TECHNICAL_FEATURES_MIN)
+    redirect(
+      `${back}?error=${encodeURIComponent(`Describe concrete technical features you checked (min ${TECHNICAL_FEATURES_MIN} characters).`)}`,
+    );
+  // Hours are only ever actually credited on an approve - needs_changes and
+  // ban never pay out, so a lowered-hours number sitting in the form when the
+  // reviewer picks one of those shouldn't need an explanation either (matches
+  // the same verdict-gated relaxation as auditSectionsRequired above).
+  const deflated = verdict === "approved" && approvedHours != null && approvedHours < claimedHours;
+  const deflationReason = String(formData.get("deflationReason") ?? "").trim();
+  if (deflated && !deflationReason)
+    redirect(`${back}?error=${encodeURIComponent("Explain why the credited hours were lowered.")}`);
+  const ageJustification = String(formData.get("ageJustification") ?? "").trim();
+  if (ageFlag && !ageJustification)
+    redirect(
+      `${back}?error=${encodeURIComponent("This submitter turns 19 between shipping and review , document that before deciding.")}`,
+    );
+  const notes = String(formData.get("notes") ?? "").trim();
+  if (auditSectionsRequired && !notes)
+    redirect(`${back}?error=${encodeURIComponent("Additional notes are required.")}`);
+  formData.set(
+    "auditNote",
+    buildAuditNote({
+      "TECHNICAL FEATURES": technicalFeatures,
+      "DEFLATION REASON": deflationReason,
+      "AGE JUSTIFICATION": ageJustification,
+      NOTES: notes,
+    }),
+  );
+
+  const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
+  // Whether the approve/needs-changes notification below shows this reviewer's
+  // real name or a generic "the review team", ticked by default in the form,
+  // a reviewer can opt out per verdict. Internal records (mod actions, audit
+  // rows, ban_by, first_pass_by, etc.) always keep the real reviewer; this
+  // only ever swaps the player-facing notification text.
+  const revealName = formData.get("revealName") === "1";
+  const playerFacingReviewer = revealName ? reviewer : "the review team";
+  // On a full (second-pass) APPROVAL specifically, the player cares who
+  // actually reviewed their code in depth - that's the first-pass reviewer,
+  // not whoever clicked the final confirm (often a quicker second look).
+  // Only swaps the final "approved by" message below - first-pass and
+  // needs-changes notifications keep showing whoever is acting right now,
+  // via playerFacingReviewer above.
+  const firstPassSlackId = current.first_pass_by
+    ? slackIdFromActorLabel(String(current.first_pass_by))
+    : null;
+  const approvalReviewer =
+    stage === "second_review" && firstPassSlackId
+      ? await reviewerLabel(firstPassSlackId, String(current.first_pass_by))
+      : reviewer;
+  const approvalPlayerFacingReviewer = revealName ? approvalReviewer : "the review team";
+
+  // First pass on a freshly-shipped project: approve and ban are only PROPOSALS,
+  // regardless of the reviewer's own permissions, the project is held in
+  // 'second_review' carrying what was proposed so a different final reviewer
+  // confirms or overturns it. "Request changes" is the exception: it never needs
+  // a second pass, so it falls through to bounce straight back to the maker.
+  if ((stage === "shipped" && verdict !== "needs_changes") || rerouteToPipeline) {
+    const proposedKey = verdict === "ban" ? "banned" : verdict;
+    if (verdict === "approved") {
+      const blackoutError = await applyBlackoutDecision({ projectId, formData, by, stage: "first_pass" });
+      if (blackoutError) redirect(`${back}?error=${encodeURIComponent(blackoutError)}`);
+    }
+    const { data: project, error } = await db
+      .from("projects")
+      .update({
+        // A proposed ban skips Robert entirely, straight to second_review
+        // for a different reviewer to confirm/overturn in Proposed bans -
+        // same carve-out the fraud-triage redesign already established (see
+        // isProposedBan below). An approval always parks in fraud_review
+        // now, whether or not ROBERT_API_KEY is set yet - manual fraud
+        // triage is retired, not just conditional on Robert being
+        // configured (see 0206_robert_fraud_review.sql). Submission below is
+        // a no-op while unconfigured; the project just sits un-actionable
+        // (see the Second pass tab) until it is.
+        status: proposedKey === "banned" ? "second_review" : "fraud_review",
+        review_note: note,
+        review_note_by: reviewer,
+        approved_hours: approvedHours,
+        reviewing_by: "",
+        reviewing_at: null,
+        first_pass_by: by,
+        first_pass_at: new Date().toISOString(),
+        first_pass_note: note,
+        first_pass_hours: approvedHours,
+        first_pass_verdict: proposedKey,
+        // Fresh entry into the second-review pipeline - clear any spot-check
+        // mark and fraud-triage verdict left over from a previous cycle.
+        spot_checked_at: null,
+        spot_checked_by: "",
+        second_pass_by: "",
+        second_pass_at: null,
+        second_pass_note: "",
+        second_pass_hours: null,
+        second_pass_verdict: null,
+        // A submitted verdict supersedes any in-progress shared draft.
+        review_draft: null,
+        review_draft_by: "",
+        review_draft_at: null,
+        // A real verdict resolves whatever a prior revert was waiting on -
+        // clear the queue-jump so a later revert-back-to-shipped starts fresh.
+        reverted_at: null,
+      })
+      .eq("id", projectId)
+      // "shipped" for a normal first pass; "second_review" when a non-owner
+      // final reviewer overturns a ban proposal (rerouteToPipeline).
+      .eq("status", rerouteToPipeline ? "second_review" : "shipped")
+      .select("id, name, user_id")
+      .single();
+    if (error || !project) {
+      console.error("reviewProject (first pass) failed", error?.message);
+      return;
+    }
+    await insertReviewAudit(formData, projectId, project.user_id, by, `first_pass_${proposedKey}`, note, loggedHours, claimedHours, approvedHours);
+    // A first-pass approval pays and DMs the reviewer immediately, same as a
+    // final approval does - reviewing is the work being paid for, not the
+    // eventual outcome, so this doesn't wait on (or get clawed back by) a
+    // second reviewer's confirmation. A proposed ban never pays , the
+    // eventual ban confirmation is what settles a real payout, if any.
+    if (!own && proposedKey === "approved")
+      rewardPx = await recordSettledPayout(projectId, access, "first_pass_approved", project.name);
+    if (proposedKey === "approved") {
+      const ownerBody = `"${project.name}" passed first-pass review by ${playerFacingReviewer}. It still needs a second reviewer to confirm before your pixels are credited , hang tight!`;
+      const collabBody = `A project you collaborate on, "${project.name}", passed first-pass review by ${playerFacingReviewer}. It still needs a second reviewer to confirm before pixels are credited.`;
+      const collaboratorIds = await acceptedCollaboratorUserIds(projectId);
+      await notifyInApp(project.user_id, "First pass complete!", ownerBody);
+      for (const collaboratorId of collaboratorIds)
+        await notifyInApp(collaboratorId, "First pass complete!", collabBody);
+      await announceReview({
+        kind: "first_pass",
+        projectId,
+        projectName: project.name,
+        ownerId: project.user_id,
+        collaboratorIds,
+        note,
+        reviewerSlackId: access.session.slackId,
+        revealName,
+        fallback: [
+          { userId: project.user_id, title: "First pass complete!", body: ownerBody },
+          ...collaboratorIds.map((userId) => ({ userId, title: "First pass complete!", body: collabBody })),
+        ],
+      });
+    }
+    await logModAction(project.user_id, "project_first_pass", `${project.name}: proposed ${proposedKey.replace("_", " ")} , ${note}`, by);
+    if (proposedKey === "approved") await submitToRobert(projectId);
+    await flagReviewReward(rewardPx);
+    const nextPath = await nextReviewPath(access, by, stage, projectId);
+    revalidatePath("/review");
+    redirect(nextPath);
+  }
+
+  // From here the project is either:
+  // - in 'second_review' with an OWNER giving the final verdict: the Spot
+  //   check on a not_fraud-triaged project, or confirming/overturning a
+  //   first-pass ban proposal (both gated above - owner required; a non-owner
+  //   overturning a ban proposal was rerouted into the pipeline above, and a
+  //   non-owner can't confirm a ban at all);
+  // - or a "request changes" from either stage, which bounces straight back
+  //   to the maker (any reviewer allowed to act at that stage may do this).
+
+  // Request changes , bounce back to the maker.
+  if (verdict === "needs_changes") {
+    const { data: project, error } = await db
+      .from("projects")
+      .update({
+        status: "needs_changes",
+        review_note: note,
+        review_note_by: reviewer,
+        reviewing_by: "",
+        reviewing_at: null,
+        first_pass_by: "",
+        first_pass_at: null,
+        first_pass_note: "",
+        first_pass_hours: null,
+        first_pass_verdict: null,
+        second_pass_by: "",
+        second_pass_at: null,
+        second_pass_note: "",
+        second_pass_hours: null,
+        second_pass_verdict: null,
+        review_draft: null,
+        review_draft_by: "",
+        review_draft_at: null,
+        reverted_at: null,
+        notify_reviewer_slack_id: formData.get("notifyOnResubmit") === "1" ? access.session.slackId : "",
+      })
+      .eq("id", projectId)
+      .in("status", ["shipped", "second_review"])
+      .select("id, name, user_id")
+      .single();
+    if (error || !project) {
+      console.error("reviewProject (changes) failed", error?.message);
+      return;
+    }
+    await insertReviewAudit(formData, projectId, project.user_id, by, "needs_changes", note, loggedHours, claimedHours, approvedHours);
+    await operationRpc.requestChanges(projectId);
+    const changesEntry = await getBlackoutEntry(projectId);
+    if (changesEntry?.graceDeadline && changesEntry.status === "needs_changes") {
+      const deadlineLabel = new Date(changesEntry.graceDeadline).toLocaleString("en-GB", {
+        day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC",
+      });
+      const msg = `"${project.name}" keeps its Operation Blackout entry. Make the requested fixes and ship again by ${deadlineLabel} UTC , only a small amount of fix work in that window counts toward Blackout, it isn't a second Blackout window.`;
+      await notifyOwner(project.user_id, "Operation Blackout: fix window", msg);
+      for (const collaboratorId of await acceptedCollaboratorUserIds(projectId))
+        await notifyOwner(collaboratorId, "Operation Blackout: fix window", msg);
+    }
+    if (stage === "second_review")
+      await voidFirstPassPayouts(projectId, "final verdict was needs_changes, not an approval");
+    // Pays out only when an admin has set needs_changes_pixels above 0 (see
+    // updateReviewPayoutSettings) - 0 keeps the historical "only approvals
+    // pay" behavior with no special-casing here.
+    if (!own) rewardPx = await recordSettledPayout(projectId, access, "needs_changes", project.name);
+    const changesOwnerBody = `"${project.name}" needs changes before it can be approved , ${playerFacingReviewer}:\n\n${note}\n\nUpdate your project and ship it again.`;
+    const changesCollabBody = `"${project.name}" needs changes before it can be approved , ${playerFacingReviewer}:\n\n${note}`;
+    const changesCollaboratorIds = await acceptedCollaboratorUserIds(projectId);
+    await notifyInApp(project.user_id, "Changes requested", changesOwnerBody);
+    for (const collaboratorId of changesCollaboratorIds)
+      await notifyInApp(collaboratorId, "Changes requested", changesCollabBody);
+    await announceReview({
+      kind: "changes",
+      projectId,
+      projectName: project.name,
+      ownerId: project.user_id,
+      collaboratorIds: changesCollaboratorIds,
+      note,
+      reviewerSlackId: access.session.slackId,
+      revealName,
+      fallback: [
+        { userId: project.user_id, title: "Changes requested", body: changesOwnerBody },
+        ...changesCollaboratorIds.map((userId) => ({ userId, title: "Changes requested", body: changesCollabBody })),
+      ],
+    });
+    await logModAction(project.user_id, "project_needs_changes", `${project.name}: ${note}`, by);
+    await flagReviewReward(rewardPx);
+    const nextPath = await nextReviewPath(access, by, stage, projectId);
+    revalidatePath("/review");
+    redirect(nextPath);
+  }
+
+  // Ban , a final reviewer confirms a proposed ban (or a senior bans outright).
+  if (verdict === "ban") {
+    const { data: project, error } = await db
+      .from("projects")
+      .update({
+        banned_at: new Date().toISOString(),
+        ban_reason: note,
+        ban_by: reviewer,
+        reviewing_by: "",
+        reviewing_at: null,
+        first_pass_verdict: null,
+        review_draft: null,
+        review_draft_by: "",
+        review_draft_at: null,
+        ...spotCheckFields,
+      })
+      .eq("id", projectId)
+      .in("status", ["shipped", "second_review"])
+      .select("id, name, user_id")
+      .single();
+    if (error || !project) {
+      console.error("reviewProject (ban) failed", error?.message);
+      return;
+    }
+    await insertReviewAudit(formData, projectId, project.user_id, by, "banned", note, loggedHours, claimedHours, approvedHours);
+    await operationRpc.onBan(projectId);
+    if (!own) rewardPx = await recordSettledPayout(projectId, access, "banned", project.name);
+    if (stage === "second_review") {
+      await voidFirstPassPayouts(projectId, "final verdict was a ban, not an approval");
+      await recordRobertOutcome(current.robert_project_id, current.robert_state, "rejected", note);
+    }
+    const banBody =`Your project "${project.name}" was permanently banned by ${reviewer} and can no longer be shipped to Pixl.\n\nReason: ${note}\n\nIf you think this is a mistake, contact the Pixl team.`;
+    await db.from("notifications").insert({ user_id: project.user_id, title: "Project banned", body: banBody });
+    await dmOrEmail(project.user_id, "Project banned", banBody);
+    const collabBanBody = `A project you collaborate on, "${project.name}", was permanently banned by ${reviewer} and can no longer be shipped to Pixl.\n\nReason: ${note}\n\nIf you think this is a mistake, contact the Pixl team.`;
+    for (const collaboratorId of await acceptedCollaboratorUserIds(projectId)) {
+      await db.from("notifications").insert({ user_id: collaboratorId, title: "Project banned", body: collabBanBody });
+      await dmOrEmail(collaboratorId, "Project banned", collabBanBody);
+    }
+    await logModAction(project.user_id, "project_banned", `${project.name}: ${note}`, by);
+    await flagReviewReward(rewardPx);
+    const nextPath = await nextReviewPath(access, by, stage, projectId);
+    revalidatePath("/review");
+    revalidatePath("/", "layout");
+    redirect(nextPath);
+  }
+
+  const creditHours = approvedHours ?? claimedHours;
+
+  // A Trial's min-hours requirement is a hard floor on approval: if the
+  // credited hours (after any deflation) don't clear it, this can't be
+  // approved , the reviewer has to request changes instead.
+  if (linkedTrial?.min_hours != null && creditHours < Number(linkedTrial.min_hours)) {
+    redirect(
+      `${back}?error=${encodeURIComponent(
+        `Credited hours (${creditHours}h) are below "${linkedTrial.name}"'s ${linkedTrial.min_hours}h minimum , use Request Changes instead, or credit at least ${linkedTrial.min_hours}h.`,
+      )}`,
+    );
+  }
+
+  const finalBlackoutError = await applyBlackoutDecision({ projectId, formData, by, stage: "final" });
+  if (finalBlackoutError) redirect(`${back}?error=${encodeURIComponent(finalBlackoutError)}`);
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({
+      status: "approved",
+      review_note: note,
+      review_note_by: reviewer,
+      approved_hours: approvedHours,
+      reviewing_by: "",
+      reviewing_at: null,
+      review_draft: null,
+      review_draft_by: "",
+      review_draft_at: null,
+      ...spotCheckFields,
+    })
+    .eq("id", projectId)
+    .in("status", ["shipped", "second_review"])
+    .select("id, name, user_id, project_type")
+    .single();
+  if (error || !project) {
+    console.error("reviewProject (approve) failed", error?.message);
+    return;
+  }
+  await insertReviewAudit(formData, projectId, project.user_id, by, "approved", note, loggedHours, claimedHours, approvedHours);
+
+  if (stage === "second_review") {
+    await settleFirstPassPayouts(projectId, project.name);
+    await recordRobertOutcome(current.robert_project_id, current.robert_state, "approved");
+  }
+  if (!own) rewardPx = await recordSettledPayout(projectId, access, "approved", project.name);
+
+  // Collected up front so each beneficiary's referral check can see who else
+  // is being credited on this same project , see the referrerRidingAlong
+  // guard in creditBeneficiary.
+  const { data: collabRows } = await db
+    .from("project_collaborators")
+    .select("id, user_id, hackatime_seconds")
+    .eq("project_id", projectId)
+    .eq("status", "accepted");
+  const collaborators = (collabRows ?? []) as { id: number; user_id: string; hackatime_seconds: number | null }[];
+  // What each player would get by DM if the public approval post fails.
+  const finalFallback: { userId: string; title: string; body: string }[] = [];
+  const allBeneficiaryIds = [project.user_id, ...collaborators.map((c) => c.user_id)];
+
+  // One tier per project, applied to everyone credited on it. Re-read rather
+  // than trusting the form value, since the tier update above is what actually
+  // decides it.
+  const { data: tierRow } = await db
+    .from("projects")
+    .select("level")
+    .eq("id", projectId)
+    .maybeSingle();
+  const tierUsed = Math.min(Math.max(Number(tierRow?.level) || 1, 1), 4);
+
+  // A Trial ship pays one way or the other, never both: the maker picks the
+  // Trial prize or the pixels once it's approved. Until they've picked the
+  // pixels, the payout is held rather than credited. Only the owner's pixels
+  // are held , collaborators are paid for their hours either way.
+  const trialChoice = String(current.trial_reward_choice ?? "");
+  const holdForTrial = !!linkedTrial && trialChoice !== "pixels";
+  // Hardware funding: only the owner's own payout gets docked , collaborators
+  // are paid their hours in full, same as the Trial hold above.
+  const fundingUsd = current.needs_funding ? Math.max(Number(current.funding_usd) || 0, 0) : 0;
+
+  const ownerPayout = await creditBeneficiary(
+    project.user_id,
+    project.id,
+    project.project_type,
+    creditHours,
+    current.shipped_at,
+    by,
+    collaborators.map((c) => c.user_id),
+    tierUsed,
+    holdForTrial,
+    fundingUsd,
+  );
+  const { totalPx, deltaPx, pxRate, xpBefore, goalNote, referralNote, alreadyPx, goalMult, fundingPx } = ownerPayout;
+  if (fundingPx > 0) {
+    const { error: fundingErr } = await db
+      .from("projects")
+      .update({ funding_deducted_px: fundingPx })
+      .eq("id", projectId);
+    if (fundingErr) console.error("reviewProject (funding deduct)", fundingErr.message);
+  }
+
+  const trialPrize = linkedTrial ? await trialPrizeFor(linkedTrial) : null;
+
+  // For a Trial ship, the prize "buys" the first min_hours of the project. Keep
+  // that slice's pixel value so settlement can pay the prize AND the pixels for
+  // everything beyond the minimum (see the trial-reward route in apps/server).
+  // Clamped to the full payout so a short ship (hours <= min) yields 0 extra.
+  const trialMinHours =
+    linkedTrial && linkedTrial.min_hours != null ? Math.max(Number(linkedTrial.min_hours), 0) : 0;
+  const trialPrizePx = linkedTrial
+    ? Math.min(Math.max(Math.round(projectPayoutPx(trialMinHours, tierUsed, 0) * goalMult), 0), totalPx)
+    : 0;
+
+  const trialBeyondPx = Math.max(totalPx - trialPrizePx, 0);
+  let credited: string;
+  if (holdForTrial && trialChoice !== "item") {
+    credited =
+      `\n\nTrial "${linkedTrial!.name}" complete! You've earned "${trialPrize!.name}" for the first ` +
+      `${trialMinHours}h, plus ${trialBeyondPx} pixels for the hours beyond that. Head to the project ` +
+      `page to claim the prize (default), or skip it and take all ${totalPx} pixels instead.`;
+  } else if (holdForTrial) {
+    credited =
+      `\n\nYou kept "${trialPrize!.name}" as your Trial reward on this one, plus the pixels for the hours past the ${trialMinHours}h minimum.`;
+  } else if (alreadyPx > 0 && deltaPx > 0) {
+    credited = `\n\n+${deltaPx} pixels for what's new (${totalPx} pixels total for this project , ${creditHours}h approved).`;
+  } else if (alreadyPx > 0 && deltaPx <= 0) {
+    credited = `\n\nNo new pixels this time , this project already earned ${alreadyPx} pixels.`;
+  } else {
+    credited =
+      creditHours !== loggedHours
+        ? `\n\n${totalPx} pixels credited (${creditHours}h approved of ${loggedHours}h logged).`
+        : `\n\n${totalPx} pixels credited for ${creditHours}h approved.`;
+  }
+  // The flat Trial bonus counts toward level and the community vault, but
+  // deliberately not into pxRate above , the rate is meant to track the hours
+  // actually worked.
+  const trialBonusRe = linkedTrial ? config.economy.trialBonusRe : 0;
+  const shipRe = ownerPayout.projectRe + trialBonusRe;
+  const reLine =
+    ` this ship earned ${Math.round(shipRe)} RE` +
+    (trialBonusRe > 0 ? ` (${trialBonusRe} of it a Trial bonus)` : "") +
+    `, putting you at level ${levelForRe(xpBefore + shipRe)}.`;
+  if (deltaPx > 0 && !(holdForTrial && trialChoice === "item")) {
+    // Rounding pxRate to a whole number here while totalPx above is computed
+    // from the true unrounded rate made "rate x hours" not reconcile with the
+    // credited total (e.g. a true 48.8px/h rate displayed as "49", so 49x48
+    // looks like it should be 2352 when the real credit is round(48.8x48) =
+    // 2342) - round once to one decimal (matching the $X.XX precision below)
+    // and derive both displayed numbers from that same rounded rate so they
+    // always agree with each other.
+    const dispRate = Math.round(pxRate * 10) / 10;
+    credited +=
+      ` Your rate: ${dispRate} px/h ($${(dispRate * config.economy.pixelValueUsd).toFixed(2)}/hr) ,${reLine}`;
+  } else if (linkedTrial) credited += ` Either way,${reLine}`;
+  if (goalNote && deltaPx > 0) credited += goalNote;
+  if (referralNote && deltaPx > 0) credited += referralNote;
+  if (fundingPx > 0)
+    credited += ` $${fundingUsd.toFixed(2)} of that (${fundingPx} px) is going toward the hardware funding you requested instead of your wallet , the team will reach out about getting it to you.`;
+
+  // Split payout: every accepted collaborator is credited independently at
+  // their own rate tier for their own submitted hours slice (capped at what
+  // they actually tracked, see claimedHoursForCollaborator).
+  const blackoutContribs: { user_id: string; normal_usd_rate: number; credit_hours: number; skip_reason?: string }[] = [
+    {
+      user_id: project.user_id,
+      normal_usd_rate: ownerPayout.baseUsdRate,
+      credit_hours: creditHours,
+      ...(holdForTrial ? { skip_reason: "trial_prize_hold" } : {}),
+    },
+  ];
+  for (const c of collaborators) {
+    const cClaimedHours = await claimedHoursForCollaborator(projectId, c.user_id, c.hackatime_seconds);
+    const rawHours = Number(String(formData.get(`collabHours_${c.id}`) ?? cClaimedHours));
+    const cCreditHours = Number.isFinite(rawHours)
+      ? Math.min(cClaimedHours, Math.max(0, Math.round(rawHours * 10) / 10))
+      : cClaimedHours;
+    await db.from("project_collaborators").update({ approved_hours: cCreditHours }).eq("id", c.id);
+    const cPayout = await creditBeneficiary(
+      c.user_id,
+      project.id,
+      project.project_type,
+      cCreditHours,
+      current.shipped_at,
+      by,
+      allBeneficiaryIds.filter((id) => id !== c.user_id),
+      tierUsed,
+    );
+    blackoutContribs.push({
+      user_id: c.user_id,
+      normal_usd_rate: cPayout.baseUsdRate,
+      credit_hours: cCreditHours,
+    });
+    let cCredited: string;
+    if (cPayout.alreadyPx > 0 && cPayout.deltaPx > 0) {
+      cCredited = `\n\n+${cPayout.deltaPx} pixels for what's new (${cPayout.totalPx} pixels total for this project , ${cCreditHours}h approved).`;
+    } else if (cPayout.alreadyPx > 0 && cPayout.deltaPx <= 0) {
+      cCredited = `\n\nNo new pixels this time , you already earned ${cPayout.alreadyPx} pixels on this project.`;
+    } else {
+      cCredited = `\n\n${cPayout.totalPx} pixels credited for ${cCreditHours}h approved.`;
+    }
+    if (cPayout.deltaPx > 0) {
+      // Same rounded-once-and-derive-both approach as the owner's rate line
+      // above - keeps "rate x hours" reconciling with the credited total
+      // instead of showing raw float precision that may not even format
+      // consistently with the $ figure next to it.
+      const cDispRate = Math.round(cPayout.pxRate * 10) / 10;
+      cCredited += ` Your rate: ${cDispRate} px/h ($${(cDispRate * config.economy.pixelValueUsd).toFixed(2)}/hr).`;
+    }
+    if (cPayout.goalNote && cPayout.deltaPx > 0) cCredited += cPayout.goalNote;
+    if (cPayout.referralNote && cPayout.deltaPx > 0) cCredited += cPayout.referralNote;
+    const collabApprovedBody = `"${project.name}" passed review , approved by ${approvalReviewer}. Congrats on shipping!${cCredited}`;
+    await notifyInApp(c.user_id, "Project approved!", collabApprovedBody);
+    finalFallback.push({ userId: c.user_id, title: "Project approved!", body: collabApprovedBody });
+  }
+
+  const blackout = await operationRpc.settle({
+    slug: BLACKOUT_SLUG,
+    projectId,
+    by,
+    contribs: blackoutContribs,
+  });
+  if (!blackout.ok) {
+    console.error("reviewProject: Blackout settlement failed", projectId, blackout.error);
+    await logModAction(project.user_id, "blackout_settle_failed", `${project.name}: ${blackout.error}`, by);
+  } else if (Array.isArray(blackout.contributors)) {
+    for (const r of blackout.contributors as { user_id: string; paid_hours: number; uplift_px: number; effective_usd_rate?: number; skipped?: string }[]) {
+      if (r.skipped || !(Number(r.paid_hours) > 0)) continue;
+      const rate = Number(r.effective_usd_rate) || 0;
+      await notifyOwner(
+        r.user_id,
+        "Operation Blackout approved",
+        Number(r.uplift_px) > 0
+          ? `"${project.name}" was approved for Operation Blackout: ${r.paid_hours}h count at $${rate.toFixed(2)}/hr, +${r.uplift_px} pixels on top of your normal payout.`
+          : `"${project.name}" was approved for Operation Blackout: ${r.paid_hours}h count. Your normal rate ($${rate.toFixed(2)}/hr) was already at or above the Blackout floor, so no extra pixels this time.`,
+      );
+    }
+    if (Number(blackout.paid_px) > 0)
+      await logModAction(project.user_id, "blackout_paid", `${project.name}: +${blackout.paid_px} pixels Blackout top-up`, by);
+  }
+
+  // Bounties the final reviewer ticked: fixed prize each, once per project,
+  // only for projects shipped inside the bounty window.
+  const bountyIds = [...new Set(formData.getAll("bountyIds").map(Number))].filter(
+    (n) => Number.isFinite(n) && n > 0,
+  );
+  for (const bid of bountyIds) {
+    const { data: ev } = await db
+      .from("events")
+      .select("*")
+      .eq("id", bid)
+      .eq("type", "bounty")
+      .is("stopped_at", null)
+      .maybeSingle();
+    if (!ev) continue;
+    const bounty = ev as DashEventRow;
+    const reward = Math.min(Math.max(Math.round(Number(bounty.config.reward) || 0), 0), 500);
+    if (reward === 0) continue;
+    if (
+      !current.shipped_at ||
+      current.shipped_at < bounty.starts_at ||
+      current.shipped_at >= bounty.ends_at
+    )
+      continue;
+    const { error: claimError } = await db.from("bounty_claims").insert({
+      event_id: bid,
+      project_id: projectId,
+      user_id: project.user_id,
+      pixels: reward,
+      awarded_by: by,
+    });
+    if (claimError) continue;
+    await db.rpc("adjust_user_pixels", {
+      p_user_id: project.user_id,
+      p_amount: reward,
+      p_reason: "bounty",
+      p_created_by: by,
+    });
+    credited += ` Bounty "${bounty.name}" met , +${reward} pixels!`;
+    await logModAction(project.user_id, "bounty_awarded", `${bounty.name}: +${reward} pixels (${project.name})`, by);
+  }
+
+  // Trial payout: nothing is handed over here. The approval just opens the
+  // choice (prize or the held pixels) and the player settles it themselves from
+  // the project page , see the trial-reward route in apps/server. Re-approvals
+  // of an already-settled Trial ship leave the choice alone.
+  if (holdForTrial && trialChoice !== "item") {
+    const { error: choiceError } = await db
+      .from("projects")
+      .update({ trial_reward_choice: "pending", trial_held_px: totalPx, trial_prize_px: trialPrizePx })
+      .eq("id", projectId);
+    if (choiceError) console.error("reviewProject (trial choice)", choiceError.message);
+    else
+      await logModAction(
+        project.user_id,
+        "trial_reward_pending",
+        `${linkedTrial!.name}: ${trialPrize!.name} or ${totalPx} px (${project.name})`,
+        by,
+      );
+  }
+
+  const ownerApprovedBody = `"${project.name}" passed review , approved by ${approvalPlayerFacingReviewer}. Congrats on shipping!\n\nReviewer note: ${note}${credited}`;
+  await notifyInApp(project.user_id, "Project approved!", ownerApprovedBody);
+  finalFallback.unshift({ userId: project.user_id, title: "Project approved!", body: ownerApprovedBody });
+  // A Trial ship holds its pixels until the maker picks, so the post says that
+  // instead of claiming pixels were granted.
+  const trialHeld = holdForTrial && trialChoice !== "item";
+  const approvalPosted = await announceReview({
+    kind: "final",
+    projectId,
+    projectName: project.name,
+    ownerId: project.user_id,
+    collaboratorIds: collaborators.map((c) => c.user_id),
+    note,
+    reviewerSlackId: access.session.slackId,
+    revealName,
+    pixels: trialHeld ? trialBeyondPx : Math.max(deltaPx, 0),
+    creditNote: trialHeld
+      ? `Your Trial prize is waiting, head to the project page to claim it (or take the pixels instead).`
+      : undefined,
+    fallback: finalFallback,
+  });
+  // The public post is the announcement; the detailed breakdown (hours
+  // approved, pixels, rate, RE) still goes to each player by DM. When the post
+  // failed, announceReview already sent these same DMs as its fallback.
+  if (approvalPosted)
+    for (const f of finalFallback) await dmOrEmail(f.userId, f.title, f.body);
+  await logModAction(
+    project.user_id,
+    "project_approved",
+    `${project.name}: ${deltaPx >= 0 ? "+" : ""}${deltaPx} pixels (total ${totalPx})`,
+    by,
+  );
+  if (fundingPx > 0) {
+    await logModAction(
+      project.user_id,
+      "funding_deducted",
+      `${project.name}: $${fundingUsd.toFixed(2)} hardware grant , ${fundingPx} px withheld from payout, needs fulfillment`,
+      by,
+    );
+    // Puts the grant into the same pipeline as a shop purchase (claim -> order
+    // -> credited -> shipped -> done) so a fulfiller actually sees it - a
+    // plain insert, not buy_shop_item(), since the pixels were already
+    // withheld from the payout above rather than deducted from a balance.
+    // item_id null + a price-only row is exactly what a non-catalog order
+    // looks like elsewhere in this table.
+    const { error: fundingOrderError } = await db.from("shop_orders").insert({
+      user_id: project.user_id,
+      item_id: null,
+      item_name: `Hardware funding grant , ${project.name}`,
+      price: fundingPx,
+      status: "pending",
+      note: `$${fundingUsd.toFixed(2)} hardware funding grant approved with this ship, withheld from payout.`,
+    });
+    if (fundingOrderError)
+      console.error("reviewProject (funding order)", fundingOrderError.message);
+  }
+  // Fire-and-log: a failed Airtable push (bad address data, Airtable being
+  // down, etc.) must never block the approval itself - the "Re-send to
+  // Airtable" button on the project page is the fallback for that case.
+  try {
+    const airtableResult = await pushProjectToAirtable(projectId);
+    if (!airtableResult.ok)
+      console.error(`reviewProject: Airtable push failed for project ${projectId}`, airtableResult.error);
+  } catch (err) {
+    console.error(`reviewProject: Airtable push threw for project ${projectId}`, (err as Error).message);
+  }
+  await flagReviewReward(rewardPx);
+  const nextPath = await nextReviewPath(access, by, stage, projectId);
+  revalidatePath("/review");
+  redirect(nextPath);
+});
+
+// Reviewers can re-grade the difficulty level (L1–L4) a maker self-assigned.
+export const setProjectLevel = guardedAction("setProjectLevel", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const level = Number(formData.get("level") ?? 0);
+  const back = `/review/${projectId}`;
+  if (!projectId || !Number.isInteger(level) || level < 1 || level > 4) return;
+
+  const { data: current } = await db
+    .from("projects")
+    .select("user_id, name, level")
+    .eq("id", projectId)
+    .single();
+  if (!current) return;
+  await authorizeProjectAction(access, projectId, back, { allowOwn: true });
+  if (await isOwnProject(access, current.user_id, projectId))
+    redirect(`${back}?error=${encodeURIComponent("You can't change the level of a project you own or collaborate on.")}`);
+  if (Number(current.level) === level) {
+    revalidatePath(back);
+    redirect(back);
+  }
+
+  const { error } = await db.from("projects").update({ level }).eq("id", projectId);
+  if (error) {
+    console.error("setProjectLevel failed", error.message);
+    return;
+  }
+  await logModAction(
+    current.user_id,
+    "project_level_changed",
+    `${current.name}: level set to L${level} (was L${current.level ?? 1})`,
+    by,
+  );
+  revalidatePath(back);
+  redirect(back);
+});
+
+// A reviewer can correct the hardware funding grant a maker asked for (e.g.
+// the cart total didn't match, or an item got swapped out) before approving ,
+// this is what the payout calculator and the approval-time deduction actually
+// use, so it has to be settled before the verdict is submitted.
+export const updateFundingAmount = guardedAction("updateFundingAmount", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const back = `/review/${projectId}`;
+  if (!projectId) return;
+  const raw = String(formData.get("fundingUsd") ?? "").trim();
+  const amount = Math.min(Math.max(Number(raw) || 0, 0), 100000);
+  if (!Number.isFinite(amount)) redirect(`${back}?error=${encodeURIComponent("Funding amount must be a number.")}`);
+  await authorizeProjectAction(access, projectId, back, {
+    ownMessage: "You can't change the funding of a project you own or collaborate on.",
+  });
+
+  const { data: current } = await db
+    .from("projects")
+    .select("user_id, name, needs_funding, funding_usd")
+    .eq("id", projectId)
+    .single();
+  if (!current) return;
+  if (!current.needs_funding)
+    redirect(`${back}?error=${encodeURIComponent("This project didn't request hardware funding.")}`);
+
+  const { error } = await db.from("projects").update({ funding_usd: amount }).eq("id", projectId);
+  if (error) {
+    console.error("updateFundingAmount failed", error.message);
+    redirect(`${back}?error=${encodeURIComponent("Couldn't save the funding amount.")}`);
+  }
+  await logModAction(
+    current.user_id,
+    "funding_amount_changed",
+    `${current.name}: funding set to $${amount.toFixed(2)} (was $${Number(current.funding_usd ?? 0).toFixed(2)})`,
+    by,
+  );
+  revalidatePath(back);
+  redirect(back);
+});
+
+// Undoes whatever referral side effects this specific project caused for a
+// beneficiary, if any , counterpart to the boost/reward grants in
+// creditBeneficiary. Without this, voiding a verdict clawed back the pixels
+// but left the referrer holding a reward (and the referred player holding a
+// spent boost slot) for a ship that turned out not to count.
+async function reverseReferralForRevokedProject(
+  userId: string,
+  projectId: number,
+  by: string,
+): Promise<void> {
+  const { data: referral } = await db
+    .from("referrals")
+    .select("id, referrer_id, boosted_ships, boost_project_id, rewarded_at, reward_pixels, reward_project_id")
+    .eq("referred_id", userId)
+    .maybeSingle();
+  if (!referral) return;
+
+  if (referral.boost_project_id === projectId) {
+    await db
+      .from("referrals")
+      .update({ boosted_ships: Math.max(0, Number(referral.boosted_ships) - 1), boost_project_id: null })
+      .eq("id", referral.id);
+  }
+
+  if (referral.reward_project_id === projectId && referral.rewarded_at) {
+    await db
+      .from("referrals")
+      .update({ rewarded_at: null, reward_tier: null, reward_pixels: null, reward_project_id: null })
+      .eq("id", referral.id);
+    await db.rpc("adjust_user_pixels", {
+      p_user_id: referral.referrer_id,
+      p_amount: -(Number(referral.reward_pixels) || 0),
+      p_reason: "referral_reward_reverted",
+      p_created_by: by,
+    });
+    await db.from("notifications").insert({
+      user_id: referral.referrer_id,
+      title: "Referral reward reversed",
+      body: "The ship that earned you a referral reward got sent back for another review, so that reward's on hold , it'll pay out again once a qualifying ship clears review.",
+    });
+  }
+}
+
+export const reReviewProject = guardedAction("reReviewProject", "owner", async (access, formData: FormData): Promise<void> => {
+  // Send back to review is a staff action , admins only (not plain reviewers).
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  if (!projectId) return;
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({
+      status: "shipped",
+      review_note: "",
+      review_note_by: "",
+      approved_hours: null,
+      // Jumps the first-pass queue instead of sorting by the original
+      // shipped_at like everything else - see listShippedProjects, which
+      // orders reverted_at first (oldest revert first), then shipped_at.
+      reverted_at: new Date().toISOString(),
+    })
+    .eq("id", projectId)
+    .in("status", ["approved", "needs_changes"])
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("reReviewProject failed", error?.message);
+    return;
+  }
+
+  const claimedHours = await claimedHoursFor(projectId);
+
+  // The verdict is void, so the payout is too , claw back every pixel this
+  // project was credited and leave the reversal in the ledger. Collaborators
+  // were credited independently, so each gets their own clawback too.
+  let revoked = await revokeProjectPixels(project.user_id, project.id, by);
+  await reverseReferralForRevokedProject(project.user_id, project.id, by);
+  const blackoutRevert = await operationRpc.revert(project.id, by);
+  if (!blackoutRevert.ok) console.error("reReviewProject: Blackout revert failed", project.id, blackoutRevert.error);
+  // An unclaimed Trial reward goes back in the box with the verdict. One
+  // already taken stays taken , the prize order is out the door by then.
+  await db
+    .from("projects")
+    .update({ trial_reward_choice: "", trial_held_px: 0, trial_prize_px: 0 })
+    .eq("id", projectId)
+    .eq("trial_reward_choice", "pending");
+  for (const collaboratorId of await acceptedCollaboratorUserIds(projectId)) {
+    const collabRevoked = await revokeProjectPixels(collaboratorId, project.id, by);
+    revoked += collabRevoked;
+    await reverseReferralForRevokedProject(collaboratorId, project.id, by);
+    if (collabRevoked > 0) {
+      await db.from("notifications").insert({
+        user_id: collaboratorId,
+        title: "Project back in review",
+        body: `"${project.name}" is getting another look from the review team. The ${collabRevoked} pixels it earned you are on hold until the new verdict.`,
+      });
+    }
+  }
+
+  await logModAction(
+    project.user_id,
+    "review_reverted",
+    `${project.name}: verdict reverted, back in the review queue${
+      revoked > 0 ? ` , ${revoked} pixels revoked` : ""
+    }`,
+    by,
+  );
+  const { error: auditError } = await db.from("review_audits").insert({
+    project_id: projectId,
+    user_id: project.user_id,
+    reviewer: by,
+    verdict: "reverted",
+    note: "Previous verdict reverted , project returned to the review queue.",
+    audit_note: "",
+    claimed_hours: claimedHours,
+  });
+  if (auditError) console.error("re-review audit insert failed", auditError.message);
+
+  const { error: notifyError } = await db.from("notifications").insert({
+    user_id: project.user_id,
+    title: "Project back in review",
+    body: `"${project.name}" is getting another look from the review team.${
+      revoked > 0
+        ? ` The ${revoked} pixels it earned are on hold until the new verdict.`
+        : ""
+    } You'll hear back here soon , nothing needed from you.`,
+  });
+  if (notifyError) console.error("re-review notification failed", notifyError.message);
+  revalidatePath("/", "layout");
+});
+
+// A free-form internal note on a project, unrelated to any verdict - just
+// context for whoever looks at this project next (see
+// drizzle/0195_project_notes.sql). Any reviewer can add one, on any project,
+// at any review stage.
+export const addProjectNote = guardedAction("addProjectNote", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const body = String(formData.get("body") ?? "").trim().slice(0, 2000);
+  if (!projectId || !body) return;
+  // Queue scope only: a note is context, not a verdict.
+  await authorizeProjectAction(access, projectId, null, { allowOwn: true });
+  // Optional screenshot - same Hack Club CDN upload every other
+  // dashboard-originated image goes through (see "Edit submission" above).
+  let imageUrl: string | null = null;
+  const image = formData.get("image");
+  if (image instanceof File && image.size > 0) {
+    if (image.size > 15_000_000) throw new Error("Image too large (max 15MB).");
+    try {
+      imageUrl = await uploadSubmissionImage(image);
+    } catch (e) {
+      console.error("addProjectNote image upload failed", (e as Error).message);
+    }
+  }
+  const { error } = await db
+    .from("project_notes")
+    .insert({ project_id: projectId, author: actorName(access), body, image_url: imageUrl });
+  if (error) console.error("addProjectNote", error.message);
+  revalidatePath(`/projects/${projectId}`);
+  revalidatePath(`/review/${projectId}`);
+});
+
+// A final reviewer correcting the player-facing title/description/image ,
+// these are the exact same columns the player's own project page and the
+// YSWS/Airtable export CSV read live, so this is a fix everywhere with no
+// separate sync step, and it applies immediately, independent of a verdict
+// (previously these fields only saved alongside reviewProject's own verdict
+// submit , split out so a reviewer doesn't have to also decide a verdict
+// just to fix a typo in the title). Optional: absent or unchanged fields are
+// left alone.
+//
+// Manually skips Robert's fraud review for a project parked in fraud_review
+// (e.g. no Hackatime data for Robert to score) and moves it straight to Spot
+// check, same shape as robertOutcome.ts's reviewPatch but with no score.
+export const skipRobertPass = guardedAction("skipRobertPass", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const back = `/review/${projectId}`;
+  if (!projectId) return;
+  if (!access.canSecondPass && !access.isOwner)
+    redirect(`${back}?error=${encodeURIComponent("Only a final reviewer or an owner can skip Robert's review.")}`);
+  await authorizeProjectAction(access, projectId, back, {
+    ownMessage: "You can't skip Robert's review on a project you own or collaborate on.",
+  });
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({
+      status: "second_review",
+      second_pass_by: by,
+      second_pass_at: new Date().toISOString(),
+      second_pass_note: `Robert's fraud review skipped manually by ${by}.`,
+      second_pass_hours: null,
+      second_pass_verdict: "not_fraud",
+      robert_error: "",
+    })
+    .eq("id", projectId)
+    .eq("status", "fraud_review")
+    .select("id, name, user_id")
+    .maybeSingle();
+  if (error) console.error("skipRobertPass failed", projectId, error.message);
+  if (!project)
+    redirect(`${back}?error=${encodeURIComponent("This project isn't waiting on Robert anymore.")}`);
+
+  await logModAction(project.user_id as string, "project_robert_skipped", `${project.name}: skipped Robert's fraud review`, by);
+  revalidatePath("/review");
+  redirect(back);
+});
+
+export const applySubmissionEdits = guardedAction("applySubmissionEdits", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const back = `/review/${projectId}`;
+  if (!projectId) return;
+  if (!access.canEditSubmission)
+    redirect(`${back}?error=${encodeURIComponent("You don't have permission to edit the submission.")}`);
+  await authorizeProjectAction(access, projectId, back, {
+    ownMessage: "You can't edit the submission of a project you own or collaborate on.",
+  });
+
+  const { data: current } = await db
+    .from("projects")
+    .select("name, description, image_url, repo_url, demo_url, user_id")
+    .eq("id", projectId)
+    .single();
+  if (!current) return;
+
+  const editedName = String(formData.get("editedName") ?? "").trim().slice(0, 200);
+  const editedDescription = String(formData.get("editedDescription") ?? "").trim().slice(0, 5000);
+  const editedRepoUrl = String(formData.get("editedRepoUrl") ?? "").trim();
+  const editedDemoUrl = String(formData.get("editedDemoUrl") ?? "").trim();
+  const edits: Record<string, string> = {};
+  if (editedName && editedName !== current.name) edits.name = editedName;
+  if (editedDescription && editedDescription !== current.description) edits.description = editedDescription;
+  const editedImage = formData.get("editedImage");
+  if (editedImage instanceof File && editedImage.size > 0) {
+    if (editedImage.size > 15_000_000)
+      redirect(`${back}?error=${encodeURIComponent("Image: file too large (max 15MB).")}`);
+    try {
+      edits.image_url = await uploadSubmissionImage(editedImage);
+    } catch (e) {
+      redirect(`${back}?error=${encodeURIComponent(`Image: ${(e as Error).message}`)}`);
+    }
+  }
+  if (editedRepoUrl && editedRepoUrl !== current.repo_url) {
+    try {
+      await assertSafeExternalUrl(editedRepoUrl);
+    } catch (e) {
+      redirect(`${back}?error=${encodeURIComponent(`Repo URL: ${(e as Error).message}`)}`);
+    }
+    edits.repo_url = editedRepoUrl;
+  }
+  if (editedDemoUrl && editedDemoUrl !== current.demo_url) {
+    try {
+      await assertSafeExternalUrl(editedDemoUrl);
+    } catch (e) {
+      redirect(`${back}?error=${encodeURIComponent(`Demo URL: ${(e as Error).message}`)}`);
+    }
+    edits.demo_url = editedDemoUrl;
+  }
+  if (Object.keys(edits).length === 0)
+    redirect(`${back}?error=${encodeURIComponent("No changes to apply.")}`);
+
+  const { error } = await db.from("projects").update(edits).eq("id", projectId);
+  if (error) {
+    console.error("applySubmissionEdits failed", error.message);
+    redirect(`${back}?error=${encodeURIComponent("Failed to save , try again.")}`);
+  }
+  await logModAction(
+    current.user_id,
+    "project_edited",
+    `${edits.name ?? current.name}: ${access.canSecondPass ? "final reviewer" : "an owner"} edited ${Object.keys(edits).join(", ")}`,
+    by,
+  );
+  revalidatePath(`/review/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+});
+
+// A final reviewer looking at a second_review project isn't confident enough
+// to confirm or overturn the first pass , send it back to the front of the
+// 'shipped' queue for a fresh first-pass look instead of forcing a verdict.
+// The first-pass reviewer's pending payout only gets voided if this was THEIR
+// mistake (a checkbox on the form) , otherwise it's paid out in full, same as
+// a normal confirmed first pass, since it's not fair to dock them for
+// something outside their control (flaky demo, ambiguous scope, etc).
+// Distinct from reReviewProject, which reopens a project that already got a
+// FINAL verdict.
+export const sendBackToFirstPass = guardedAction("sendBackToFirstPass", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
+  const voidPayout = formData.get("voidPayout") === "1";
+  const back = `/review/${projectId}`;
+  if (!projectId) return;
+  if (!access.canSecondPass)
+    redirect(`${back}?error=${encodeURIComponent("Only a final reviewer can send a project back to first pass.")}`);
+  await authorizeProjectAction(access, projectId, back);
+  if (!reason)
+    redirect(`${back}?error=${encodeURIComponent("Say why you're sending this back to first pass.")}`);
+
+  const { data: current } = await db
+    .from("projects")
+    .select("status, user_id, name")
+    .eq("id", projectId)
+    .single();
+  if (!current) return;
+  if (current.status !== "second_review")
+    redirect(`${back}?error=${encodeURIComponent("This project isn't awaiting a final pass.")}`);
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({
+      status: "shipped",
+      review_note: "",
+      review_note_by: "",
+      approved_hours: null,
+      reviewing_by: "",
+      reviewing_at: null,
+      first_pass_by: "",
+      first_pass_at: null,
+      first_pass_note: "",
+      first_pass_hours: null,
+      first_pass_verdict: null,
+    })
+    .eq("id", projectId)
+    .eq("status", "second_review")
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("sendBackToFirstPass failed", error?.message);
+    return;
+  }
+
+  if (voidPayout)
+    await voidFirstPassPayouts(projectId, "first-pass reviewer's mistake", { clawBackPaid: true });
+  else await settleFirstPassPayouts(projectId, project.name);
+
+  const claimedHours = await claimedHoursFor(projectId);
+  const { error: auditError } = await db.from("review_audits").insert({
+    project_id: projectId,
+    user_id: project.user_id,
+    reviewer: by,
+    verdict: "sent_to_first_pass",
+    note: reason,
+    audit_note: "",
+    claimed_hours: claimedHours,
+  });
+  if (auditError) console.error("send-back audit insert failed", auditError.message);
+
+  await logModAction(
+    project.user_id,
+    "project_sent_to_first_pass",
+    `${project.name}: back at the front of the queue, first-pass payout ${voidPayout ? "voided" : "paid in full"} , ${reason}`,
+    by,
+  );
+  revalidatePath("/review");
+  redirect("/review");
+});
+
+// A final reviewer sends a second_review project back to its owner as an
+// editable draft (the reviewer-side counterpart of the player's own unship,
+// which the server only allows at "shipped"). Unlike sendBackToFirstPass the
+// project leaves the queue entirely - the player has to fix and reship - so
+// every review field is wiped (see unshipResetFields) and the player and any
+// accepted collaborators are told. The first-pass reviewer's payout follows
+// the same rule as a send-back: paid in full unless this was their mistake.
+export const unshipProject = guardedAction("unshipProject", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
+  const voidPayout = formData.get("voidPayout") === "1";
+  const back = `/review/${projectId}`;
+  if (!projectId) return;
+  if (!access.canSecondPass)
+    redirect(`${back}?error=${encodeURIComponent("Only a final reviewer can unship a project.")}`);
+  await authorizeProjectAction(access, projectId, back);
+  if (!reason)
+    redirect(`${back}?error=${encodeURIComponent("Say why you're unshipping this project.")}`);
+
+  const { data: current } = await db
+    .from("projects")
+    .select("status")
+    .eq("id", projectId)
+    .single();
+  if (!current) return;
+  if (!(UNSHIPPABLE_STATUSES as readonly string[]).includes(current.status as string))
+    redirect(`${back}?error=${encodeURIComponent("This project isn't in second pass or fraud review.")}`);
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update(unshipResetFields())
+    .eq("id", projectId)
+    .in("status", [...UNSHIPPABLE_STATUSES])
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("unshipProject failed", error?.message);
+    return;
+  }
+
+  if (voidPayout)
+    await voidFirstPassPayouts(projectId, "first-pass reviewer's mistake", { clawBackPaid: true });
+  else await settleFirstPassPayouts(projectId, project.name);
+
+  const claimedHours = await claimedHoursFor(projectId);
+  const { error: auditError } = await db.from("review_audits").insert({
+    project_id: projectId,
+    user_id: project.user_id,
+    reviewer: by,
+    verdict: "unshipped",
+    note: reason,
+    audit_note: "",
+    claimed_hours: claimedHours,
+  });
+  if (auditError) console.error("unship audit insert failed", auditError.message);
+
+  const body = `Your project "${project.name}" was sent back to draft by a final reviewer so you can make changes. Edit it and ship it again when it's ready.\n\nReason: ${reason}`;
+  await notifyOwner(project.user_id, "Project sent back to draft", body);
+  for (const collaboratorId of await acceptedCollaboratorUserIds(projectId))
+    await notifyOwner(
+      collaboratorId,
+      "Project sent back to draft",
+      `A project you collaborate on, "${project.name}", was sent back to draft by a final reviewer. The owner needs to edit and reship it.\n\nReason: ${reason}`,
+    );
+
+  await logModAction(
+    project.user_id,
+    "project_unshipped",
+    `${project.name}: sent back to draft, first-pass payout ${voidPayout ? "voided" : "paid in full"} , ${reason}`,
+    by,
+  );
+  revalidatePath("/review");
+  revalidatePath(`/projects/${projectId}`);
+  redirect("/review");
+});
+
+// Second pass now runs its own fraud checks (Telescreen) via the checklist
+// below, so there's no separate fraud stage left to skip.
+export const updateSecondPassChecklist = guardedAction("updateSecondPassChecklist", "reviewer", async (access, formData: FormData): Promise<void> => {
+  if (!access.canSecondPass) redirect(`/review?error=${encodeURIComponent("Only a final reviewer can update this.")}`);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const field = String(formData.get("field") ?? "");
+  const back = `/review/${projectId}`;
+  const allowed = new Set([
+    "second_pass_telescreen_checked",
+    "second_pass_hours_deflated",
+    "second_pass_heartbeats_added",
+  ]);
+  if (!projectId || !allowed.has(field)) redirect("/review");
+  await authorizeProjectAction(access, projectId, back);
+  const checked = formData.get("checked") === "true";
+
+  const { error } = await db
+    .from("projects")
+    .update({ [field]: checked })
+    .eq("id", projectId);
+  if (error) console.error("updateSecondPassChecklist failed", error.message);
+  revalidatePath(back);
+  redirect(back);
+});
+
+// Manual pixel correction from the Pixels tab. Deducts (or grants) whole
+// pixels with a mandatory reason; owners only, everything lands in the ledger.
+export const adjustPixels = guardedAction("adjustPixels", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const userId = String(formData.get("userId") ?? "").trim();
+  const amount = Math.round(Number(formData.get("amount") ?? 0));
+  const deduct = formData.get("mode") !== "grant";
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 300);
+  if (!userId || !Number.isFinite(amount) || amount <= 0)
+    redirect(`/pixels?error=${encodeURIComponent("Pick a player and a whole number of pixels.")}`);
+  if (!reason)
+    redirect(`/pixels?error=${encodeURIComponent("A reason is required for manual pixel changes.")}`);
+  const delta = deduct ? -amount : amount;
+  const { error } = await db.rpc("adjust_user_pixels", {
+    p_user_id: userId,
+    p_amount: delta,
+    p_reason: deduct ? "manual_deduction" : "manual_grant",
+    p_created_by: `${by} , ${reason}`,
+  });
+  if (error) {
+    console.error("adjustPixels failed", error.message);
+    redirect(`/pixels?error=${encodeURIComponent("Couldn't adjust pixels , try again.")}`);
+  }
+  await logModAction(
+    userId,
+    deduct ? "pixels_deducted" : "pixels_granted",
+    `${deduct ? "-" : "+"}${amount} pixels , ${reason}`,
+    by,
+  );
+  const title = deduct ? "Pixels deducted" : "Pixels granted";
+  const body = `${deduct ? `${amount} pixels were removed from` : `${amount} pixels were added to`} your balance by the Pixl team.\n\nReason: ${reason}\n\nIf you think this is a mistake, contact the Pixl team.`;
+  const { error: notifyError } = await db
+    .from("notifications")
+    .insert({ user_id: userId, title, body });
+  if (notifyError) console.error("adjustPixels notification failed", notifyError.message);
+
+  await dmOrEmail(userId, title, body);
+  revalidatePath("/pixels");
+  redirect("/pixels?adjusted=1");
+});
+
+export const archiveProject = guardedAction("archiveProject", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const unarchive = formData.get("unarchive") === "1";
+  if (!projectId) return;
+  const { data: project, error } = await db
+    .from("projects")
+    .update({ archived_at: unarchive ? null : new Date().toISOString() })
+    .eq("id", projectId)
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("archiveProject failed", error?.message);
+    return;
+  }
+  await logModAction(
+    project.user_id,
+    unarchive ? "project_unarchived" : "project_archived",
+    project.name,
+    by,
+  );
+  revalidatePath("/", "layout");
+});
+
+// One person on the project: the owner, or an accepted collaborator. Each one
+// gets their own Airtable row (their own name/address/birthday, their own
+// Hackatime and their own approved hours), so a team project isn't reported
+// as if the owner did all of it.
+interface AirtablePerson {
+  label: string;
+  userId: string;
+  hours: number | null;
+  hackatimeProjects: string[];
+  recordId: string | null;
+  /** Saves the Airtable row id, on the project (owner) or the collaborator row. */
+  saveRecordId: (recordId: string) => Promise<string | null>;
+}
+
+// Manual, one-project-at-a-time push into the intermediate YSWS Airtable
+// base, one row per person (the owner plus every accepted collaborator). Never
+// flips that base's own "Automation - Submit to Unified" checkbox - a
+// teammate does that by hand after reviewing what lands here.
+// Re-running this (e.g. the "Re-send to Airtable" button) updates each
+// person's row via its stored airtable_record_id instead of creating a
+// duplicate, and adds a row for anyone who doesn't have one yet. An update
+// ship clears those ids at ship time (see the ship handler in
+// apps/server/src/routes/projects.ts), so its eventual approval pushes
+// genuinely NEW rows instead of overwriting the original ship's.
+// Shared by the automatic push on final approval (see reviewProject) and the
+// manual "Send to Airtable" / "Re-send to Airtable" button on the project
+// page - one place owns the field-building/push logic so the two callers
+// can't drift apart.
+async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; error?: string }> {
+  const { data: project, error: projectError } = await db
+    .from("projects")
+    .select(
+      "id, status, banned_at, rejected_at, repo_url, demo_url, description, image_url, approved_hours, system_note, user_id, airtable_record_id, hackatime_projects",
+    )
+    .eq("id", projectId)
+    .single();
+  if (projectError || !project) return { ok: false, error: "Project not found." };
+  if (project.status !== "approved" || project.banned_at || project.rejected_at)
+    return { ok: false, error: "Only approved projects can be sent to Airtable." };
+
+  const { data: audit, error: auditError } = await db
+    .from("review_audits")
+    .select("audit_note")
+    .eq("project_id", projectId)
+    .eq("verdict", "approved")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (auditError) return { ok: false, error: "Could not look up the approval note - try again." };
+  const auditSections = parseAuditNote(audit?.audit_note ?? "");
+
+  // Only worth a link (and a token) when there's actually something to show -
+  // most projects use Hackatime, not journals, for their hours evidence.
+  const { count: journalCount } = await db
+    .from("project_journals")
+    .select("id", { count: "exact", head: true })
+    .eq("project_id", projectId);
+  let journalShareUrl = "";
+  if ((journalCount ?? 0) > 0) {
+    const token = await ensureJournalShareToken(projectId);
+    if (token) journalShareUrl = `${config.urls.play}/journals/${projectId}/${token}`;
+  }
+
+  const { data: collabRows, error: collabError } = await db
+    .from("project_collaborators")
+    .select("id, user_id, approved_hours, hackatime_projects, airtable_record_id")
+    .eq("project_id", projectId)
+    .eq("status", "accepted")
+    .order("id", { ascending: true });
+  if (collabError) return { ok: false, error: "Could not look up this project's collaborators - try again." };
+
+  const people: AirtablePerson[] = [
+    {
+      label: "the owner",
+      userId: project.user_id,
+      hours: project.approved_hours,
+      hackatimeProjects: project.hackatime_projects ?? [],
+      recordId: project.airtable_record_id ?? null,
+      saveRecordId: async (recordId) => {
+        const { error } = await db.from("projects").update({ airtable_record_id: recordId }).eq("id", projectId);
+        return error?.message ?? null;
+      },
+    },
+    ...(collabRows ?? []).map(
+      (c: {
+        id: number;
+        user_id: string;
+        approved_hours: number | string | null;
+        hackatime_projects: string[] | null;
+        airtable_record_id: string | null;
+      }): AirtablePerson => ({
+        label: "a collaborator",
+        userId: c.user_id,
+        hours: c.approved_hours == null ? null : Number(c.approved_hours),
+        hackatimeProjects: c.hackatime_projects ?? [],
+        recordId: c.airtable_record_id ?? null,
+        saveRecordId: async (recordId) => {
+          const { error } = await db
+            .from("project_collaborators")
+            .update({ airtable_record_id: recordId })
+            .eq("id", c.id);
+          return error?.message ?? null;
+        },
+      }),
+    ),
+  ];
+
+  // Everyone on the project, for the "group project" sentence in the Airtable
+  // duplicate-override field. Each person's row names all of them.
+  const { data: nameRows } = await db
+    .from("users")
+    .select("id, first_name, last_name, real_name, display_name")
+    .in("id", people.map((p) => p.userId));
+  const nameById = new Map(
+    ((nameRows ?? []) as {
+      id: string;
+      first_name: string | null;
+      last_name: string | null;
+      real_name: string | null;
+      display_name: string | null;
+    }[]).map((u) => [
+      u.id,
+      [u.first_name, u.last_name].filter(Boolean).join(" ") || u.real_name || u.display_name || "",
+    ]),
+  );
+  const duplicateNote = duplicateOverrideNote(
+    project.system_note ?? "",
+    people.map((p) => nameById.get(p.userId) ?? ""),
+  );
+
+  const errors: string[] = [];
+  for (const person of people) {
+    const error = await pushPersonToAirtable(project, person, auditSections, journalShareUrl, duplicateNote);
+    if (error) errors.push(error);
+  }
+  return errors.length === 0 ? { ok: true } : { ok: false, error: errors.join(" ") };
+}
+
+async function pushPersonToAirtable(
+  project: {
+    repo_url: string | null;
+    demo_url: string | null;
+    description: string | null;
+    image_url: string | null;
+    system_note: string | null;
+  },
+  person: AirtablePerson,
+  auditSections: ReturnType<typeof parseAuditNote>,
+  journalShareUrl: string,
+  duplicateNote: string,
+): Promise<string | null> {
+  const { data: user, error: userError } = await db
+    .from("users")
+    .select(
+      "first_name, last_name, real_name, email, birthday, address_line1, address_line2, address_city, address_state, address_country, address_postal, slack_id, hackatime_token",
+    )
+    .eq("id", person.userId)
+    .maybeSingle();
+  if (userError) return `Could not look up ${person.label} - try again.`;
+
+  const [fallbackFirst, ...fallbackRest] = (user?.real_name ?? "").split(" ");
+  const firstName = user?.first_name || fallbackFirst || "";
+  const lastName = user?.last_name || fallbackRest.join(" ") || "";
+
+  const hackatimeReport = await fetchHackatimeReport(
+    user?.slack_id,
+    user?.hackatime_token ?? null,
+    person.hackatimeProjects,
+  );
+  // "hackatime-project 7/20/2026-7/22/2026, hackatime-project-2 7/21/2026-7/23/2026" -
+  // Airtable's own format for this field (see its field description), not the
+  // codebase's usual "Jul 18" Intl.DateTimeFormat style used elsewhere.
+  const fmtDate = (unixSeconds: number) => {
+    const d = new Date(unixSeconds * 1000);
+    return `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`;
+  };
+  const hackatimeProjectDateRanges = hackatimeReport.projects
+    .filter((p) => p.linked && p.firstActivity != null && p.lastActivity != null)
+    .map((p) => `${p.name} ${fmtDate(p.firstActivity!)}-${fmtDate(p.lastActivity!)}`)
+    .join(", ");
+  const lapseLinks = hackatimeReport.projects
+    .flatMap((p) => p.lapses)
+    .map((l) => l.playbackUrl)
+    .filter((url): url is string => !!url)
+    .join(", ");
+
+  const fields = buildAirtableFields({
+    repoUrl: project.repo_url ?? "",
+    demoUrl: project.demo_url ?? "",
+    firstName,
+    lastName,
+    email: user?.email ?? "",
+    imageUrl: project.image_url ?? "",
+    description: project.description ?? "",
+    approvedHours: person.hours,
+    systemNote: duplicateNote,
+    birthday: decryptPII(user?.birthday),
+    addressLine1: decryptPII(user?.address_line1),
+    addressLine2: decryptPII(user?.address_line2),
+    city: decryptPII(user?.address_city),
+    state: decryptPII(user?.address_state),
+    country: decryptPII(user?.address_country),
+    zip: decryptPII(user?.address_postal),
+    auditSections,
+    hackatimeProjectDateRanges,
+    submitterHackatimeId: hackatimeReport.hackatimeUserId,
+    lapseLinks,
+    journalShareUrl,
+  });
+
+  const result = await pushProjectRecord(fields, person.recordId);
+  // result.error comes from Airtable's own API error message or a network
+  // failure reason - never from decrypted PII, so it's safe to show/log.
+  if (!result.ok) return `Airtable push failed for ${person.label}: ${result.error}`;
+
+  const saveError = await person.saveRecordId(result.recordId);
+  if (saveError) {
+    console.error("pushProjectToAirtable: airtable_record_id save failed", saveError);
+    return `Pushed ${person.label} to Airtable, but failed to save the record link - check Airtable for a duplicate before pushing again.`;
+  }
+  return null;
+}
+
+export const sendProjectToAirtable = guardedAction("sendProjectToAirtable", "owner", async (access, formData: FormData): Promise<void> => {
+  const projectId = Number(formData.get("projectId") ?? 0);
+  if (!projectId) return;
+  const back = `/projects/${projectId}`;
+
+  const result = await pushProjectToAirtable(projectId);
+  if (!result.ok) {
+    redirect(`${back}?error=${encodeURIComponent(result.error ?? "Airtable push failed.")}`);
+  }
+
+  revalidatePath(back);
+});
+
+// A beneficiary's pixel payout for `hours` on this project, as if `hours` had
+// been the true credited figure all along - same rate formula creditBeneficiary
+// uses for a fresh approval (their own lifetime RE from every OTHER approved
+// project, averaged up through this project's own marginal RE window at its
+// tier), just run for a correction instead of a new ship. Deliberately never
+// re-triggers the one-time referral/community-goal bonuses a fresh approval
+// can add - those already paid out once and aren't part of the hourly rate
+// this recomputes.
+async function repriceForHours(
+  userId: string,
+  projectId: number,
+  hours: number,
+  tier: number,
+): Promise<number> {
+  const xpBefore = await lifetimeRe(userId, projectId);
+  const projectRe = reForHours(hours, tier);
+  const rate = pxPerHourOver(xpBefore, xpBefore + projectRe);
+  return Math.round(hours * rate);
+}
+
+// Lowers an already-approved project's credited hours after the fact - e.g.
+// Hack Club HQ flags an over-claim in the Unified YSWS Airtable base days
+// after approval, and Pixl risks a fine if the hours/pixels on our side don't
+// come back down to match. Recomputes the owner's (and every accepted
+// collaborator's, scaled by the same ratio as the owner's hours) pixel total
+// as if newHours had been the true figure from the start; creditProjectPixels
+// then does the actual clawback, which already auto-cancels pending orders
+// (newest first, refunding any leftover) if the corrected balance can't cover
+// them - see 0164_clawback_pending_orders.sql. Deflate only, never inflate -
+// raising hours back up isn't this button's job (that's a fresh appeal/review).
+// Owners/super-admins only: this DMs the player(s) and can cancel their
+// orders, a bigger blast radius than the "pixels" permission's manual
+// grant/deduct tool.
+export const deflateProjectHours = guardedAction("deflateProjectHours", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const back = `/projects/${projectId}`;
+  if (!projectId) return;
+
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
+  if (!reason)
+    redirect(`${back}?error=${encodeURIComponent("A reason is required to deflate hours.")}`);
+
+  const { data: project } = await db
+    .from("projects")
+    .select("id, name, user_id, status, banned_at, rejected_at, approved_hours, level, funding_deducted_px")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!project) redirect(`${back}?error=${encodeURIComponent("Project not found.")}`);
+  if (project.status !== "approved" || project.banned_at || project.rejected_at)
+    redirect(
+      `${back}?error=${encodeURIComponent("Only an approved, non-banned, non-rejected project can have its hours deflated.")}`,
+    );
+
+  const oldHours =
+    project.approved_hours != null ? Number(project.approved_hours) : await claimedHoursFor(projectId);
+  const rawNewHours = Number(String(formData.get("newHours") ?? "").trim());
+  const newHours = Math.round(rawNewHours * 10) / 10;
+  if (!Number.isFinite(newHours) || newHours < 0 || newHours >= oldHours)
+    redirect(
+      `${back}?error=${encodeURIComponent(`New hours must be a number from 0 up to (but not including) the current ${oldHours}h.`)}`,
+    );
+
+  const ratio = newHours / oldHours;
+  const tier = Number(project.level) || 1;
+
+  // Hardware funding grants dock a flat pixel amount off the owner's payout
+  // (see creditBeneficiary's fundingPx) - repriceForHours only rebuilds the
+  // GROSS per-hour figure, so that same deduction has to come back off here
+  // too, or a funded project's "corrected" total comes out too high and
+  // creditProjectPixels ends up crediting MORE pixels instead of clawing
+  // back (funding_deducted_px is owner-only, never applies to collaborators).
+  const fundingDeductedPx = Number(project.funding_deducted_px) || 0;
+  const grossOwnerPx = await repriceForHours(project.user_id, projectId, newHours, tier);
+  const newOwnerPx = Math.max(grossOwnerPx - fundingDeductedPx, 0);
+  await creditProjectPixels(project.user_id, projectId, newOwnerPx, newHours, by);
+
+  const { data: collabRows } = await db
+    .from("project_collaborators")
+    .select("id, user_id, approved_hours")
+    .eq("project_id", projectId)
+    .eq("status", "accepted");
+  const collaborators = (collabRows ?? []) as
+    { id: number; user_id: string; approved_hours: number | null }[];
+
+  const orderNote =
+    "If this left you without enough pixels to cover an order you'd already placed, that order was automatically cancelled and any leftover pixels refunded.";
+
+  for (const c of collaborators) {
+    const cOldHours = Number(c.approved_hours) || 0;
+    if (cOldHours <= 0) continue;
+    const cNewHours = Math.round(cOldHours * ratio * 10) / 10;
+    const cNewPx = await repriceForHours(c.user_id, projectId, cNewHours, tier);
+    await creditProjectPixels(c.user_id, projectId, cNewPx, cNewHours, by);
+    await db.from("project_collaborators").update({ approved_hours: cNewHours }).eq("id", c.id);
+
+    const cBody =
+      `"${project.name}"'s credited hours were corrected from ${cOldHours}h to ${cNewHours}h , your pixels for it were adjusted to match.\n\n` +
+      `Reason: ${reason}\n\n${orderNote}\n\nIf you think this is a mistake, contact the Pixl team.`;
+    await db.from("notifications").insert({ user_id: c.user_id, title: "Project hours corrected", body: cBody });
+    await dmOrEmail(c.user_id, "Project hours corrected", cBody);
+    await logModAction(
+      c.user_id,
+      "project_hours_deflated",
+      `${project.name}: collaborator ${cOldHours}h → ${cNewHours}h , ${reason}`,
+      by,
+    );
+  }
+
+  const { error } = await db
+    .from("projects")
+    .update({
+      approved_hours: newHours,
+      deflation_reason: reason,
+      hours_deflated_at: new Date().toISOString(),
+      hours_deflated_by: by,
+    })
+    .eq("id", projectId);
+  if (error) console.error("deflateProjectHours failed", error.message);
+
+  const { error: auditError } = await db.from("review_audits").insert({
+    project_id: projectId,
+    user_id: project.user_id,
+    reviewer: by,
+    verdict: "hours_deflated",
+    note: reason,
+    audit_note: "",
+    claimed_hours: oldHours,
+    approved_hours: newHours,
+  });
+  if (auditError) console.error("deflateProjectHours audit insert failed", auditError.message);
+
+  const ownerBody =
+    `"${project.name}"'s approved hours were corrected from ${oldHours}h to ${newHours}h , your pixels for it were adjusted to match.\n\n` +
+    `Reason: ${reason}\n\n${orderNote}\n\nIf you think this is a mistake, contact the Pixl team.`;
+  const { error: notifyError } = await db
+    .from("notifications")
+    .insert({ user_id: project.user_id, title: "Project hours corrected", body: ownerBody });
+  if (notifyError) console.error("deflateProjectHours notification failed", notifyError.message);
+  await dmOrEmail(project.user_id, "Project hours corrected", ownerBody);
+  await logModAction(
+    project.user_id,
+    "project_hours_deflated",
+    `${project.name}: ${oldHours}h → ${newHours}h , ${reason}`,
+    by,
+  );
+
+  revalidatePath(back);
+});
+
+// Any reviewer can nominate a project as a "Beacon" - a cosmetic badge shown
+// wherever the project is displayed publicly (explore, project page), never
+// a payout/pixel effect. Gated on "review" rather than "ban", unlike the
+// staff actions above, since this is a grading call any reviewer can make.
+// Internal name (isPeak, is_peak, project_peak_marked) stays as-is, this is
+// a display rename only, not worth a DB migration.
+export const toggleProjectPeak = guardedAction("toggleProjectPeak", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const isPeak = formData.get("isPeak") === "1";
+  if (!projectId) return;
+  await authorizeProjectAction(access, projectId, null, {
+    ownMessage: "You can't mark a project you own or collaborate on.",
+  });
+  const { data: project, error } = await db
+    .from("projects")
+    .update({ is_peak: isPeak })
+    .eq("id", projectId)
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("toggleProjectPeak failed", error?.message);
+    return;
+  }
+  await logModAction(
+    project.user_id,
+    isPeak ? "project_peak_marked" : "project_peak_unmarked",
+    project.name,
+    by,
+  );
+  revalidatePath("/", "layout");
+});
+
+// Normally only hours from hackatimeCutoffUnix onward count (see
+// HACKATIME_CUTOFF in apps/server). Some projects are legitimately started
+// earlier and picked back up , this lets a reviewer re-pull the player's
+// Hackatime spans from an earlier date for this one project and recredit
+// hackatime_seconds accordingly. Requires a note so it's auditable, and only
+// raises the stored total (never used to quietly lower it, ReviewForm's own
+// "credited hours" field already covers lowering).
+export const extendHoursCutoff = guardedAction("extendHoursCutoff", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const sinceRaw = String(formData.get("since") ?? "").trim();
+  const note = String(formData.get("note") ?? "").trim().slice(0, 1000);
+  const back = safeRedirectPath(formData.get("returnTo"), `/review/${projectId}`);
+  if (!projectId) return;
+  if (!note)
+    redirect(`${back}?error=${encodeURIComponent("A note is required to extend the hours cutoff.")}`);
+
+  const since = new Date(sinceRaw);
+  if (isNaN(since.getTime()) || since.getTime() >= hackatimeCutoffUnix * 1000)
+    redirect(
+      `${back}?error=${encodeURIComponent(`Pick a date before the ${hackatimeCutoffLabel} cutoff.`)}`,
+    );
+  const sinceUnix = Math.floor(since.getTime() / 1000);
+
+  const { data: project } = await db
+    .from("projects")
+    .select("user_id, name, status, banned_at, hackatime_projects, hackatime_seconds")
+    .eq("id", projectId)
+    .single();
+  if (!project) return;
+  // Super-admins are already trusted with bigger self-adjacent calls
+  // (deflateProjectHours et al) - a plain reviewer still can't touch their
+  // own project's cutoff, self-review = cheating.
+  await authorizeProjectAction(access, projectId, back, { ownMessage: "You can't act on your own project." });
+  // Draft/shipped/second_review/needs_changes are all fair game - a reviewer
+  // may want to set this up before the player even ships. approved is too
+  // late (payout's already computed) and a banned/rejected project shouldn't
+  // be touched here at all.
+  if (project.status === "approved" || project.status === "rejected" || project.banned_at)
+    redirect(`${back}?error=${encodeURIComponent("This project has already been finalized.")}`);
+  if (((project.hackatime_projects as string[]) ?? []).length === 0)
+    redirect(`${back}?error=${encodeURIComponent("Link a Hackatime project to this project first.")}`);
+
+  const { data: owner } = await db
+    .from("users")
+    .select("slack_id, hackatime_token")
+    .eq("id", project.user_id)
+    .single();
+  const linked = (project.hackatime_projects as string[]) ?? [];
+  const newSeconds = await fetchTrackedSecondsSince(
+    (owner as { slack_id?: string } | null)?.slack_id ?? null,
+    (owner as { hackatime_token?: string } | null)?.hackatime_token ?? null,
+    linked,
+    sinceUnix,
+  );
+  if (newSeconds === null)
+    redirect(`${back}?error=${encodeURIComponent("Couldn't reach Hackatime, try again.")}`);
+  const currentSeconds = Number(project.hackatime_seconds) || 0;
+  if (newSeconds <= currentSeconds)
+    redirect(
+      `${back}?error=${encodeURIComponent("Hackatime didn't return more hours than already credited , nothing changed.")}`,
+    );
+
+  const { error } = await db
+    .from("projects")
+    .update({
+      hackatime_seconds: newSeconds,
+      hours_extended_since: since.toISOString(),
+      hours_extended_by: reviewer,
+      hours_extended_note: note,
+    })
+    .eq("id", projectId);
+  if (error) {
+    console.error("extendHoursCutoff failed", error.message);
+    redirect(`${back}?error=${encodeURIComponent("Failed to save , try again.")}`);
+  }
+  await logModAction(
+    project.user_id,
+    "project_hours_extended",
+    `${project.name}: counted hours from ${since.toISOString().slice(0, 10)} (${Math.round(currentSeconds / 3600)}h -> ${Math.round(newSeconds / 3600)}h) , ${note}`,
+    by,
+  );
+  const sinceLabel = since.toISOString().slice(0, 10);
+  await notifyOwner(
+    project.user_id,
+    "Hours cutoff extended",
+    `Your project "${project.name}"'s Hackatime cutoff was extended by ${reviewer}: we're now counting hours from ${sinceLabel} instead of the usual ${hackatimeCutoffLabel} cutoff.\n\nReason: ${note}`,
+  );
+  revalidatePath(back);
+  redirect(back);
+});
+
+export const rejectProject = guardedAction("rejectProject", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
+  const returnTo = safeRedirectPath(formData.get("returnTo"), `/projects/${projectId}`);
+  if (!projectId) return;
+  if (!reason)
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("A reason is required to reject a project.")}`);
+
+  const { data: target } = await db.from("projects").select("user_id").eq("id", projectId).single();
+  if (target && (await isOwnProject(access, target.user_id, projectId)))
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("You can't act on your own project.")}`);
+
+  const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({
+      rejected_at: new Date().toISOString(),
+      reject_reason: reason,
+      reject_by: reviewer,
+    })
+    .eq("id", projectId)
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("rejectProject failed", error?.message);
+    return;
+  }
+  await logModAction(project.user_id, "project_rejected", `${project.name}: ${reason}`, by);
+
+  const body = `Your project "${project.name}" was rejected by ${reviewer} and removed from Pixl.\n\nReason: ${reason}\n\nIf you think this is a mistake, contact the Pixl team.`;
+  const { error: notifyError } = await db.from("notifications").insert({
+    user_id: project.user_id,
+    title: "Project rejected",
+    body,
+  });
+  if (notifyError) console.error("reject notification failed", notifyError.message);
+
+  await dmOrEmail(project.user_id, "Project rejected", body);
+  revalidatePath("/", "layout");
+});
+
+export const unrejectProject = guardedAction("unrejectProject", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  if (!projectId) return;
+  const { data: project, error } = await db
+    .from("projects")
+    .update({ rejected_at: null, reject_reason: "", reject_by: "" })
+    .eq("id", projectId)
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("unrejectProject failed", error?.message);
+    return;
+  }
+  await logModAction(project.user_id, "project_unrejected", project.name, by);
+  const { error: notifyError } = await db.from("notifications").insert({
+    user_id: project.user_id,
+    title: "Project restored",
+    body: `"${project.name}" was restored and is visible again. Sorry for the mix-up!`,
+  });
+  if (notifyError) console.error("unreject notification failed", notifyError.message);
+  revalidatePath("/", "layout");
+});
+
+export const banProject = guardedAction("banProject", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
+  const returnTo = safeRedirectPath(formData.get("returnTo"), `/projects/${projectId}`);
+  if (!projectId) return;
+  if (!reason)
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("A reason is required to ban a project.")}`);
+
+  const { data: target } = await db.from("projects").select("user_id, banned_at").eq("id", projectId).single();
+  if (target && (await isOwnProject(access, target.user_id, projectId)))
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("You can't act on your own project.")}`);
+
+  const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({
+      banned_at: new Date().toISOString(),
+      ban_reason: reason,
+      ban_by: reviewer,
+    })
+    .eq("id", projectId)
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("banProject failed", error?.message);
+    return;
+  }
+  await logModAction(project.user_id, "project_banned", `${project.name}: ${reason}`, by);
+  await operationRpc.onBan(projectId);
+  // A ban pays the banning reviewer the flat ban rate, same as a ban verdict
+  // in reviewProject - but only the first time, so re-submitting the form on
+  // an already-banned project (which just rewrites the reason) can't pay twice.
+  if (!target?.banned_at) await recordSettledPayout(projectId, access, "banned", project.name);
+
+  const body = `Your project "${project.name}" was permanently banned by ${reviewer} and can no longer be shipped to Pixl.\n\nReason: ${reason}\n\nIf you think this is a mistake, contact the Pixl team.`;
+  const { error: notifyError } = await db.from("notifications").insert({
+    user_id: project.user_id,
+    title: "Project banned",
+    body,
+  });
+  if (notifyError) console.error("ban notification failed", notifyError.message);
+
+  await dmOrEmail(project.user_id, "Project banned", body);
+  revalidatePath("/", "layout");
+});
+
+export const unbanProject = guardedAction("unbanProject", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  if (!projectId) return;
+  const { data: project, error } = await db
+    .from("projects")
+    .update({ banned_at: null, ban_reason: "", ban_by: "" })
+    .eq("id", projectId)
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("unbanProject failed", error?.message);
+    return;
+  }
+  await logModAction(project.user_id, "project_unbanned", project.name, by);
+  const { error: notifyError } = await db.from("notifications").insert({
+    user_id: project.user_id,
+    title: "Project ban lifted",
+    body: `The ban on "${project.name}" was lifted. You can ship it again. Sorry for the mix-up!`,
+  });
+  if (notifyError) console.error("unban notification failed", notifyError.message);
+  revalidatePath("/", "layout");
+});
+
+// Any reviewer can put a project's review on hold: blocks submitting any
+// verdict (first pass, final pass, extend cutoff, send back, ban) while set,
+// but the project stays visible in the queue as normal. No expiry - stays
+// held until the reviewer who set it, or an owner, releases it (see
+// canReleaseHold below). hold_by stores the same "Name (SlackID)" format as
+// first_pass_by/ban_by (not the player-facing reviewerLabel - a hold is
+// never shown to the player), so the setter's id can be recovered reliably
+// for that release check instead of matching on a display name.
+export const holdReview = guardedAction("holdReview", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 500);
+  const returnTo = safeRedirectPath(formData.get("returnTo"), `/review/${projectId}`);
+  if (!projectId) return;
+  if (!reason)
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("A reason is required to hold a review.")}`);
+  await authorizeProjectAction(access, projectId, returnTo, { allowOwn: true });
+
+  // Don't overwrite another reviewer's active hold (owners may).
+  const { data: existing } = await db
+    .from("projects")
+    .select("hold_by")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!existing) return;
+  const currentHoldBy = (existing.hold_by as string | null) ?? null;
+  const held = !!currentHoldBy && currentHoldBy.trim() !== "";
+  if (!canSetHold({ held, holderSlackId: held ? slackIdFromActorName(currentHoldBy!) : "" }, access))
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("Another reviewer already holds this review. Only they, or an owner, can change it.")}`);
+
+  // Compare-and-swap on the hold we just checked, so a hold placed by someone
+  // else in between isn't clobbered either.
+  let holdUpdate = db
+    .from("projects")
+    .update({
+      hold_at: new Date().toISOString(),
+      hold_by: by,
+      hold_reason: reason,
+    })
+    .eq("id", projectId);
+  holdUpdate = currentHoldBy === null ? holdUpdate.is("hold_by", null) : holdUpdate.eq("hold_by", currentHoldBy);
+  const { data: project, error } = await holdUpdate.select("id, name, user_id").maybeSingle();
+  if (error || !project) {
+    console.error("holdReview failed", error?.message);
+    return;
+  }
+  await logModAction(project.user_id, "review_held", `${project.name}: ${reason}`, by);
+  revalidatePath(`/review/${projectId}`);
+  revalidatePath("/review");
+});
+
+// Global "live mode" (see lib/liveMode.ts): hides players' real identities
+// across the whole dashboard so it can be screen-shared. A cookie, not a DB flag,
+// so it only ever affects the person who flipped it.
+export const setLiveMode = guardedAction("setLiveMode", "staff", async (access, formData: FormData): Promise<void> => {
+  const on = formData.get("on") === "1";
+  const jar = await cookies();
+  jar.set(LIVE_MODE_COOKIE, on ? "1" : "0", { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 12 });
+  // Every new live session starts with other reviewers' names hidden again.
+  jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
+  revalidatePath("/", "layout");
+});
+
+// The "Show reviewer names" button: while live, reveals (or re-hides) other
+// reviewers' names. A session cookie, cleared again by setLiveMode.
+export const setShowReviewerNames = guardedAction("setShowReviewerNames", "staff", async (access, formData: FormData): Promise<void> => {
+  const show = formData.get("show") === "1";
+  const jar = await cookies();
+  if (show) jar.set(LIVE_SHOW_REVIEWERS_COOKIE, "1", { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
+  else jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
+  revalidatePath("/", "layout");
+});
+
+export const releaseReviewHold = guardedAction("releaseReviewHold", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const returnTo = safeRedirectPath(formData.get("returnTo"), `/review/${projectId}`);
+  if (!projectId) return;
+
+  const { data: current } = await db
+    .from("projects")
+    .select("hold_by")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!current?.hold_by) return; // nothing held, nothing to do
+
+  const setById = slackIdFromActorName(current.hold_by as string);
+  if (!access.isOwner && setById !== access.session.slackId)
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("Only the reviewer who held this, or an admin, can release it.")}`);
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({ hold_at: null, hold_by: "", hold_reason: "" })
+    .eq("id", projectId)
+    .select("id, name, user_id")
+    .single();
+  if (error || !project) {
+    console.error("releaseReviewHold failed", error?.message);
+    return;
+  }
+  await logModAction(project.user_id, "review_hold_released", project.name, by);
+  revalidatePath(`/review/${projectId}`);
+  revalidatePath("/review");
+});
+
+// Shared review-form draft (technical features, hackatime evidence, notes,
+// deflation reason, note-to-player, hours/tier) - see review_draft on
+// ProjectRow in lib/db.ts. Called directly from ReviewForm.tsx (debounced),
+// same calling convention as generateAiReviewDraftAction above, not a
+// <form action> - so there's no formData, just the already-serializable
+// draft object the client already builds for its own localStorage copy.
+// Any signed-in reviewer can write here, not just supers - the whole point
+// is a first-pass reviewer's own second visit, or another first-pass
+// reviewer picking up someone else's queue, sees the same in-progress notes
+// too, not just a spot-checking super.
+export const saveReviewDraft = guardedAction("saveReviewDraft", "reviewer", async (access, projectId: number,
+  draft: Record<string, string | number>,): Promise<void> => {
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) return;
+  await authorizeProjectAction(access, projectId, null, {
+    ownMessage: "You can't draft a review for a project you own or collaborate on.",
+  });
+  const { error } = await db
+    .from("projects")
+    .update({
+      review_draft: draft,
+      review_draft_by: actorName(access),
+      review_draft_at: new Date().toISOString(),
+    })
+    .eq("id", projectId)
+    .in("status", ["shipped", "second_review"]);
+  if (error) console.error("saveReviewDraft failed", error.message);
+});
+
+// Accept/reject a public form submission (pixl.hackclub.com/form/*, see
+// apps/server/src/routes/forms.ts). DMs the submitter directly by Slack id -
+// they never got a Pixl account, so there's no notifications row or
+// notifyOwner() to reuse here.
+export const decideFormSubmission = guardedAction("decideFormSubmission", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const decision = String(formData.get("decision") ?? "");
+  const note = String(formData.get("note") ?? "").trim().slice(0, 1000);
+  if (!id || (decision !== "accepted" && decision !== "rejected")) return;
+
+  const { data: submission, error } = await db
+    .from("form_submissions")
+    .update({
+      status: decision,
+      decided_by: actorName(access),
+      decided_at: new Date().toISOString(),
+      decision_note: note,
+    })
+    .eq("id", id)
+    .eq("status", "pending")
+    .select("id, form_key, slack_id")
+    .single();
+  if (error || !submission) {
+    console.error("decideFormSubmission failed", error?.message);
+    return;
+  }
+
+  const verb = decision === "accepted" ? "accepted" : "not accepted";
+  const dmText =
+    decision === "accepted"
+      ? `Good news , your "${submission.form_key}" submission was accepted!${note ? `\n\n${note}` : ""}`
+      : `Your "${submission.form_key}" submission was ${verb} this time.${note ? `\n\n${note}` : ""}`;
+  try {
+    await dmUser(submission.slack_id as string, dmText);
+  } catch (e) {
+    console.error("decideFormSubmission DM failed", e);
+  }
+
+  revalidatePath("/forms");
+});
+
+// "Keep for later" - moves a pending submission into its own section on the
+// Forms tab without deciding on it (status stays 'pending'), and DMs the
+// applicant that they cleared a first pass with a second round to come. Not
+// a real decision - accept/reject is still a separate, later action.
+export const markFormSubmissionInteresting = guardedAction("markFormSubmissionInteresting", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const note = String(formData.get("note") ?? "").trim().slice(0, 1000);
+  if (!id) return;
+
+  const { data: submission, error } = await db
+    .from("form_submissions")
+    .update({
+      interesting_at: new Date().toISOString(),
+      interesting_by: actorName(access),
+    })
+    .eq("id", id)
+    .eq("status", "pending")
+    .is("interesting_at", null)
+    .select("id, form_key, slack_id")
+    .single();
+  if (error || !submission) {
+    console.error("markFormSubmissionInteresting failed", error?.message);
+    return;
+  }
+
+  const dmText = `Good news , your "${submission.form_key}" application made it through our first review! There's a second round before a final decision, we'll follow up soon.${note ? `\n\n${note}` : ""}`;
+  try {
+    await dmUser(submission.slack_id as string, dmText);
+  } catch (e) {
+    console.error("markFormSubmissionInteresting DM failed", e);
+  }
+
+  revalidatePath("/forms");
+});
+
+// Reverts a "kept for later" mark back to plain pending, no DM - for an
+// accidental click or a change of mind before any real decision was made.
+export const unmarkFormSubmissionInteresting = guardedAction("unmarkFormSubmissionInteresting", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("form_submissions")
+    .update({ interesting_at: null, interesting_by: "" })
+    .eq("id", id)
+    .eq("status", "pending");
+  if (error) console.error("unmarkFormSubmissionInteresting failed", error.message);
+  revalidatePath("/forms");
+});
+
+// Lets an admin add/edit/remove questions and set a close date on a public
+// form (pixl.hackclub.com/form/*) from the Forms tab, without a deploy -
+// apps/server/src/routes/forms.ts reads this table live. questionsJson is a
+// JSON-encoded array of {key, label} built client-side by FormEditor.
+export const saveFormConfig = guardedAction("saveFormConfig", "owner", async (access, formData: FormData): Promise<void> => {
+  const formKey = String(formData.get("formKey") ?? "").trim();
+  const title = String(formData.get("title") ?? "").trim().slice(0, 200);
+  const description = String(formData.get("description") ?? "").trim().slice(0, 2000);
+  const closeAtRaw = String(formData.get("closeAt") ?? "").trim();
+  const questionsRaw = String(formData.get("questionsJson") ?? "[]");
+  if (!/^[a-z0-9_-]{1,50}$/.test(formKey)) return;
+
+  let questions: { key: string; label: string }[] = [];
+  try {
+    const parsed = JSON.parse(questionsRaw) as unknown;
+    if (Array.isArray(parsed)) {
+      questions = parsed
+        .filter(
+          (q): q is { key: string; label: string } =>
+            !!q &&
+            typeof q === "object" &&
+            typeof (q as { key?: unknown }).key === "string" &&
+            typeof (q as { label?: unknown }).label === "string" &&
+            (q as { key: string }).key.trim() !== "" &&
+            (q as { label: string }).label.trim() !== "",
+        )
+        .slice(0, 30)
+        .map((q) => ({ key: q.key.trim().slice(0, 100), label: q.label.trim().slice(0, 300) }));
+    }
+  } catch {
+    return;
+  }
+
+  const closeAt = closeAtRaw ? new Date(closeAtRaw).toISOString() : null;
+
+  const { error } = await db.from("form_configs").upsert(
+    {
+      form_key: formKey,
+      title,
+      description,
+      questions,
+      close_at: closeAt,
+      updated_by: actorName(access),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "form_key" },
+  );
+  if (error) console.error("saveFormConfig failed", error.message);
+
+  revalidatePath("/forms");
+});
+
+// Keeps an active review's claim (reviewing_by/reviewing_at, see claimReview
+// and REVIEW_LOCK_MS in lib/db.ts) alive while the reviewer is actually still
+// on the detail page - called periodically by the ReviewHeartbeat client
+// component. Only ever refreshes a claim the caller already holds (the
+// reviewing_by match), so it can neither steal someone else's claim nor
+// resurrect one that already expired and was picked up by someone else.
+export const heartbeatReview = guardedAction("heartbeatReview", "reviewer", async (access, projectId: number): Promise<void> => {
+  if (!projectId) return;
+  await db
+    .from("projects")
+    .update({ reviewing_at: new Date().toISOString() })
+    .eq("id", projectId)
+    .eq("reviewing_by", access.session.slackId);
+});
+
+// Gives up an active review's claim early - called by ReviewHeartbeat once
+// the tab has been hidden/unfocused for 5+ minutes straight, rather than
+// waiting out the full REVIEW_LOCK_MS (30 min) of silence, so another
+// reviewer isn't blocked from picking up a project someone just isn't
+// actively looking at anymore. Same ownership guard as heartbeatReview: only
+// ever clears a claim the caller currently holds.
+export const releaseReviewClaim = guardedAction("releaseReviewClaim", "reviewer", async (access, projectId: number): Promise<void> => {
+  if (!projectId) return;
+  await db
+    .from("projects")
+    .update({ reviewing_by: "", reviewing_at: null })
+    .eq("id", projectId)
+    .eq("reviewing_by", access.session.slackId);
+});
+
+export const banIdea = guardedAction("banIdea", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const ideaId = Number(formData.get("ideaId") ?? 0);
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
+  const returnTo = safeRedirectPath(formData.get("returnTo"), "/ideas");
+  if (!ideaId) return;
+  if (!reason)
+    redirect(`${returnTo}${returnTo.includes("?") ? "&" : "?"}error=${encodeURIComponent("A reason is required to ban an idea.")}`);
+
+  const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
+
+  const { data: idea, error } = await db
+    .from("ideas")
+    .update({
+      banned_at: new Date().toISOString(),
+      ban_reason: reason,
+      ban_by: reviewer,
+    })
+    .eq("id", ideaId)
+    .select("id, title, user_id")
+    .single();
+  if (error || !idea) {
+    console.error("banIdea failed", error?.message);
+    return;
+  }
+  await logModAction(idea.user_id, "idea_banned", `${idea.title}: ${reason}`, by);
+  const { error: notifyError } = await db.from("notifications").insert({
+    user_id: idea.user_id,
+    title: "Idea removed",
+    body: `Your idea "${idea.title}" was removed by ${reviewer}.\n\nReason: ${reason}\n\nIf you think this is a mistake, contact the Pixl team.`,
+  });
+  if (notifyError) console.error("idea ban notification failed", notifyError.message);
+  revalidatePath("/ideas");
+});
+
+export const unbanIdea = guardedAction("unbanIdea", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const ideaId = Number(formData.get("ideaId") ?? 0);
+  if (!ideaId) return;
+  const { data: idea, error } = await db
+    .from("ideas")
+    .update({ banned_at: null, ban_reason: "", ban_by: "" })
+    .eq("id", ideaId)
+    .select("id, title, user_id")
+    .single();
+  if (error || !idea) {
+    console.error("unbanIdea failed", error?.message);
+    return;
+  }
+  await logModAction(idea.user_id, "idea_unbanned", idea.title, by);
+  const { error: notifyError } = await db.from("notifications").insert({
+    user_id: idea.user_id,
+    title: "Idea restored",
+    body: `Your idea "${idea.title}" was restored. Sorry for the mix-up!`,
+  });
+  if (notifyError) console.error("idea unban notification failed", notifyError.message);
+  revalidatePath("/ideas");
+});
+
+export const banPlayer = guardedAction("banPlayer", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const userId = String(formData.get("userId") ?? "");
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
+  const hours = Number(formData.get("hours") ?? 0);
+  if (!userId || !reason) return;
+
+  const expiresAt =
+    hours > 0 ? new Date(Date.now() + hours * 3600_000).toISOString() : null;
+  const { error } = await db.from("bans").insert({
+    user_id: userId,
+    reason,
+    banned_by: by,
+    expires_at: expiresAt,
+  });
+  if (error) throw new Error(error.message);
+  await logModAction(
+    userId,
+    "ban",
+    expiresAt ? `${hours}h , ${reason}` : `permanent , ${reason}`,
+    by,
+  );
+
+  const lines = [
+    expiresAt
+      ? `You've been temporarily banned from Pixl until ${new Date(expiresAt).toUTCString()}.`
+      : "You've been permanently banned from Pixl.",
+  ];
+  if (reason) lines.push(`Reason: ${reason}`);
+  lines.push("If you believe this is a mistake, reach out to the Pixl team.");
+  await dmOrEmail(userId, "Banned from Pixl", lines.join("\n\n"));
+  revalidatePath("/", "layout");
+});
+
+export const confirmBanProposal = guardedAction("confirmBanProposal", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const proposal = await getBanProposal(id);
+  if (!proposal || proposal.status !== "pending") return;
+
+  const expiresAt =
+    proposal.hours > 0 ? new Date(Date.now() + proposal.hours * 3600_000).toISOString() : null;
+  const { data: inserted, error } = await db
+    .from("bans")
+    .insert({ user_id: proposal.user_id, reason: proposal.reason, banned_by: by, expires_at: expiresAt })
+    .select("id")
+    .single();
+  if (error || !inserted) throw new Error(error?.message ?? "ban insert failed");
+
+  await decideBanProposal(id, "confirmed", by, inserted.id as number);
+  await logModAction(
+    proposal.user_id,
+    "ban",
+    `${expiresAt ? `${proposal.hours}h` : "permanent"} , ${proposal.reason} (proposed by ${proposal.proposed_by})`,
+    by,
+  );
+
+  const lines = [
+    expiresAt
+      ? `You've been temporarily banned from Pixl until ${new Date(expiresAt).toUTCString()}.`
+      : "You've been permanently banned from Pixl.",
+  ];
+  if (proposal.reason) lines.push(`Reason: ${proposal.reason}`);
+  lines.push("If you believe this is a mistake, reach out to the Pixl team.");
+  await dmOrEmail(proposal.user_id, "Banned from Pixl", lines.join("\n\n"));
+  revalidatePath("/", "layout");
+  revalidatePath("/bans");
+});
+
+export const rejectBanProposal = guardedAction("rejectBanProposal", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const proposal = await getBanProposal(id);
+  if (!proposal || proposal.status !== "pending") return;
+  await decideBanProposal(id, "rejected", by);
+  await logModAction(proposal.user_id, "ban_rejected", `proposed by ${proposal.proposed_by}`, by);
+  revalidatePath("/bans");
+});
+
+export const liftBan = guardedAction("liftBan", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const userId = String(formData.get("userId") ?? "");
+  if (!userId) return;
+  const now = new Date().toISOString();
+  const { data: lifted, error } = await db
+    .from("bans")
+    .update({ lifted_at: now })
+    .eq("user_id", userId)
+    .is("lifted_at", null)
+    .select("id");
+  if (error) throw new Error(error.message);
+
+  const count = (lifted ?? []).length;
+  await logModAction(userId, "unban", `${count} active ban(s) lifted`, by);
+
+  if (count > 0) {
+    await dmOrEmail(
+      userId,
+      "Ban lifted",
+      [
+        "Your ban from Pixl has been lifted. You're welcome to rejoin the game.",
+        "Please keep the community guidelines in mind going forward.",
+      ].join("\n\n"),
+    );
+  }
+  revalidatePath("/", "layout");
+});
+
+// Mass moderation from the Players page: one action applied to every selected
+// player, with the same guards, mod log entries and DMs as the single-player
+// versions. Capped so a stray select-all can't nuke the whole playerbase.
+export const massPlayerAction = guardedAction("massPlayerAction", "owner", async (access, formData: FormData): Promise<void> => {
+  const action = String(formData.get("massAction") ?? "");
+  if (!["warn", "notify", "ban", "unban"].includes(action)) return;
+  const by = actorName(access);
+
+  const back = safeRedirectPath(formData.get("back"), "/players");
+  const fail = (msg: string) => redirect(`${back}${back.includes("?") ? "&" : "?"}error=${encodeURIComponent(msg)}`);
+  const ids = [...new Set(formData.getAll("userIds").map(String).filter(Boolean))];
+  const message = String(formData.get("message") ?? "").trim().slice(0, 1000);
+  const title = String(formData.get("title") ?? "").trim().slice(0, 100);
+  const hours = Number(formData.get("hours") ?? 0);
+
+  if (ids.length === 0) fail("Select at least one player first.");
+  if (ids.length > 100) fail("Mass actions are capped at 100 players at a time.");
+  if (action === "ban" && !message) fail("A ban reason is required.");
+  if (action === "notify" && !message) fail("A message is required to notify players.");
+
+  if (action === "warn") {
+    const text = message || DEFAULT_WARNING;
+    for (const userId of ids) {
+      await db.from("notifications").insert({
+        user_id: userId,
+        title: "Moderation warning",
+        body: text,
+      });
+      await dmOrEmail(
+        userId,
+        "Moderation warning",
+        [
+          "You've received a moderation warning from Pixl.",
+          text,
+          "If you believe this is a mistake, reach out to the Pixl team.",
+        ].join("\n\n"),
+      );
+      await logModAction(userId, "warn", `${text} (mass action, ${ids.length} players)`, by);
+    }
+  } else if (action === "notify") {
+    const heading = title || "Message from the Pixl team";
+    const { error } = await db
+      .from("notifications")
+      .insert(ids.map((userId) => ({ user_id: userId, title: heading, body: message })));
+    if (error) throw new Error(error.message);
+    for (const userId of ids)
+      await logModAction(userId, "notify", `${heading} (mass action, ${ids.length} players)`, by);
+  } else if (action === "ban") {
+    const expiresAt =
+      hours > 0 ? new Date(Date.now() + hours * 3600_000).toISOString() : null;
+    for (const userId of ids) {
+      const { error } = await db.from("bans").insert({
+        user_id: userId,
+        reason: message,
+        banned_by: by,
+        expires_at: expiresAt,
+      });
+      if (error) throw new Error(error.message);
+      await logModAction(
+        userId,
+        "ban",
+        `${expiresAt ? `${hours}h` : "permanent"} , ${message} (mass action, ${ids.length} players)`,
+        by,
+      );
+      await dmOrEmail(
+        userId,
+        "Banned from Pixl",
+        [
+          expiresAt
+            ? `You've been temporarily banned from Pixl until ${new Date(expiresAt).toUTCString()}.`
+            : "You've been permanently banned from Pixl.",
+          `Reason: ${message}`,
+          "If you believe this is a mistake, reach out to the Pixl team.",
+        ].join("\n\n"),
+      );
+    }
+  } else if (action === "unban") {
+    for (const userId of ids) {
+      const { data: lifted, error } = await db
+        .from("bans")
+        .update({ lifted_at: new Date().toISOString() })
+        .eq("user_id", userId)
+        .is("lifted_at", null)
+        .select("id");
+      if (error) throw new Error(error.message);
+      if ((lifted ?? []).length === 0) continue;
+      await logModAction(userId, "unban", `${(lifted ?? []).length} active ban(s) lifted (mass action)`, by);
+      await dmOrEmail(
+        userId,
+        "Ban lifted",
+        [
+          "Your ban from Pixl has been lifted. You're welcome to rejoin the game.",
+          "Please keep the community guidelines in mind going forward.",
+        ].join("\n\n"),
+      );
+    }
+  }
+
+  revalidatePath("/", "layout");
+  const verb = { warn: "Warned", notify: "Notified", ban: "Banned", unban: "Lifted bans for" }[action];
+  redirect(
+    `${back}${back.includes("?") ? "&" : "?"}done=${encodeURIComponent(
+      `${verb} ${ids.length} player${ids.length === 1 ? "" : "s"}.`,
+    )}`,
+  );
+});
+
+export const sendNotification = guardedAction("sendNotification", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const title = String(formData.get("title") ?? "").trim().slice(0, 100);
+  const body = String(formData.get("body") ?? "").trim().slice(0, 500);
+  const userId = String(formData.get("userId") ?? "").trim();
+  const playerName = String(formData.get("playerName") ?? "").trim();
+  // Empty stays empty (no redirect on success without a page to return to);
+  // a non-empty but off-app value falls back to /notify instead of following it.
+  const rawBackTo = String(formData.get("backTo") ?? "");
+  const backTo = rawBackTo ? safeRedirectPath(rawBackTo, "/notify") : "";
+  if (!title || !body) {
+    if (backTo) redirect(`${backTo}?error=${encodeURIComponent("Title and message are required.")}`);
+    return;
+  }
+
+  let targetId = userId;
+  if (!targetId && playerName) {
+    const likeName = playerName.replace(/[,()%*\\]/g, " ").trim();
+    const { data } = await db
+      .from("users")
+      .select("id, display_name, real_name")
+      .or(`display_name.ilike.${orValue(likeName)},real_name.ilike.${orValue(likeName)}`)
+      .limit(2);
+    if (!data || data.length !== 1) {
+      if (backTo)
+        redirect(
+          `${backTo}?error=${encodeURIComponent(
+            data && data.length > 1
+              ? `Multiple players match "${playerName}" , be more specific.`
+              : `No player named "${playerName}".`,
+          )}`,
+        );
+      return;
+    }
+    targetId = data[0].id as string;
+  }
+
+  if (targetId) {
+    const { error } = await db
+      .from("notifications")
+      .insert({ user_id: targetId, title, body });
+    if (error) throw new Error(error.message);
+    await logModAction(targetId, "notify", title, by);
+    revalidatePath("/", "layout");
+    if (backTo) redirect(`${backTo}?sent=1`);
+    return;
+  }
+
+  const { data: users, error } = await db.from("users").select("id");
+  if (error) throw new Error(error.message);
+  const rows = (users ?? []).map((u) => ({ user_id: u.id as string, title, body }));
+  for (let i = 0; i < rows.length; i += 500) {
+    const { error: insertError } = await db
+      .from("notifications")
+      .insert(rows.slice(i, i + 500));
+    if (insertError) throw new Error(insertError.message);
+  }
+  revalidatePath("/", "layout");
+  if (backTo) redirect(`${backTo}?sent=${rows.length}`);
+});
+
+export interface PlayerHit {
+  id: string;
+  name: string;
+  hasSlack: boolean;
+}
+
+// Typeahead for the notify page: find players by display name so an admin can
+// pick one instead of guessing the exact spelling.
+export const searchPlayers = guardedAction("searchPlayers", "owner", async (access, query: string): Promise<PlayerHit[]> => {
+  const clean = query.replace(/[%_,()\\]/g, " ").trim();
+  if (clean.length < 2) return [];
+  const { data, error } = await db
+    .from("users")
+    .select("id, display_name, real_name, slack_id")
+    .or(`display_name.ilike.${orValue(`%${clean}%`)},real_name.ilike.${orValue(`%${clean}%`)}`)
+    .order("display_name", { ascending: true })
+    .limit(8);
+  if (error) {
+    console.error("searchPlayers", error.message);
+    return [];
+  }
+  return (data ?? []).map((u) => ({
+    id: u.id as string,
+    name: (u.real_name as string) || (u.display_name as string) || "(unnamed)",
+    hasSlack: Boolean(u.slack_id),
+  }));
+});
+
+// Every team change is one `team.change` audit_log row (replacing the old
+// team_log table). The meta carries before/after so the Team log can show it
+// and undoTeamChange can revert it. Slack ids and names of staff only, never
+// player data.
+async function recordTeamChange(
+  access: AdminAccess,
+  slackId: string,
+  name: string,
+  change: string,
+  before: string[],
+  after: string[],
+  reason = "",
+): Promise<void> {
+  await audit({
+    action: "team.change",
+    result: "ok",
+    slackId: access.session.slackId,
+    target: `slack:${slackId}`,
+    meta: { slack_id: slackId, name, change, before, after, actor: actorName(access), reason },
+  });
+}
+
+// Set someone's reviewer permissions: empty = no admins row at all. Only the
+// review permission and its markers may be stored (see lib/roles.ts).
+async function setTeamPerms(
+  access: AdminAccess,
+  slackId: string,
+  name: string,
+  requested: string[],
+  change: string,
+  reason = "",
+): Promise<void> {
+  const permissions = reviewerPermsOnly(requested);
+  const existing = await getAdmin(slackId);
+  if (permissions.length === 0) {
+    if (!existing) return;
+    const { error } = await db.from("admins").delete().eq("slack_id", slackId);
+    if (error) throw new Error(error.message);
+  } else {
+    const { error } = await db.from("admins").upsert(
+      {
+        slack_id: slackId,
+        name: name || existing?.name || slackId,
+        permissions,
+        added_by: existing?.added_by || actorName(access),
+      },
+      { onConflict: "slack_id" },
+    );
+    if (error) throw new Error(error.message);
+  }
+  await recordTeamChange(
+    access,
+    slackId,
+    name || existing?.name || slackId,
+    change,
+    existing?.permissions ?? [],
+    permissions,
+    reason,
+  );
+  revalidatePath("/", "layout");
+}
+
+async function dmTeam(slackId: string, text: string): Promise<void> {
+  try {
+    await dmUser(slackId, text);
+  } catch (e) {
+    console.error("team DM failed", (e as Error).message);
+  }
+}
+
+async function dmRemoved(slackId: string, headline: string, reason: string): Promise<void> {
+  await dmTeam(
+    slackId,
+    [headline, `Reason: ${reason}`, "If you think this is a mistake, reach out to the Pixl team."].join(
+      "\n\n",
+    ),
+  );
+}
+
+// Owners review without an admins row. Taking review away from one writes a
+// NO_REVIEW marker instead of dropping a permission that was never stored.
+function isImplicitReviewer(slackId: string): boolean {
+  return ownerSlackIds().includes(slackId);
+}
+
+const SLACK_ID_RE = /^[UW][A-Z0-9]{6,}$/;
+
+/// Promote a reviewer to final (second-pass) reviewer, or take it back. The
+// grant lives as a SECOND_PASS marker in their admins row, alongside whatever
+// SECOND_PASS_SLACK_IDS says (env grants can only be changed in the env).
+export const setSecondPass = guardedAction("team.setSecondPass", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const enable = formData.get("enable") === "1";
+  if (!slackId) return;
+  const existing = await getAdmin(slackId);
+  if (enable && !existing?.permissions.includes(REVIEW) && !isImplicitReviewer(slackId))
+    throw new Error("Add them as a reviewer first.");
+  const kept = (existing?.permissions ?? []).filter((p) => p !== SECOND_PASS);
+  const permissions = enable ? [...kept, SECOND_PASS] : kept;
+  const already = existing?.permissions.includes(SECOND_PASS) ?? false;
+  if (enable === already) return;
+  await setTeamPerms(
+    access,
+    slackId,
+    name,
+    permissions,
+    enable ? "promoted to final reviewer" : "final reviewer removed",
+  );
+  if (enable)
+    await dmTeam(
+      slackId,
+      [
+        "You've been promoted to final reviewer on Pixl!",
+        `You now handle the second pass: your approvals are the ones that credit pixels. The second-review queue is waiting for you: ${DASH_URL}/review`,
+      ].join("\n\n"),
+    );
+  else
+    await dmTeam(
+      slackId,
+      "Your final-reviewer role on Pixl has been removed , you can still review first passes as usual. Contact the team if you think this is a mistake.",
+    );
+});
+
+// Let a reviewer edit submission details (title, image, repo/demo links,
+// description) without making them a final reviewer: just an EDIT_SUBMISSION
+// marker in their admins row. They have to be on the team already.
+export const setEditSubmission = guardedAction("team.setEditSubmission", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const enable = formData.get("enable") === "1";
+  if (!slackId) return;
+  const existing = await getAdmin(slackId);
+  if (!existing) return;
+  const already = existing.permissions.includes(EDIT_SUBMISSION);
+  if (enable === already) return;
+  const kept = existing.permissions.filter((p) => p !== EDIT_SUBMISSION);
+  await setTeamPerms(
+    access,
+    slackId,
+    name,
+    enable ? [...kept, EDIT_SUBMISSION] : kept,
+    enable ? "edit submission access granted" : "edit submission access removed",
+  );
+  await dmTeam(
+    slackId,
+    enable
+      ? [
+          "You can now edit submission details on the Pixl review dashboard.",
+          "On a project's review page, open the \"Edit submission\" section to fix the title, image, repo/demo links and description. It applies right away, everywhere the project shows up, and it's separate from your verdict. Nothing else about your reviewer access changes.",
+        ].join("\n\n")
+      : "Your access to edit submission details on the Pixl review dashboard has been removed. You can still review as usual. Contact the team if you think this is a mistake.",
+  );
+});
+
+// Restrict a reviewer to one queue (software/hardware), or clear the
+// restriction back to both. Stored the same way as SECOND_PASS: a marker in
+// their admins row, mutually exclusive with its counterpart.
+export const setReviewQueueAccess = guardedAction("team.setReviewQueueAccess", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const scope = String(formData.get("scope") ?? "both") as ReviewQueueScope;
+  if (!slackId || !["software", "hardware", "both"].includes(scope)) return;
+  const existing = await getAdmin(slackId);
+  const kept = (existing?.permissions ?? []).filter(
+    (p) => p !== REVIEW_HARDWARE_ONLY && p !== REVIEW_SOFTWARE_ONLY,
+  );
+  const marker = scope === "hardware" ? REVIEW_HARDWARE_ONLY : scope === "software" ? REVIEW_SOFTWARE_ONLY : null;
+  const permissions = marker ? [...kept, marker] : kept;
+  await setTeamPerms(access, slackId, name, permissions, `review queue access set to ${scope}`);
+  const label = scope === "both" ? "both the software and hardware queues" : `the ${scope} queue only`;
+  await dmTeam(slackId, `Your Pixl review queue access was changed , you can now review ${label}.`);
+});
+
+export const addReviewer = guardedAction("team.addReviewer", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
+  const name = String(formData.get("name") ?? "").trim();
+  if (!SLACK_ID_RE.test(slackId)) throw new Error("Enter a valid Slack member ID (starts with U).");
+  const existing = await getAdmin(slackId);
+  const kept = (existing?.permissions ?? []).filter((p) => p !== NO_REVIEW);
+  // Owners review by default: lifting their block is enough, no row needed.
+  const implicit = isImplicitReviewer(slackId);
+  const permissions = implicit ? kept : [...new Set([...kept, REVIEW])];
+  const wasReviewer =
+    !existing?.permissions.includes(NO_REVIEW) &&
+    (existing?.permissions.includes(REVIEW) || implicit);
+  await setTeamPerms(access, slackId, name, permissions, existing ? "updated" : "added");
+  if (!wasReviewer)
+    await dmTeam(
+      slackId,
+      [
+        "Welcome to the Pixl review team!",
+        `You now have access to the review queue on the Pixl dashboard , projects shipped by players are waiting for your verdict: ${DASH_URL}/review`,
+        "Happy reviewing!",
+      ].join("\n\n"),
+    );
+});
+
+export const removeReviewer = guardedAction("team.removeReviewer", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 500);
+  if (!slackId || !reason) return;
+  const existing = await getAdmin(slackId);
+  const implicit = isImplicitReviewer(slackId);
+  if (!existing && !implicit) return;
+  // Dropping "review" drops every review marker with it: they mean nothing
+  // without the permission, and a stale second_pass would come back to life
+  // on a later re-add.
+  const permissions = implicit ? [NO_REVIEW] : [];
+  await setTeamPerms(access, slackId, existing?.name ?? "", permissions, "removed", reason);
+  await dmRemoved(slackId, "You've been removed from the Pixl review team.", reason);
+  redirect("/reviewers");
+});
+
+// Helpers manage the ticket queue. Owners add/remove them from /admins (or
+// /tickets); the same `helpers` table is also managed from the Pixorpheus
+// Slack bot.
+export const addHelperAction = guardedAction("team.addHelper", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
+  if (!SLACK_ID_RE.test(slackId)) throw new Error("Enter a valid Slack member ID (starts with U).");
+  await addHelper(slackId);
+  await recordTeamChange(access, slackId, slackId, "helper added", [], ["helper"]);
+  revalidatePath("/tickets");
+  revalidatePath("/admins");
+});
+
+export const removeHelperAction = guardedAction("team.removeHelper", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  if (!slackId) return;
+  await removeHelper(slackId);
+  await recordTeamChange(access, slackId, slackId, "helper removed", ["helper"], []);
+  revalidatePath("/tickets");
+  revalidatePath("/admins");
+});
+
+// Fulfillers work the shop-order queue. Same shape as the ticket helpers list.
+export const addFulfillerAction = guardedAction("team.addFulfiller", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
+  if (!SLACK_ID_RE.test(slackId)) throw new Error("Enter a valid Slack member ID (starts with U).");
+  await addFulfiller(slackId);
+  await recordTeamChange(access, slackId, slackId, "fulfiller added", [], ["fulfiller"]);
+  revalidatePath("/fulfillment");
+  revalidatePath("/admins");
+});
+
+export const removeFulfillerAction = guardedAction("team.removeFulfiller", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  if (!slackId) return;
+  await removeFulfiller(slackId);
+  await recordTeamChange(access, slackId, slackId, "fulfiller removed", ["fulfiller"], []);
+  revalidatePath("/fulfillment");
+  revalidatePath("/admins");
+});
+
+export const kickPlayer = guardedAction("kickPlayer", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const userId = String(formData.get("userId") ?? "");
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 100);
+  if (!userId) return;
+  const kicked = await kickOnlinePlayer(userId, reason);
+  if (kicked) await logModAction(userId, "kick", reason || "(no reason)", by);
+  revalidatePath("/online");
+});
+
+// Clears every saved (user, scene) row so the player spawns at each scene's
+// default next time they connect. If they're currently online we also kick
+// them , otherwise their in-memory position just gets written straight back
+// on disconnect (see gameServer.ts persist()), undoing the reset.
+export const resetPlayerPosition = guardedAction("resetPlayerPosition", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const userId = String(formData.get("userId") ?? "");
+  if (!userId) return;
+
+  const { data: cleared, error } = await db
+    .from("player_state")
+    .delete()
+    .eq("user_id", userId)
+    .select("scene");
+  if (error) throw new Error(error.message);
+
+  await kickOnlinePlayer(userId, "Your position was reset by an admin");
+  await logModAction(
+    userId,
+    "reset_position",
+    `cleared ${(cleared ?? []).length} saved position(s)`,
+    by,
+  );
+  revalidatePath(`/players/${userId}`);
+});
+
+// Owners only , touches the identity fields the review/export pipeline and
+// DMs key off of.
+export const updatePlayerInfo = guardedAction("updatePlayerInfo", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const userId = String(formData.get("userId") ?? "");
+  const displayName = String(formData.get("displayName") ?? "").trim().slice(0, 60);
+  const realName = String(formData.get("realName") ?? "").trim().slice(0, 100);
+  const email = String(formData.get("email") ?? "").trim().slice(0, 200);
+  if (!userId || !displayName) return;
+
+  const { error } = await db
+    .from("users")
+    .update({ display_name: displayName, real_name: realName, email: email || null })
+    .eq("id", userId);
+  if (error) throw new Error(error.message);
+
+  await logModAction(
+    userId,
+    "edit_info",
+    `name: ${displayName}${realName ? ` (${realName})` : ""}${email ? `, email: ${email}` : ""}`,
+    by,
+  );
+  revalidatePath(`/players/${userId}`);
+});
+
+// Owners only , irreversible. Every FK back to users(id) cascades (see
+// drizzle/0019_user_delete_cascade.sql), including mod_actions, so there's no
+// row left to log this against afterwards , console.log is the only record
+// that survives.
+export const deletePlayerAccount = guardedAction("deletePlayerAccount", "owner", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const userId = String(formData.get("userId") ?? "");
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 1000);
+  if (!userId || !reason) return;
+
+  const { data: player } = await db
+    .from("users")
+    .select("display_name, real_name")
+    .eq("id", userId)
+    .maybeSingle();
+  const playerName = playerLabel(player, userId);
+
+  await dmOrEmail(
+    userId,
+    "Pixl account deleted",
+    [
+      "Your Pixl account has been deleted by an admin.",
+      `Reason: ${reason}`,
+      "If you believe this is a mistake, reach out to the Pixl team.",
+    ].join("\n\n"),
+  );
+  await kickOnlinePlayer(userId, "Your account was deleted");
+
+  const { error } = await db.from("users").delete().eq("id", userId);
+  if (error) throw new Error(error.message);
+
+  console.log(`[admin] ${by} deleted account ${playerName} (${userId}): ${reason}`);
+  revalidatePath("/players");
+  redirect(`/players?done=${encodeURIComponent(`Deleted ${playerName}'s account.`)}`);
+});
+
+/// Upload a shop image to the Hack Club CDN through the server's
+// /api/admin/uploads (service-key authenticated) and return its URL.
+// Resized/re-encoded to WebP first: shop images are shown at most at 300x300,
+// but admins often upload straight-from-phone photos that can be several MB.
+// The magic-byte sniff runs BEFORE sharp ever sees the bytes - sharp decodes
+// by content, so an SVG or other exotic format must never reach it.
+async function uploadShopImageBuffer(raw: Buffer): Promise<string> {
+  if (!sniffFormat(raw)) throw new Error("Only PNG, JPEG or WebP images can be uploaded.");
+  const { default: sharp } = await import("sharp");
+  const body = await sharp(raw, { failOn: "error" })
+    .resize({ width: 900, height: 900, fit: "inside", withoutEnlargement: true })
+    .webp({ quality: 82 })
+    .toBuffer();
+  return uploadImageBuffer(body);
+}
+
+async function uploadShopImage(file: File): Promise<string> {
+  return uploadShopImageBuffer(Buffer.from(await file.arrayBuffer()));
+}
+
+// Admin-supplied image URLs (CSV bulk import). safeBinaryGet pins DNS (the
+// address checked is the address connected to, so no rebinding to an internal
+// IP after the check), refuses redirects, and streams the body with a hard
+// byte cap so a huge or endless response can't exhaust memory.
+const SHOP_IMAGE_URL_MAX_BYTES = 15 * 1024 * 1024;
+async function uploadShopImageFromUrl(url: string): Promise<string> {
+  const raw = await safeBinaryGet(url, { maxBytes: SHOP_IMAGE_URL_MAX_BYTES, timeoutMs: 10_000 });
+  return uploadShopImageBuffer(raw);
+}
+
+function readRegion(raw: string): ShopRegion {
+  return (SHOP_REGIONS as readonly string[]).includes(raw) ? (raw as ShopRegion) : "US";
+}
+
+function readCategory(raw: string): ShopCategory {
+  return (SHOP_CATEGORIES as readonly string[]).includes(raw) ? (raw as ShopCategory) : "other";
+}
+
+function readOptions(raw: string): string[] {
+  const s = raw.trim();
+  if (!s) return [];
+  // The options editor submits JSON groups: [{ name, choices: [] }].
+  if (s.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) {
+        return serializeGroups(
+          parsed.map((g) => ({
+            name: String(g?.name ?? ""),
+            choices: Array.isArray(g?.choices) ? g.choices.map(String) : [],
+          })),
+        );
+      }
+    } catch {
+      /* fall through to the comma-list fallback */
+    }
+  }
+  // Fallback: a plain comma list becomes a single unnamed group.
+  return serializeGroups([{ name: "", choices: s.split(",") }]);
+}
+
+// Adds one item, optionally to several regions at once. `regions` is a
+// comma-separated list from the form (falls back to the single `region`
+// field so old bookmarked/scripted submits with just that field still work);
+// each region can override the shared `price` via a `price_<REGION>` field,
+// e.g. `price_INDIA`, a region with no such field just uses `price`.
+export const addShopItem = guardedAction("addShopItem", "owner", async (access, formData: FormData): Promise<void> => {
+  const name = String(formData.get("name") ?? "").trim().slice(0, 60);
+  const description = String(formData.get("description") ?? "").trim().slice(0, 300);
+  const basePrice = Math.max(0, Math.round(Number(formData.get("price") ?? 0)));
+  const options = readOptions(String(formData.get("options") ?? ""));
+  const category = readCategory(String(formData.get("category") ?? ""));
+  const regionsRaw = String(formData.get("regions") ?? formData.get("region") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const regions = [...new Set(regionsRaw.map(readRegion))];
+  if (!name || regions.length === 0) return;
+
+  // Price-changing options (config_options), optional - see ShopConfigEditor.
+  // The item's own price/price_<region> above doubles as each region's
+  // config_options.base_price, so there's no separate base-price input here.
+  const configEnabled = formData.get("config_enable") === "1";
+  const configGroups = configEnabled ? parseConfigGroups(formData.get("config_groups")) ?? [] : [];
+  const configReferenceUrl = String(formData.get("config_reference_url") ?? "").trim().slice(0, 500);
+
+  let imageUrl = "";
+  const image = formData.get("image");
+  if (image instanceof File && image.size > 0) {
+    if (image.size > 4 * 1024 * 1024) throw new Error("Image too big (max 4 MB).");
+    imageUrl = await uploadShopImage(image);
+  }
+
+  const cutoff = new Date(Date.now() - 60_000).toISOString();
+  for (const region of regions) {
+    const regionPriceRaw = formData.get(`price_${region}`);
+    const price =
+      regionPriceRaw != null ? Math.max(0, Math.round(Number(regionPriceRaw))) : basePrice;
+
+    // Double-submit guard: an identical name+region created in the last
+    // minute is the same click arriving twice, not a new item.
+    const { data: recent } = await db
+      .from("shop_items")
+      .select("id")
+      .eq("name", name)
+      .is("reserved_user_id", null)
+      .eq("region", region)
+      .gte("created_at", cutoff)
+      .limit(1);
+    if (recent && recent.length > 0) continue;
+
+    const configOptions = configEnabled
+      ? {
+          base_price: price,
+          reference_url: configReferenceUrl,
+          groups: resolveConfigGroupsForRegion(configGroups, region),
+        }
+      : null;
+
+    const { data: inserted, error } = await db
+      .from("shop_items")
+      .insert({
+        name,
+        description,
+        price,
+        image_url: imageUrl,
+        options,
+        region,
+        category,
+        config_options: configOptions,
+        created_by: actorName(access),
+      })
+      .select("*")
+      .single();
+    if (error) throw new Error(`${region}: ${error.message}`);
+    if (inserted) await notifyShopInsert(inserted as ShopRowSnapshot);
+  }
+  revalidatePath("/shop");
+});
+
+// Shown as a banner on /shop instead of letting the action throw, which in
+// production only surfaces as an opaque "Minified React error #441".
+function shopItemError(region: string, message: string): never {
+  redirect(`/shop?region=${encodeURIComponent(region)}&shopError=${encodeURIComponent(message)}`);
+}
+
+export const updateShopItem = guardedAction("updateShopItem", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const name = String(formData.get("name") ?? "").trim().slice(0, 60);
+  const description = String(formData.get("description") ?? "").trim().slice(0, 300);
+  const price = Math.max(0, Math.round(Number(formData.get("price") ?? 0)));
+  const options = readOptions(String(formData.get("options") ?? ""));
+  const region = readRegion(String(formData.get("region") ?? ""));
+  const category = readCategory(String(formData.get("category") ?? ""));
+  if (!id || !name) return;
+  // Trial gate: which Trials unlock this item (empty = buyable). Item-wide, so
+  // it's propagated to every region row of the item below, not kept per-region.
+  const unlockTrials = formData
+    .getAll("unlock_trials")
+    .map(Number)
+    .filter((n) => Number.isFinite(n) && n > 0);
+  // A second, manual way to lock an item that isn't tied to any Trial,
+  // also item-wide, mirrored below the same way the Trial gate is.
+  const manualLocked = formData.get("manual_locked") === "1";
+  const lockNote = String(formData.get("lock_note") ?? "").trim().slice(0, 300);
+  // Counting gate: locked until the player has an un-spent Beacon project
+  // (see availableBeaconUnlocks in apps/server/src/routes/shop.ts).
+  // Item-wide, mirrored below the same way the Trial gate/manual lock are.
+  const beaconLocked = formData.get("beacon_locked") === "1";
+  // A single percentage off every price component (base + config choices),
+  // the same for every region - not a per-region price like /shop-detail.
+  // Item-wide, mirrored below the same way the other gates are. Clamped so a
+  // stray negative/huge value can't reach buy_shop_item's math.
+  const discountPercent = Math.max(0, Math.min(100, Math.round(Number(formData.get("discount_percent") ?? 0)) || 0));
+  // Saving silently skips telling pixorpheus about this change (e.g. a typo
+  // fix that isn't worth a Slack ping), see notifyShopUpdates below.
+  const silent = formData.get("silent") === "1";
+  // Price-changing options (config_options) - see ShopItemEditConfigurator.
+  // Unlike the /shop-detail region table, this form edits one row, so there's
+  // no per-region suffix on these field names (config_enable, not
+  // config_enable_US).
+  const configEnabled = formData.get("config_enable") === "1";
+  const configDisabled = formData.get("config_disable") === "1";
+  const configGroups = configEnabled ? (parseConfigGroups(formData.get("config_groups")) ?? []) : [];
+  const patch: Record<string, unknown> = {
+    name,
+    description,
+    price,
+    options,
+    region,
+    category,
+    unlock_trial_ids: unlockTrials,
+    manual_locked: manualLocked,
+    lock_note: lockNote,
+    beacon_locked: beaconLocked,
+    discount_percent: discountPercent,
+  };
+  const image = formData.get("image");
+  if (image instanceof File && image.size > 0) {
+    if (image.size > 4 * 1024 * 1024) throw new Error("Image too big (max 4 MB).");
+    patch.image_url = await uploadShopImage(image);
+  }
+  // "Apply name & description to every region": the same item lives as one row
+  // per region (matched by name), so propagate just those two shared fields to
+  // its siblings. Match on the ORIGINAL name (the edit may rename it), and skip
+  // trophies (unlock_xp > 0) since those aren't region-scoped.
+  const applyAllRegions = String(formData.get("apply_all_regions") ?? "") === "1";
+  const originalName = String(formData.get("original_name") ?? "").trim();
+  const gateName = originalName || name;
+
+  // Snapshot every row this call may touch BEFORE writing, so pixorpheus can be
+  // handed an old → new diff. Every sibling region row always gets pulled in
+  // here, not just when "apply_all_regions" is checked - the Trial gate,
+  // manual lock, Beacon lock, and discount are ALL mirrored item-wide below
+  // regardless of that checkbox (which only covers name/description/category),
+  // so leaving siblings out of the snapshot made an item-wide change that
+  // correctly reached all 8 regions get announced as if only one had. The
+  // sibling ids have to be resolved up front too: once the main row is
+  // renamed they no longer all share `gateName`.
+  const affectedIds = [id];
+  if (gateName) {
+    const { data: siblings } = await db
+      .from("shop_items")
+      .select("id")
+      .eq("name", gateName)
+      .is("reserved_user_id", null)
+      .eq("unlock_xp", 0)
+      .neq("id", id);
+    for (const s of siblings ?? []) affectedIds.push(s.id as number);
+  }
+  const { data: before } = await db.from("shop_items").select("*").in("id", affectedIds);
+
+  // Configurator items (Framework laptops, Huawei tablets, ...) show their
+  // OWN price via config_options.base_price, not the plain `price` column
+  // (see the client's price lookup).
+  const target = (before ?? []).find((b) => (b as { id: number }).id === id) as
+    | { config_options: { base_price?: number; reference_url?: string; groups?: unknown[] } | null }
+    | undefined;
+  if (configDisabled) {
+    patch.config_options = null;
+  } else if (configEnabled) {
+    const configBasePriceRaw = formData.get("config_base_price");
+    const configReferenceUrl = String(formData.get("config_reference_url") ?? "").trim().slice(0, 500);
+    const existing =
+      target?.config_options && typeof target.config_options === "object" ? target.config_options : {};
+    patch.config_options = {
+      base_price:
+        configBasePriceRaw !== null
+          ? Math.max(0, Math.round(Number(configBasePriceRaw) || 0))
+          : (existing.base_price ?? price),
+      reference_url: configReferenceUrl || existing.reference_url || "",
+      groups: configGroups.map((g) => ({
+        name: g.name,
+        type: g.type,
+        choices: g.choices.map((c) => ({ label: c.label, price: c.price })),
+      })),
+    };
+  } else if (target?.config_options) {
+    // The form always renders the configurator panel when the item has one,
+    // so configEnabled should be "1" whenever it's on - this branch is a
+    // defensive fallback keeping base_price synced to the plain price field
+    // if that somehow didn't happen.
+    patch.config_options = { ...target.config_options, base_price: price };
+  }
+
+  const { error } = await db.from("shop_items").update(patch).eq("id", id);
+  if (error) {
+    // shop_items_name_region_unique_idx: one catalog row per (name, region).
+    if ((error as { code?: string }).code === "23505")
+      shopItemError(
+        region,
+        `Couldn't save: there's already a ${region} item called "${name}". Rename this one or pick a different region.`,
+      );
+    throw new Error(error.message);
+  }
+
+  // A Trial gate is item-wide, so mirror it onto every region row of this item
+  // (matched by its name before any rename, gateName above), never locked in
+  // one region and open in another. The edited row itself already got it via
+  // `patch`.
+  const { error: gateErr } = await db
+    .from("shop_items")
+    .update({ unlock_trial_ids: unlockTrials })
+    .eq("name", gateName)
+    .is("reserved_user_id", null)
+    .eq("unlock_xp", 0);
+  if (gateErr) console.error("updateShopItem (trial gate)", gateErr.message);
+
+  // Same for the manual lock , item-wide, not per-region.
+  const { error: lockErr } = await db
+    .from("shop_items")
+    .update({ manual_locked: manualLocked, lock_note: lockNote })
+    .eq("name", gateName)
+    .is("reserved_user_id", null)
+    .eq("unlock_xp", 0);
+  if (lockErr) console.error("updateShopItem (manual lock)", lockErr.message);
+
+  // Same for the Beacon lock , item-wide, not per-region.
+  const { error: beaconErr } = await db
+    .from("shop_items")
+    .update({ beacon_locked: beaconLocked })
+    .eq("name", gateName)
+    .is("reserved_user_id", null)
+    .eq("unlock_xp", 0);
+  if (beaconErr) console.error("updateShopItem (beacon lock)", beaconErr.message);
+
+  // Same for the discount , one percentage for every region, not a per-region
+  // price like /shop-detail.
+  const { error: discountErr } = await db
+    .from("shop_items")
+    .update({ discount_percent: discountPercent })
+    .eq("name", gateName)
+    .is("reserved_user_id", null)
+    .eq("unlock_xp", 0);
+  if (discountErr) console.error("updateShopItem (discount)", discountErr.message);
+
+  if (applyAllRegions && originalName) {
+    const { error: propErr } = await db
+      .from("shop_items")
+      .update({ name, description, category })
+      .eq("name", originalName)
+      .is("reserved_user_id", null)
+      .eq("unlock_xp", 0)
+      .neq("id", id);
+    if (propErr) {
+      if ((propErr as { code?: string }).code === "23505")
+        shopItemError(
+          region,
+          `Saved this region, but couldn't rename it in every region: another region already has an item called "${name}".`,
+        );
+      throw new Error(propErr.message);
+    }
+  }
+
+  // "Apply to all regions" per price-changing-options group (see
+  // ShopItemEditConfigurator) - pushes just the named group(s) into every
+  // sibling region's own config_options.groups, merging by name (replace a
+  // same-named group there, append otherwise) so a region's own base price
+  // and other groups are left alone. A sibling with no configurator yet gets
+  // one created, defaulting its base price to its own plain price column
+  // (same "price doubles as base_price" convention addShopItem uses).
+  const applyGroupNames = String(formData.get("apply_groups_all_regions") ?? "")
+    .split("|")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (applyGroupNames.length > 0 && originalName) {
+    const groupsToApply = configGroups.filter((g) => applyGroupNames.includes(g.name.trim()));
+    if (groupsToApply.length > 0) {
+      const { data: siblings, error: siblingsErr } = await db
+        .from("shop_items")
+        .select("id, price, config_options")
+        .eq("name", originalName)
+        .is("reserved_user_id", null)
+        .eq("unlock_xp", 0)
+        .neq("id", id);
+      if (siblingsErr) {
+        console.error("updateShopItem (apply group lookup)", siblingsErr.message);
+      } else {
+        for (const sib of (siblings ?? []) as {
+          id: number;
+          price: number;
+          config_options: { base_price?: number; reference_url?: string; groups?: ParsedConfigGroup[] } | null;
+        }[]) {
+          const existing = sib.config_options && typeof sib.config_options === "object" ? sib.config_options : {};
+          const existingGroups = Array.isArray(existing.groups) ? existing.groups : [];
+          const merged = [...existingGroups];
+          for (const g of groupsToApply) {
+            const plain = {
+              name: g.name,
+              type: g.type,
+              choices: g.choices.map((c) => ({ label: c.label, price: c.price })),
+            };
+            const idx = merged.findIndex((eg) => eg.name.trim().toLowerCase() === g.name.trim().toLowerCase());
+            if (idx === -1) merged.push(plain);
+            else merged[idx] = plain;
+          }
+          const { error: applyErr } = await db
+            .from("shop_items")
+            .update({
+              config_options: {
+                base_price: existing.base_price ?? sib.price ?? 0,
+                reference_url: existing.reference_url ?? "",
+                groups: merged,
+              },
+            })
+            .eq("id", sib.id);
+          if (applyErr) console.error("updateShopItem (apply group to region)", sib.id, applyErr.message);
+        }
+      }
+    }
+  }
+
+  if (!silent) {
+    const { data: after } = await db.from("shop_items").select("*").in("id", affectedIds);
+    await notifyShopUpdates(
+      (before ?? []) as ShopRowSnapshot[],
+      (after ?? []) as ShopRowSnapshot[],
+    );
+  }
+
+  revalidatePath("/shop");
+});
+
+// Reprices an item across every region in one save, so an admin doesn't have
+// to switch the region tab and reopen "Edit item" per region. Matched by name
+// (the same item is one row per region), same as apply_all_regions above.
+// A region with no price field submitted (shouldn't happen, the form always
+// renders all of SHOP_REGIONS) is left untouched; a region with no existing
+// row for this item is a no-op update, not an insert , stocking a brand new
+// region still goes through "Add an item" on that region's tab.
+export const updateShopItemPrices = guardedAction("updateShopItemPrices", "owner", async (access, formData: FormData): Promise<void> => {
+  const name = String(formData.get("item_name") ?? "").trim();
+  if (!name) return;
+
+  const { data: before } = await db
+    .from("shop_items")
+    .select("*")
+    .eq("name", name)
+    .is("reserved_user_id", null)
+    .eq("unlock_xp", 0);
+
+  for (const r of SHOP_REGIONS) {
+    const raw = formData.get(`price_${r}`);
+    if (raw === null) continue;
+    const price = Math.max(0, Math.round(Number(raw) || 0));
+    const patch: Record<string, unknown> = { price };
+    // Same configurator base_price sync as updateShopItem above - this
+    // repricer is region-scoped, so look up that region's own existing row.
+    const existingConfig = ((before ?? []).find(
+      (b) => (b as { region: string }).region === r,
+    ) as { config_options: { base_price?: number; reference_url?: string; groups?: unknown[] } | null } | undefined)
+      ?.config_options;
+    if (existingConfig) patch.config_options = { ...existingConfig, base_price: price };
+    const { error } = await db
+      .from("shop_items")
+      .update(patch)
+      .eq("name", name)
+      .is("reserved_user_id", null)
+      .eq("region", r)
+      .eq("unlock_xp", 0);
+    if (error) console.error("updateShopItemPrices", r, error.message);
+  }
+
+  const { data: after } = await db
+    .from("shop_items")
+    .select("*")
+    .eq("name", name)
+    .is("reserved_user_id", null)
+    .eq("unlock_xp", 0);
+  await notifyShopUpdates(
+    (before ?? []) as ShopRowSnapshot[],
+    (after ?? []) as ShopRowSnapshot[],
+  );
+
+  revalidatePath("/shop");
+});
+
+// Powers the /shop-detail page: one save per item that can touch every
+// region's price, its price-source link, and (for configurator items like the
+// Framework laptops/Huawei tablets) the config_options base price + reference
+// URL, all in one submit. Mirrors updateShopItemPrices's match-by-name
+// pattern; a region with no existing row for this item is a no-op.
+interface ParsedConfigChoice {
+  label: string;
+  price: number;
+  // Only present when the item was created across multiple regions at once
+  // (see ShopConfigEditor's `regions` prop) - a region with no entry here
+  // just uses `price` above.
+  regionPrices?: Partial<Record<ShopRegion, number>>;
+}
+interface ParsedConfigGroup {
+  name: string;
+  type: "single" | "multi";
+  choices: ParsedConfigChoice[];
+}
+
+// The dashboard's config-options editor (ShopConfigEditor) submits its whole
+// edited groups list as one JSON blob (config_groups_<region>) rather than
+// named fields per choice, since the list is dynamic. Re-validate everything
+// here rather than trusting the client shape: buy_shop_item charges by exact
+// label match against whatever ends up in this column, so a malformed entry
+// here would either silently never be chargeable or corrupt the catalog.
+// A group left with no valid choices (e.g. still mid-edit when saved) is
+// just dropped, not an error.
+function parseConfigGroups(raw: FormDataEntryValue | null): ParsedConfigGroup[] | null {
+  if (typeof raw !== "string") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const groups: ParsedConfigGroup[] = [];
+  for (const g of parsed.slice(0, 20)) {
+    if (!g || typeof g !== "object") continue;
+    const gr = g as Record<string, unknown>;
+    const name = String(gr.name ?? "").trim().slice(0, 60);
+    const type: "single" | "multi" = gr.type === "multi" ? "multi" : "single";
+    const rawChoices = Array.isArray(gr.choices) ? gr.choices : [];
+    const choices: ParsedConfigChoice[] = [];
+    for (const c of rawChoices.slice(0, 40)) {
+      if (!c || typeof c !== "object") continue;
+      const cr = c as Record<string, unknown>;
+      const label = String(cr.label ?? "").trim().slice(0, 120);
+      if (!label) continue;
+      const price = Math.max(0, Math.min(999_999, Math.round(Number(cr.price) || 0)));
+      let regionPrices: Partial<Record<ShopRegion, number>> | undefined;
+      if (cr.regionPrices && typeof cr.regionPrices === "object") {
+        for (const [r, v] of Object.entries(cr.regionPrices as Record<string, unknown>)) {
+          if (!(SHOP_REGIONS as readonly string[]).includes(r)) continue;
+          (regionPrices ??= {})[r as ShopRegion] = Math.max(0, Math.min(999_999, Math.round(Number(v) || 0)));
+        }
+      }
+      choices.push(regionPrices ? { label, price, regionPrices } : { label, price });
+    }
+    if (choices.length === 0) continue;
+    groups.push({ name, type, choices });
+  }
+  return groups;
+}
+
+// Resolves each choice's per-region override (if any) down to a flat
+// {label, price} list for one specific region, for the shop_items row that
+// region actually gets. Choice labels are shared across every region -
+// buy_shop_item charges by exact label match, so the same option has to be
+// spelled identically everywhere it's stocked, only its price may differ.
+function resolveConfigGroupsForRegion(
+  groups: ParsedConfigGroup[],
+  region: ShopRegion,
+): { name: string; type: "single" | "multi"; choices: { label: string; price: number }[] }[] {
+  return groups.map((g) => ({
+    name: g.name,
+    type: g.type,
+    choices: g.choices.map((c) => ({ label: c.label, price: c.regionPrices?.[region] ?? c.price })),
+  }));
+}
+
+export const updateShopItemRegionDetails = guardedAction("updateShopItemRegionDetails", "owner", async (access, formData: FormData): Promise<void> => {
+  const name = String(formData.get("item_name") ?? "").trim();
+  if (!name) return;
+  const silent = formData.get("silent") === "1";
+
+  const { data: before } = await db
+    .from("shop_items")
+    .select("*")
+    .eq("name", name)
+    .is("reserved_user_id", null)
+    .eq("unlock_xp", 0);
+
+  for (const r of SHOP_REGIONS) {
+    const priceRaw = formData.get(`price_${r}`);
+    const sourceRaw = formData.get(`source_${r}`);
+    if (priceRaw === null && sourceRaw === null) continue;
+    const row = (before ?? []).find((b) => (b as { region: string }).region === r) as
+      | { config_options: unknown; price: number }
+      | undefined;
+    const patch: Record<string, unknown> = {};
+    if (priceRaw !== null) patch.price = Math.max(0, Math.round(Number(priceRaw) || 0));
+    if (sourceRaw !== null) patch.price_source_url = String(sourceRaw).trim().slice(0, 500);
+
+    const disableRaw = formData.get(`config_disable_${r}`);
+    const enableRaw = formData.get(`config_enable_${r}`);
+    if (disableRaw === "1") {
+      // The editor's checkbox was unchecked for an item that had one -
+      // remove the configurator entirely, back to a plain fixed-price item.
+      patch.config_options = null;
+    } else if (enableRaw === "1" || (row?.config_options && typeof row.config_options === "object")) {
+      const existing =
+        row?.config_options && typeof row.config_options === "object"
+          ? (row.config_options as Record<string, unknown>)
+          : {};
+      const basePriceRaw = formData.get(`config_base_price_${r}`);
+      const refUrlRaw = formData.get(`config_reference_url_${r}`);
+      const groups = parseConfigGroups(formData.get(`config_groups_${r}`));
+      patch.config_options = {
+        ...existing,
+        base_price:
+          basePriceRaw !== null
+            ? Math.max(0, Math.round(Number(basePriceRaw) || 0))
+            // The configurator's own base-price field wasn't touched this
+            // save - a plain price edit in this same save should still win
+            // over the old stale base_price (they're meant to track each
+            // other, see addShopItem), not get silently overridden by it.
+            : (patch.price ?? existing.base_price ?? row?.price ?? 0),
+        reference_url:
+          refUrlRaw !== null
+            ? String(refUrlRaw).trim().slice(0, 500)
+            : (existing.reference_url ?? ""),
+        groups: groups ?? (existing.groups as unknown[] | undefined) ?? [],
+      };
+    }
+    if (Object.keys(patch).length === 0) continue;
+    const { error } = await db
+      .from("shop_items")
+      .update(patch)
+      .eq("name", name)
+      .is("reserved_user_id", null)
+      .eq("region", r)
+      .eq("unlock_xp", 0);
+    if (error) console.error("updateShopItemRegionDetails", r, error.message);
+  }
+
+  if (!silent) {
+    const { data: after } = await db
+      .from("shop_items")
+      .select("*")
+      .eq("name", name)
+      .is("reserved_user_id", null)
+      .eq("unlock_xp", 0);
+    await notifyShopUpdates(
+      (before ?? []) as ShopRowSnapshot[],
+      (after ?? []) as ShopRowSnapshot[],
+    );
+  }
+
+  revalidatePath("/shop-detail");
+  revalidatePath("/shop");
+});
+
+// Hide/show an item. Regular items have one row per region (same name), and
+// the dashboard only shows one region tab at a time - toggling just the row
+// you're looking at left every other region's copy untouched, so "hiding" an
+// item never actually hid it anywhere else. Match updateShopItemPrices's
+// by-name-across-regions pattern instead. Trophies (unlock_xp > 0) aren't
+// region-scoped and only ever have one row, so they keep the simple
+// single-row toggle.
+export const toggleShopItem = guardedAction("toggleShopItem", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const active = String(formData.get("active") ?? "") === "1";
+  if (!id) return;
+  const { data: target } = await db
+    .from("shop_items")
+    .select("name, unlock_xp")
+    .eq("id", id)
+    .maybeSingle();
+  if (!target) return;
+
+  const isTrophy = Number(target.unlock_xp) > 0;
+  const { data: before } = await db
+    .from("shop_items")
+    .select("*")
+    .eq(isTrophy ? "id" : "name", isTrophy ? id : target.name)
+    .eq("unlock_xp", isTrophy ? target.unlock_xp : 0);
+
+  const { data: after, error } = await db
+    .from("shop_items")
+    .update({ active })
+    .eq(isTrophy ? "id" : "name", isTrophy ? id : target.name)
+    .eq("unlock_xp", isTrophy ? target.unlock_xp : 0)
+    .select("*");
+  if (error) throw new Error(error.message);
+  if (before && after) {
+    await notifyShopUpdates(before as ShopRowSnapshot[], after as ShopRowSnapshot[]);
+  }
+  revalidatePath("/shop");
+});
+
+export const deleteShopItem = guardedAction("deleteShopItem", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { data: removed } = await db.from("shop_items").select("*").eq("id", id).maybeSingle();
+  const { error } = await db.from("shop_items").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+  if (removed) await notifyShopDelete(removed as ShopRowSnapshot);
+  revalidatePath("/shop");
+});
+
+// ---- Personal shop items -------------------------------------------------
+// An item made for ONE player (reserved_user_id, see drizzle/0212): it only
+// ever shows up in that player's shop, in whatever region they are in, and
+// can be bought once. It is created hidden; "Activate" is what puts it in
+// their shop. It goes through the normal order/fulfillment pipeline, and it
+// is deliberately never announced in Slack (no notifyShopInsert).
+
+function personalItemError(message: string): never {
+  redirect(`/shop?personalError=${encodeURIComponent(message)}`);
+}
+
+// A player picked by Slack id (U...), or by their exact in-game name when
+// that name is unique.
+async function findPlayerForPersonalItem(
+  raw: string,
+): Promise<{ id: string; display_name: string | null; region: string | null } | null> {
+  const query = raw.trim().replace(/^@/, "");
+  if (!query) return null;
+  const cols = "id, display_name, region";
+  if (/^[UW][A-Z0-9]{5,20}$/.test(query)) {
+    const { data } = await db.from("users").select(cols).eq("slack_id", query).limit(2);
+    return data && data.length === 1 ? data[0] : null;
+  }
+  const { data } = await db.from("users").select(cols).ilike("display_name", query).limit(2);
+  return data && data.length === 1 ? data[0] : null;
+}
+
+export const createPersonalShopItem = guardedAction("createPersonalShopItem", "owner", async (access, formData: FormData): Promise<void> => {
+  const name = String(formData.get("name") ?? "").trim().slice(0, 60);
+  const description = String(formData.get("description") ?? "").trim().slice(0, 300);
+  const price = Math.round(Number(formData.get("price") ?? 0));
+  const options = readOptions(String(formData.get("options") ?? ""));
+  const playerRaw = String(formData.get("player") ?? "");
+  if (!name) personalItemError("Give the item a name.");
+  if (!Number.isFinite(price) || price <= 0) personalItemError("Price must be a number of pixels above 0.");
+
+  const player = await findPlayerForPersonalItem(playerRaw);
+  if (!player)
+    personalItemError(
+      "Couldn't find exactly one player for that. Use their Slack ID (U...) or their exact in-game name.",
+    );
+
+  let imageUrl = "";
+  const image = formData.get("image");
+  if (image instanceof File && image.size > 0) {
+    if (image.size > 4 * 1024 * 1024) personalItemError("Image too big (max 4 MB).");
+    imageUrl = await uploadShopImage(image);
+  }
+
+  // Double-submit guard: same player + name in the last minute is one click
+  // arriving twice, not a second item.
+  const { data: recent } = await db
+    .from("shop_items")
+    .select("id")
+    .eq("reserved_user_id", player!.id)
+    .eq("name", name)
+    .gte("created_at", new Date(Date.now() - 60_000).toISOString())
+    .limit(1);
+  if (recent && recent.length > 0) {
+    revalidatePath("/shop");
+    return;
+  }
+
+  // The row needs a region (NOT NULL); it only labels the item here, the
+  // server ignores it for personal items so the player sees it wherever they are.
+  const region = readRegion(String(player!.region ?? "US"));
+  const { data: inserted, error } = await db
+    .from("shop_items")
+    .insert({
+      name,
+      description,
+      price,
+      image_url: imageUrl,
+      options,
+      region,
+      category: "other",
+      reserved_user_id: player!.id,
+      active: formData.get("activate") === "1",
+      created_by: actorName(access),
+    })
+    .select("id")
+    .single();
+  if (error || !inserted) personalItemError(error?.message ?? "Couldn't create the item.");
+
+  await logModAction(
+    player!.id,
+    "personal_item_created",
+    `${name}: ${price} px, ${formData.get("activate") === "1" ? "active" : "hidden"}`,
+    actorName(access),
+  );
+  revalidatePath("/shop");
+});
+
+export const setPersonalShopItemActive = guardedAction("setPersonalShopItemActive", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const active = formData.get("active") === "1";
+  if (!id) return;
+  const { data: item } = await db
+    .from("shop_items")
+    .select("name, reserved_user_id")
+    .eq("id", id)
+    .not("reserved_user_id", "is", null)
+    .maybeSingle();
+  if (!item) return;
+  if (active) {
+    // Bought once already: buy_shop_item would refuse it, so don't put it back
+    // in the player's shop looking buyable.
+    const { data: live } = await db
+      .from("shop_orders")
+      .select("id")
+      .eq("item_id", id)
+      .neq("status", "cancelled")
+      .limit(1);
+    if (live && live.length > 0)
+      personalItemError(`"${item.name}" was already bought, cancel that order first to make it buyable again.`);
+  }
+  const { error } = await db
+    .from("shop_items")
+    .update({ active })
+    .eq("id", id)
+    .not("reserved_user_id", "is", null);
+  if (error) throw new Error(error.message);
+  await logModAction(
+    item.reserved_user_id as string,
+    active ? "personal_item_activated" : "personal_item_hidden",
+    String(item.name),
+    actorName(access),
+  );
+  revalidatePath("/shop");
+});
+
+export const deletePersonalShopItem = guardedAction("deletePersonalShopItem", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { data: item } = await db
+    .from("shop_items")
+    .select("name, reserved_user_id")
+    .eq("id", id)
+    .not("reserved_user_id", "is", null)
+    .maybeSingle();
+  if (!item) return;
+  // Orders keep pointing at the item for fulfillment history, so one that was
+  // ever ordered is hidden instead of deleted.
+  const { data: orders } = await db.from("shop_orders").select("id").eq("item_id", id).limit(1);
+  if (orders && orders.length > 0)
+    personalItemError(`"${item.name}" has orders on it, hide it instead of deleting it.`);
+  const { error } = await db.from("shop_items").delete().eq("id", id).not("reserved_user_id", "is", null);
+  if (error) throw new Error(error.message);
+  await logModAction(item.reserved_user_id as string, "personal_item_deleted", String(item.name), actorName(access));
+  revalidatePath("/shop");
+});
+
+export interface ShopCsvRow {
+  key: string; // stable per-row id assigned client-side, echoed back so results line up
+  name: string;
+  price: number;
+  region: ShopRegion;
+  description: string;
+  options: string;
+  imageUrl: string;
+  unlockXp: number;
+}
+
+// Bulk-upload preview step: tell the client which rows already have a
+// same-name-and-region item in the shop, so it can ask the admin to
+// replace or skip each one before anything is written.
+export const checkShopItemsConflicts = guardedAction("checkShopItemsConflicts", "owner", async (access, rows: ShopCsvRow[],): Promise<Record<string, { id: number; price: number; description: string }>> => {
+  const names = [...new Set(rows.map((r) => r.name).filter(Boolean))];
+  if (names.length === 0) return {};
+  const { data, error } = await db
+    .from("shop_items")
+    .select("id, name, region, price, description")
+    .in("name", names)
+    .is("reserved_user_id", null);
+  if (error) throw new Error(error.message);
+  const byKey: Record<string, { id: number; price: number; description: string }> = {};
+  for (const row of data ?? []) {
+    byKey[`${row.name}|${row.region}`] = {
+      id: row.id,
+      price: row.price,
+      description: row.description,
+    };
+  }
+  const out: Record<string, { id: number; price: number; description: string }> = {};
+  for (const r of rows) {
+    const hit = byKey[`${r.name}|${r.region}`];
+    if (hit) out[r.key] = hit;
+  }
+  return out;
+});
+
+// Bulk-upload commit step. `resolutions[row.key]` is "replace" or "skip" for
+// rows that checkShopItemsConflicts flagged as already existing; rows with no
+// conflict are always inserted.
+export const commitShopItemsCsv = guardedAction("commitShopItemsCsv", "owner", async (access, rows: ShopCsvRow[],
+  conflicts: Record<string, number>, // key -> existing shop_items.id
+  resolutions: Record<string, "replace" | "skip">,): Promise<{ added: number; replaced: number; skipped: number; errors: string[] }> => {
+  let added = 0;
+  let replaced = 0;
+  let skipped = 0;
+  const errors: string[] = [];
+  for (const row of rows) {
+    const name = row.name.trim().slice(0, 60);
+    if (!name) continue;
+    const existingId = conflicts[row.key];
+    if (existingId && resolutions[row.key] !== "replace") {
+      skipped++;
+      continue;
+    }
+    let imageUrl = "";
+    if (row.imageUrl.trim()) {
+      try {
+        imageUrl = await uploadShopImageFromUrl(row.imageUrl.trim());
+      } catch (e) {
+        errors.push(`${name}: ${e instanceof Error ? e.message : "image fetch failed"}`);
+      }
+    }
+    const patch: Record<string, unknown> = {
+      name,
+      description: row.description.trim().slice(0, 300),
+      price: Math.max(0, Math.round(row.price || 0)),
+      options: readOptions(row.options),
+      region: readRegion(row.region),
+      unlock_xp: Math.max(0, Math.round(row.unlockXp || 0)),
+    };
+    if (imageUrl) patch.image_url = imageUrl;
+    if (existingId) {
+      const { error } = await db.from("shop_items").update(patch).eq("id", existingId);
+      if (error) errors.push(`${name}: ${error.message}`);
+      else replaced++;
+    } else {
+      const { error } = await db
+        .from("shop_items")
+        .insert({ ...patch, image_url: imageUrl, created_by: actorName(access) });
+      if (error) errors.push(`${name}: ${error.message}`);
+      else added++;
+    }
+  }
+  revalidatePath("/shop");
+  return { added, replaced, skipped, errors };
+});
+
+// Claim an unclaimed (pending) order: the fulfiller has placed the real order
+// and now owns it. It moves into their queue at the 'ordered' stage (placed, not
+// yet credited by HCB) and nobody else advances it unless they reassign it.
+export const claimOrder = guardedAction("claimOrder", "fulfiller", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { data: order } = await db
+    .from("shop_orders")
+    .select("user_id, item_name, status")
+    .eq("id", id)
+    .maybeSingle();
+  if (!order || order.status !== "pending") {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  // Self-dealing: nobody fulfills (and earns the payout on) their own order.
+  if (isOwnOrder({ player_slack: await buyerSlackFor(order.user_id as string) }, access.session.slackId)) {
+    throw new Error("You can't fulfill your own shop order.");
+  }
+  const now = new Date().toISOString();
+  const { error } = await db
+    .from("shop_orders")
+    .update({
+      status: "ordered",
+      claimed_by: actorName(access),
+      claimed_by_slack: access.session.slackId,
+      claimed_at: now,
+      ordered_at: now,
+    })
+    .eq("id", id)
+    .eq("status", "pending");
+  if (error) throw new Error(error.message);
+  // In-app only: the player is DMed once, when the order ships (shipOrder).
+  const placedBody = `Your "${order.item_name}" order has been placed and is being fulfilled. We'll let you know when it ships.`;
+  await db.from("notifications").insert({
+    user_id: order.user_id,
+    title: "Order placed! 📦",
+    body: placedBody,
+  });
+  await logOrderAction(id, "order_claimed", "claimed and placed", actorName(access), order);
+  revalidatePath("/fulfillment");
+});
+
+// Over budget: the cheapest the fulfiller could find it for is more than the
+// player's pixels are worth. Nothing gets ordered , the flag parks it for an
+// owner to decide (source it anyway, talk to the player, or cancel & refund).
+export const flagOrderOverBudget = guardedAction("flagOrderOverBudget", "fulfiller", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const note = String(formData.get("flagNote") ?? "").trim().slice(0, 300);
+  if (!id || !note) return;
+  // Only the fulfiller working this order (or an owner) may park it.
+  const { data: current } = await db
+    .from("shop_orders")
+    .select("claimed_by_slack")
+    .eq("id", id)
+    .maybeSingle();
+  if (!current) return;
+  if (!canFlagOrder({ claimed_by_slack: current.claimed_by_slack as string | null }, access)) {
+    throw new Error("Only the fulfiller who claimed this order can flag it.");
+  }
+  const { error } = await db
+    .from("shop_orders")
+    .update({
+      flagged_at: new Date().toISOString(),
+      flagged_by: actorName(access),
+      flag_note: note,
+    })
+    .eq("id", id)
+    .in("status", ["pending", "ordered", "credited"]);
+  if (error) throw new Error(error.message);
+  await logOrderAction(id, "order_flagged", `over budget: ${note}`, actorName(access));
+  revalidatePath("/fulfillment");
+});
+
+// Owner has dealt with it, put the order back in the normal flow.
+export const clearOrderFlag = guardedAction("clearOrderFlag", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("shop_orders")
+    .update({ flagged_at: null, flagged_by: "", flag_note: "" })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  await logOrderAction(id, "order_flag_cleared", "over-budget flag cleared", actorName(access));
+  revalidatePath("/fulfillment");
+});
+
+// Owner of an order re-checks the caller is the fulfiller who claimed it (or lets
+// a super take it over via reassignOrder). Advancing a claimed order past the
+// stage where someone else owns it would step on their queue.
+function ownsOrder(access: AdminAccess, claimedSlack: string): boolean {
+  return claimedSlack === access.session.slackId;
+}
+
+// The buyer's Slack id, for the self-dealing checks (isOwnOrder).
+async function buyerSlackFor(userId: string): Promise<string | null> {
+  const { data } = await db.from("users").select("slack_id").eq("id", userId).maybeSingle();
+  return (data?.slack_id as string | null | undefined) ?? null;
+}
+
+// Fulfillment moves real money and real hardware, but none of it used to be
+// written anywhere durable - the order row just showed its current state, so
+// "who cancelled this and when" was unanswerable after the fact. Every stage
+// change now lands in mod_actions against the buyer, which is what /audit and
+// the player's own history read from.
+//
+// Best-effort by design: a failed log line must never roll back an order that
+// already moved, so logModAction swallows its own errors.
+async function logOrderAction(
+  orderId: number,
+  action: string,
+  detail: string,
+  by: string,
+  known?: { user_id?: string; item_name?: string },
+): Promise<void> {
+  let userId = known?.user_id;
+  let itemName = known?.item_name;
+  if (!userId || itemName === undefined) {
+    const { data } = await db
+      .from("shop_orders")
+      .select("user_id, item_name")
+      .eq("id", orderId)
+      .maybeSingle();
+    if (!data) return;
+    userId = data.user_id as string;
+    itemName = data.item_name as string;
+  }
+  if (!userId) return;
+  await logModAction(userId, action, `order #${orderId} "${itemName}": ${detail}`, by);
+}
+
+// HCB credited the card and the fulfiller uploaded the receipt: ordered ->
+// credited (paid, not shipped yet). Only the claiming fulfiller can advance it.
+// The HCB link and actual cost are required here, not at claim time - the
+// transaction doesn't exist yet when an order is merely claimed, it exists
+// once HCB has actually credited the card.
+export const markOrderCredited = guardedAction("markOrderCredited", "fulfiller", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  // The transaction or grant this order was actually paid from - required so
+  // every fulfilled order has a paper trail back to real HCB spend. Same
+  // http(s)-only check the rest of the dashboard uses for a
+  // database-controlled URL it's about to render as a link (see isSafeUrl).
+  const hcbLink = String(formData.get("hcbLink") ?? "").trim().slice(0, 300);
+  // What it actually cost, in real dollars - not just the pixel price /
+  // derived budget ceiling.
+  const actualCostUsd = Math.round(Number(formData.get("actualCostUsd") ?? NaN) * 100) / 100;
+  // Optional: where this was actually bought from. Kept on the item itself
+  // (shop_items.price_source_url, via item_id) rather than just this order,
+  // so the next fulfiller sourcing the same item/region sees a link that's
+  // known to actually work instead of a stale one - see the fulfillment
+  // page's "keep replacing the URLs as we fulfil" note.
+  const sourceUrl = String(formData.get("sourceUrl") ?? "").trim().slice(0, 500);
+  if (
+    !hcbLink ||
+    !isSafeUrl(hcbLink) ||
+    !Number.isFinite(actualCostUsd) ||
+    actualCostUsd < 0 ||
+    (sourceUrl && !isSafeUrl(sourceUrl))
+  ) {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  const { data: order } = await db
+    .from("shop_orders")
+    .select("status, claimed_by_slack, item_id, user_id")
+    .eq("id", id)
+    .maybeSingle();
+  if (!order || order.status !== "ordered" || !ownsOrder(access, order.claimed_by_slack)) {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  // Self-dealing, same as claimOrder/shipOrder/reassignOrder: checked on every
+  // step, not just the claim, so no path (an old claim, a direct form post)
+  // lets someone credit their own order.
+  if (isOwnOrder({ player_slack: await buyerSlackFor(order.user_id as string) }, access.session.slackId)) {
+    throw new Error("You can't fulfill your own shop order.");
+  }
+  const { error } = await db
+    .from("shop_orders")
+    .update({
+      status: "credited",
+      credited_at: new Date().toISOString(),
+      hcb_link: hcbLink,
+      actual_cost_usd: actualCostUsd,
+    })
+    .eq("id", id)
+    .eq("status", "ordered");
+  if (error) throw new Error(error.message);
+  if (sourceUrl && order.item_id != null) {
+    const { error: sourceErr } = await db
+      .from("shop_items")
+      .update({ price_source_url: sourceUrl })
+      .eq("id", order.item_id);
+    if (sourceErr) console.error("markOrderCredited (source url)", sourceErr.message);
+  }
+  await logOrderAction(id, "order_credited", "HCB credited the card", actorName(access));
+  revalidatePath("/fulfillment");
+});
+
+// Flat pixel payout to whoever ships an order - see shipOrder below and
+// creditFulfillerPixels in lib/db.ts. Was 3px ($0.21) at the old $0.07/px
+// rate; rescaled to keep the same $0.20ish intent after the $0.10 rescale
+// (see 0188_pixel_value_rescale.sql).
+const FULFILLMENT_PAYOUT_PIXELS = 2;
+
+// The order shipped: credited -> shipped with a tracking number. The number is
+// DM'd to the buyer by Pixo and also lands as an in-game notification. Only the
+// claiming fulfiller can ship it, and tracking is required.
+export const shipOrder = guardedAction("shipOrder", "fulfiller", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const tracking = String(formData.get("tracking") ?? "").trim().slice(0, 120);
+  if (!id) return;
+  if (!tracking) {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  const { data: order } = await db
+    .from("shop_orders")
+    .select("user_id, item_name, status, claimed_by_slack")
+    .eq("id", id)
+    .maybeSingle();
+  if (!order || order.status !== "credited" || !ownsOrder(access, order.claimed_by_slack)) {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  // Self-dealing: shipping your own order would also pay you the fulfillment
+  // pixels on it. Refused even if it somehow got claimed/reassigned to you.
+  if (isOwnOrder({ player_slack: await buyerSlackFor(order.user_id as string) }, access.session.slackId)) {
+    throw new Error("You can't fulfill your own shop order.");
+  }
+  const { error } = await db
+    .from("shop_orders")
+    .update({
+      status: "shipped",
+      shipped_at: new Date().toISOString(),
+      fulfilled_at: new Date().toISOString(),
+      fulfilled_by: actorName(access),
+      tracking,
+    })
+    .eq("id", id)
+    .eq("status", "credited");
+  if (error) throw new Error(error.message);
+
+  // Slack renders <#ID> as a channel link in the DM, but the in-app
+  // notification is plain text, so it names the channel instead.
+  const showOffLine = "Show it off in <#C07UMRYJ1LH> when it arrives, we'd love to see it! 🎉";
+  const showOffLineInApp = "Show it off in #treasure-cove when it arrives, we'd love to see it! 🎉";
+  await db.from("notifications").insert({
+    user_id: order.user_id,
+    title: "Order shipped! 📦",
+    body: `Your "${order.item_name}" order shipped. Tracking: ${tracking}\n\n${showOffLineInApp}`,
+  });
+  // DM the tracking number to the buyer through Pixo. Best-effort , a missing
+  // Slack link shouldn't block shipping, and the in-game notification still lands.
+  const { data: buyer } = await db
+    .from("users")
+    .select("slack_id")
+    .eq("id", order.user_id)
+    .maybeSingle();
+  if (buyer?.slack_id) {
+    try {
+      await dmUser(
+        buyer.slack_id,
+        `📦 Your "${order.item_name}" order shipped! Tracking number: ${tracking}\n\n${showOffLine}`,
+      );
+    } catch (err) {
+      console.error("shipOrder DM", err instanceof Error ? err.message : err);
+    }
+  }
+  await logOrderAction(id, "order_shipped", `tracking ${tracking}`, actorName(access), order);
+
+  // Flat payout to whoever actually did the fulfillment work - claimed_by_slack
+  // is exactly who that is (ownsOrder already confirmed it's the caller).
+  // Best-effort: a failed credit shouldn't undo a shipment that already went out.
+  const fulfillerSlackId = access.session.slackId;
+  const credited = await creditFulfillerPixels(fulfillerSlackId, FULFILLMENT_PAYOUT_PIXELS);
+  if (credited === "credited") {
+    const { error: paidErr } = await db
+      .from("shop_orders")
+      .update({ fulfillment_pixels_paid: FULFILLMENT_PAYOUT_PIXELS })
+      .eq("id", id);
+    if (paidErr) console.error("shipOrder (fulfillment payout stamp)", paidErr.message);
+    try {
+      await dmUser(
+        fulfillerSlackId,
+        `You earned ${FULFILLMENT_PAYOUT_PIXELS} pixels for fulfilling "${order.item_name}". Thanks for keeping orders moving!`,
+      );
+    } catch (err) {
+      console.error("shipOrder (fulfillment payout DM)", err instanceof Error ? err.message : err);
+    }
+  }
+  revalidatePath("/fulfillment");
+});
+
+// Close a shipped order out: shipped -> done, once the buyer has it in hand.
+// Any super can mark it done (it's the final administrative close, not a queue
+// advance), and it's a no-op on anything that isn't shipped.
+export const markOrderDone = guardedAction("markOrderDone", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("shop_orders")
+    .update({ status: "done", done_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("status", "shipped");
+  if (error) throw new Error(error.message);
+  await logOrderAction(id, "order_done", "closed out as delivered", actorName(access));
+  revalidatePath("/fulfillment");
+});
+
+// Corrects an already-claimed order's fulfillment paper trail - the HCB link,
+// actual cost, and tracking number - after the fact. Every other action here
+// only ever writes these once, at the stage they're first collected, and
+// stops being reachable once an order is done/cancelled; this is the one
+// escape hatch for fixing a typo'd link or a wrong cost after the fact,
+// deliberately not gated by status (works on ordered/credited/shipped/done
+// alike). Owner-level, same as reassign/cancel/mark done above - this rewrites
+// financial records, not just queue state.
+export const updateOrderFulfillmentInfo = guardedAction("updateOrderFulfillmentInfo", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const hcbLink = String(formData.get("hcbLink") ?? "").trim().slice(0, 300);
+  const actualCostUsd = Math.round(Number(formData.get("actualCostUsd") ?? NaN) * 100) / 100;
+  const tracking = String(formData.get("tracking") ?? "").trim().slice(0, 120);
+  // Same optional item-source-url handling as markOrderCredited above - this
+  // is the escape hatch for fixing/updating it after the fact too.
+  const sourceUrl = String(formData.get("sourceUrl") ?? "").trim().slice(0, 500);
+  if (
+    !hcbLink ||
+    !isSafeUrl(hcbLink) ||
+    !Number.isFinite(actualCostUsd) ||
+    actualCostUsd < 0 ||
+    (sourceUrl && !isSafeUrl(sourceUrl))
+  ) {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  const { data: order } = await db
+    .from("shop_orders")
+    .select("hcb_link, actual_cost_usd, tracking, status, item_id")
+    .eq("id", id)
+    .maybeSingle();
+  if (!order || order.status === "pending") {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  const { error } = await db
+    .from("shop_orders")
+    .update({ hcb_link: hcbLink, actual_cost_usd: actualCostUsd, tracking })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  if (sourceUrl && order.item_id != null) {
+    const { error: sourceErr } = await db
+      .from("shop_items")
+      .update({ price_source_url: sourceUrl })
+      .eq("id", order.item_id);
+    if (sourceErr) console.error("updateOrderFulfillmentInfo (source url)", sourceErr.message);
+  }
+  await logOrderAction(
+    id,
+    "order_info_corrected",
+    `HCB ${order.hcb_link || "(none)"} → ${hcbLink} , cost $${order.actual_cost_usd ?? "?"} → $${actualCostUsd} , tracking "${order.tracking || "(none)"}" → "${tracking || "(none)"}"${sourceUrl ? ` , source url → ${sourceUrl}` : ""}`,
+    actorName(access),
+  );
+  revalidatePath("/fulfillment");
+});
+
+// Take over a claimed order that isn't yet shipped/cancelled. Escape hatch for
+// when the original fulfiller can't finish it , the caller becomes the new owner
+// and the order stays at its current stage.
+export const reassignOrder = guardedAction("reassignOrder", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { data: target } = await db.from("shop_orders").select("user_id").eq("id", id).maybeSingle();
+  if (!target) return;
+  if (isOwnOrder({ player_slack: await buyerSlackFor(target.user_id as string) }, access.session.slackId)) {
+    throw new Error("You can't take over your own shop order.");
+  }
+  const { error } = await db
+    .from("shop_orders")
+    .update({ claimed_by: actorName(access), claimed_by_slack: access.session.slackId })
+    .eq("id", id)
+    .in("status", ["ordered", "credited"]);
+  if (error) throw new Error(error.message);
+  await logOrderAction(id, "order_reassigned", `taken over by ${actorName(access)}`, actorName(access));
+  revalidatePath("/fulfillment");
+});
+
+// Cancel a live order (pending / ordered / credited) and refund the pixels , e.g.
+// a blocked Amazon account killed it. The refund + status flip happen inside
+// cancel_shop_order so they can't drift apart; it's idempotent, so a double-click
+// won't refund twice and a shipped order is a no-op.
+export const cancelOrder = guardedAction("cancelOrder", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const note = String(formData.get("note") ?? "").trim().slice(0, 300);
+  if (!id) return;
+  const { data: order } = await db
+    .from("shop_orders")
+    .select("user_id, item_name, status")
+    .eq("id", id)
+    .maybeSingle();
+  // Once a fulfiller claims it (pending -> ordered), it's no longer
+  // cancellable - only a still-unclaimed order can be refunded this way.
+  if (!order || order.status !== "pending") {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  const { data: refunded, error } = await db.rpc("cancel_shop_order", {
+    p_order_id: id,
+    p_by: actorName(access),
+  });
+  if (error) throw new Error(error.message);
+  if (note) await db.from("shop_orders").update({ note }).eq("id", id);
+  const amount = Number(refunded ?? 0);
+  const cancelBody = `Your "${order.item_name}" order was cancelled and ${amount} pixel${amount === 1 ? "" : "s"} refunded.${note ? ` ${note}` : ""}`;
+  await db.from("notifications").insert({
+    user_id: order.user_id,
+    title: "Order cancelled",
+    body: cancelBody,
+  });
+  await dmOrEmail(order.user_id, "Order cancelled", cancelBody);
+  await logOrderAction(
+    id,
+    "order_cancelled",
+    `refunded ${amount} px${note ? ` , ${note}` : ""}`,
+    actorName(access),
+    order,
+  );
+  revalidatePath("/fulfillment");
+  revalidatePath("/pixels");
+});
+
+// Backfill player-card photos from Slack for everyone who has a slack_id but
+// no photo yet. New sign-ups get theirs automatically from the game server.
+export const syncSlackAvatars = guardedAction("syncSlackAvatars", "owner", async (access): Promise<void> => {
+  const avatars = await slackAvatars();
+  if (avatars.size === 0)
+    redirect(`/players?error=${encodeURIComponent("Slack returned no profile photos , check SLACK_BOT_TOKEN.")}`);
+  const { data: users, error } = await db
+    .from("users")
+    .select("id, slack_id, avatar_url")
+    .not("slack_id", "is", null);
+  if (error) {
+    console.error("syncSlackAvatars", error.message);
+    redirect(`/players?error=${encodeURIComponent("Couldn't load players.")}`);
+  }
+  let updated = 0;
+  for (const u of users ?? []) {
+    if (u.avatar_url) continue;
+    const img = avatars.get(u.slack_id as string);
+    if (!img) continue;
+    const { error: upErr } = await db.from("users").update({ avatar_url: img }).eq("id", u.id);
+    if (!upErr) updated++;
+  }
+  revalidatePath("/", "layout");
+  redirect(
+    `/players?done=${encodeURIComponent(`Filled ${updated} player card photo${updated === 1 ? "" : "s"} from Slack.`)}`,
+  );
+});
+
+export const addSidequest = guardedAction("addSidequest", "owner", async (access, formData: FormData): Promise<void> => {
+  const name = String(formData.get("name") ?? "").trim().slice(0, 80);
+  const region = String(formData.get("region") ?? "").trim().slice(0, 40);
+  const npc = String(formData.get("npc") ?? "").trim().slice(0, 40);
+  const description = String(formData.get("description") ?? "").trim().slice(0, 500);
+  const brief = String(formData.get("brief") ?? "").trim().slice(0, 3000);
+  const reward = String(formData.get("reward") ?? "").trim().slice(0, 120);
+  const minHoursRaw = String(formData.get("minHours") ?? "").trim();
+  const minHours = minHoursRaw === "" ? null : Math.max(0, Number(minHoursRaw));
+  if (!name)
+    redirect(`/sidequests?error=${encodeURIComponent("A sidequest needs a name.")}`);
+  if (minHoursRaw !== "" && !Number.isFinite(minHours))
+    redirect(`/sidequests?error=${encodeURIComponent("Minimum hours must be a number.")}`);
+  const { error } = await db.from("sidequests").insert({
+    name,
+    region,
+    npc,
+    description,
+    brief,
+    reward,
+    min_hours: minHours,
+    created_by: actorName(access),
+  });
+  if (error) {
+    console.error("addSidequest", error.message);
+    redirect(`/sidequests?error=${encodeURIComponent("Couldn't save , is the sidequests migration applied?")}`);
+  }
+  revalidatePath("/sidequests");
+  redirect("/sidequests?created=1");
+});
+
+export const toggleSidequest = guardedAction("toggleSidequest", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("sidequests")
+    .update({ active: formData.get("active") === "1" })
+    .eq("id", id);
+  if (error) console.error("toggleSidequest", error.message);
+  revalidatePath("/sidequests");
+});
+
+export const updateSidequest = guardedAction("updateSidequest", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const name = String(formData.get("name") ?? "").trim().slice(0, 80);
+  const region = String(formData.get("region") ?? "").trim().slice(0, 40);
+  const npc = String(formData.get("npc") ?? "").trim().slice(0, 40);
+  const description = String(formData.get("description") ?? "").trim().slice(0, 500);
+  const brief = String(formData.get("brief") ?? "").trim().slice(0, 3000);
+  const reward = String(formData.get("reward") ?? "").trim().slice(0, 120);
+  const minHoursRaw = String(formData.get("minHours") ?? "").trim();
+  const minHours = minHoursRaw === "" ? null : Math.max(0, Number(minHoursRaw));
+  if (!name)
+    redirect(`/sidequests?error=${encodeURIComponent("A sidequest needs a name.")}`);
+  if (minHoursRaw !== "" && !Number.isFinite(minHours))
+    redirect(`/sidequests?error=${encodeURIComponent("Minimum hours must be a number.")}`);
+  const { error } = await db
+    .from("sidequests")
+    .update({ name, region, npc, description, brief, reward, min_hours: minHours })
+    .eq("id", id);
+  if (error) {
+    console.error("updateSidequest", error.message);
+    redirect(`/sidequests?error=${encodeURIComponent("Couldn't save the changes.")}`);
+  }
+  revalidatePath("/sidequests");
+  redirect("/sidequests?saved=1");
+});
+
+export const deleteSidequest = guardedAction("deleteSidequest", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db.from("sidequests").delete().eq("id", id);
+  if (error) {
+    console.error("deleteSidequest", error.message);
+    const msg =
+      error.code === "23503"
+        ? "Can't delete , a shipped project is still linked to this sidequest."
+        : "Couldn't delete the sidequest.";
+    redirect(`/sidequests?error=${encodeURIComponent(msg)}`);
+  }
+  revalidatePath("/sidequests");
+});
+
+// ── NPCs ────────────────────────────────────────────────────────────────────
+// An NPC used to be a hand-placed node in the game's village.tscn/open_world.tscn,
+// so adding one meant opening the Godot editor and shipping a build. These write
+// the `npcs` table the client reads at world load instead.
+
+const NPC_WORLDS = new Set(["village", "open_world", "factory_island", "pixel_cafe"]);
+
+// Mirrors what the game can resolve for an NPC: a cvc: preset, a cv1: composite,
+// or an npc:<name> NPC-only sheet (SkinUtil.NPC_SHEETS - pixo, cheetah). The
+// npc: skins are intentionally NPC-only: SkinUtil.is_valid() still rejects them
+// so a player can never wear one, but NPCs placed from here may. Keep the npc:
+// list in sync with SkinUtil.NPC_SHEETS in apps/game/scripts/skin_util.gd.
+// Rejecting here keeps a typo from spawning an NPC with no sprite at all.
+const SKIN_RE = /^(cvc:[1-9]|cv1:b[1-3]h(\d|1[0-8])t([1-9]|1[0-8])o([1-9]|1[0-8])|npc:(pixo|cheetah))$/;
+
+// npc.gd dispatches its modes as an if/elif chain, so they're mutually exclusive
+// at runtime. The form models that as one "kind" select rather than six
+// independent checkboxes that could contradict each other.
+const NPC_KINDS = {
+  dialogue: {},
+  projects: { opens_projects: true },
+  explore: { opens_explore: true },
+  trial: { quest_trial: true },
+  project_quest: { quest_project: true },
+  faq: { faq: true },
+} as const;
+
+type NpcKind = keyof typeof NPC_KINDS;
+
+function npcFields(formData: FormData, fail: (msg: string) => never) {
+  const world = String(formData.get("world") ?? "").trim();
+  if (!NPC_WORLDS.has(world)) fail("Pick a world.");
+
+  const npcName = String(formData.get("npcName") ?? "").trim().slice(0, 40);
+  if (!npcName) fail("An NPC needs a name.");
+
+  const skin = String(formData.get("skin") ?? "").trim();
+  if (!SKIN_RE.test(skin)) fail(`"${skin}" isn't a skin the game can resolve.`);
+
+  const posX = Number(String(formData.get("posX") ?? "").trim());
+  const posY = Number(String(formData.get("posY") ?? "").trim());
+  if (!Number.isFinite(posX) || !Number.isFinite(posY))
+    fail("Pick a spot on the map.");
+
+  const kind = String(formData.get("kind") ?? "dialogue") as NpcKind;
+  if (!(kind in NPC_KINDS)) fail("Pick what this NPC does.");
+
+  const trialIdRaw = String(formData.get("sidequestId") ?? "").trim();
+  const sidequestId = trialIdRaw === "" ? null : Number(trialIdRaw);
+  if (trialIdRaw !== "" && !Number.isFinite(sidequestId)) fail("Pick a valid Trial.");
+  if (kind === "trial" && sidequestId === null)
+    fail("A Trial-giver needs a Trial to hand out.");
+
+  const checkin = formData.get("trialCheckin") === "1";
+
+  return {
+    world,
+    npc_name: npcName,
+    pos_x: posX,
+    pos_y: posY,
+    skin,
+    dialogue: String(formData.get("dialogue") ?? "").trim().slice(0, 1000),
+    opens_projects: false,
+    opens_explore: false,
+    quest_project: false,
+    faq: false,
+    quest_trial: false,
+    ...NPC_KINDS[kind],
+    // Only meaningful on a Trial-giver; a check-in copy stays hidden until its
+    // Trial is active, so setting it on any other kind hides the NPC forever.
+    trial_checkin: kind === "trial" && checkin,
+    sidequest_id: kind === "trial" ? sidequestId : null,
+    quest_offer: String(formData.get("questOffer") ?? "").trim().slice(0, 1500),
+    quest_done: String(formData.get("questDone") ?? "").trim().slice(0, 1000),
+    trial_reminder: String(formData.get("trialReminder") ?? "").trim().slice(0, 1000),
+    wanders: formData.get("wanders") === "1",
+  };
+}
+
+function npcError(error: { message: string; code?: string }): string {
+  if (error.code === "23505")
+    return "An NPC with that name already exists in that world , the game keys saved positions on the name, so they have to be unique.";
+  if (error.code === "42P01")
+    return "Couldn't save , is the npcs migration applied?";
+  return "Couldn't save the NPC.";
+}
+
+export const addNpc = guardedAction("addNpc", "owner", async (access, formData: FormData): Promise<void> => {
+  const fail = (msg: string): never =>
+    redirect(`/sidequests?tab=npcs&error=${encodeURIComponent(msg)}`);
+  const fields = npcFields(formData, fail);
+  const { error } = await db
+    .from("npcs")
+    .insert({ ...fields, created_by: actorName(access) });
+  if (error) {
+    console.error("addNpc", error.message);
+    fail(npcError(error));
+  }
+  revalidatePath("/sidequests");
+  redirect("/sidequests?tab=npcs&created=npc");
+});
+
+export const updateNpc = guardedAction("updateNpc", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const fail = (msg: string): never =>
+    redirect(`/sidequests?tab=npcs&error=${encodeURIComponent(msg)}`);
+  const fields = npcFields(formData, fail);
+  const { error } = await db.from("npcs").update(fields).eq("id", id);
+  if (error) {
+    console.error("updateNpc", error.message);
+    fail(npcError(error));
+  }
+  revalidatePath("/sidequests");
+  redirect("/sidequests?tab=npcs&saved=npc");
+});
+
+export const toggleNpc = guardedAction("toggleNpc", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("npcs")
+    .update({ active: formData.get("active") === "1" })
+    .eq("id", id);
+  if (error) console.error("toggleNpc", error.message);
+  revalidatePath("/sidequests");
+});
+
+export const deleteNpc = guardedAction("deleteNpc", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db.from("npcs").delete().eq("id", id);
+  if (error) {
+    console.error("deleteNpc", error.message);
+    redirect(`/sidequests?tab=npcs&error=${encodeURIComponent("Couldn't delete the NPC.")}`);
+  }
+  revalidatePath("/sidequests");
+});
+
+export const createEvent = guardedAction("createEvent", "owner", async (access, formData: FormData): Promise<void> => {
+  const type = String(formData.get("type") ?? "");
+  const fail = (msg: string) => redirect(`/events?error=${encodeURIComponent(msg)}`);
+  if (!(type in EVENT_TYPES)) fail("Pick an event type.");
+  const name = String(formData.get("name") ?? "").trim().slice(0, 100);
+  if (!name) fail("Give the event a name players will see.");
+  const startsRaw = String(formData.get("startsAt") ?? "").trim();
+  const endsRaw = String(formData.get("endsAt") ?? "").trim();
+  const starts = startsRaw ? new Date(startsRaw + "Z") : new Date();
+  const ends = new Date(endsRaw + "Z");
+  if (!endsRaw || isNaN(ends.getTime())) fail("An end time is required.");
+  if (isNaN(starts.getTime()) || ends <= starts) fail("The event must end after it starts.");
+
+  const config: Record<string, unknown> = {};
+  if (type === "bounty") {
+    const reward = Math.round(Number(formData.get("reward") ?? 0));
+    if (reward <= 0) fail("A bounty needs a pixel reward.");
+    config.reward = Math.min(reward, 500);
+    config.description = String(formData.get("description") ?? "").trim().slice(0, 500);
+  } else if (type === "community_goal") {
+    const target = Math.round(Number(formData.get("target") ?? 0));
+    const bonusPct = Math.round(Number(formData.get("bonusPct") ?? 0));
+    if (target <= 0 || bonusPct <= 0) fail("A community goal needs a ship target and a bonus %.");
+    config.target = target;
+    config.bonusPct = Math.min(bonusPct, 50);
+    const projectType = String(formData.get("projectType") ?? "").trim();
+    if (projectType) config.projectType = projectType;
+  } else if (type === "review_blitz") {
+    const mult = Number(formData.get("mult") ?? 1.5);
+    if (!(mult > 1)) fail("The blitz multiplier must be above 1.");
+    config.mult = Math.min(mult, 3);
+  } else if (type === "mystery_merchant") {
+    const itemIds = [...new Set(formData.getAll("itemIds").map(Number))].filter(
+      (n) => Number.isFinite(n) && n > 0,
+    );
+    if (itemIds.length === 0) fail("Pick at least one shop item for the merchant.");
+    config.itemIds = itemIds;
+  }
+
+  const { error } = await db.from("events").insert({
+    type,
+    name,
+    config,
+    starts_at: starts.toISOString(),
+    ends_at: ends.toISOString(),
+    created_by: actorName(access),
+  });
+  if (error) {
+    console.error("createEvent", error.message);
+    fail("Couldn't create the event , is the events migration applied?");
+  }
+  revalidatePath("/", "layout");
+  redirect("/events?created=1");
+});
+
+export const stopEvent = guardedAction("stopEvent", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("events")
+    .update({ stopped_at: new Date().toISOString() })
+    .eq("id", id)
+    .is("stopped_at", null);
+  if (error) console.error("stopEvent", error.message);
+  revalidatePath("/", "layout");
+});
+
+export const deleteEvent = guardedAction("deleteEvent", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db.from("events").delete().eq("id", id);
+  if (error) console.error("deleteEvent", error.message);
+  revalidatePath("/", "layout");
+});
+
+// Reverts one `team.change` audit row (the id comes from the Team log).
+// Legacy team_log rows from before the relaunch aren't undoable.
+export const undoTeamChange = guardedAction("team.undo", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const row = await getTeamChange(id);
+  if (!row || !row.slack_id) return;
+  const list = { helper: [addHelper, removeHelper], fulfiller: [addFulfiller, removeFulfiller] } as const;
+  const m = row.action.match(/^(helper|fulfiller) (added|removed)$/);
+  if (m) {
+    const [add, remove] = list[m[1] as "helper" | "fulfiller"];
+    await (m[2] === "added" ? remove : add)(row.slack_id);
+    await recordTeamChange(access, row.slack_id, row.name, "undo", row.after, row.before);
+    revalidatePath("/", "layout");
+    return;
+  }
+  await setTeamPerms(access, row.slack_id, row.name, row.before, "undo");
+});
+
+export const resolveReport = guardedAction("resolveReport", "owner", async (access, formData: FormData): Promise<void> => {
+  const session = access.session;
+  const id = Number(formData.get("id") ?? 0);
+  const dismissed = formData.get("action") === "dismiss";
+  if (!id) return;
+  const { data: updated, error } = await db
+    .from("reports")
+    .update({
+      status: dismissed ? "dismissed" : "resolved",
+      handled_by: `${session.name} (${session.slackId})`,
+      handled_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("reporter_id, target_id")
+    .single();
+  if (error) {
+    console.error("resolveReport", error.message);
+    return;
+  }
+  // Close the loop with the reporter , works even for anonymous reports, since
+  // it goes to them privately and never names them to anyone.
+  if (updated?.reporter_id) {
+    const { data: target } = await db
+      .from("users")
+      .select("display_name, real_name")
+      .eq("id", updated.target_id)
+      .single();
+    const name = target?.real_name || target?.display_name || "a player";
+    const title = "Report reviewed";
+    const body = dismissed
+      ? `Your report on ${name} was reviewed and closed , no action was needed this time. Thanks for helping keep Pixl safe.`
+      : `Your report on ${name} was reviewed and acted on. Thanks for helping keep Pixl safe.`;
+    await db.from("notifications").insert({ user_id: updated.reporter_id, title, body });
+    await dmOrEmail(updated.reporter_id, title, body);
+  }
+  revalidatePath("/reports");
+});
+
+
+
+function parseRewards(raw: string): { icon: string; label: string }[] {
+  return String(raw ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+    .map((l) => {
+      const sp = l.indexOf(" ");
+      if (sp === -1) return { icon: "🎁", label: l.slice(0, 60) };
+      return { icon: l.slice(0, sp), label: l.slice(sp + 1).trim().slice(0, 60) };
+    });
+}
+
+export const addVaultLevel = guardedAction("addVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
+  const level = Number(formData.get("level") ?? 0);
+  const energy_required = Number(formData.get("energy_required") ?? 0);
+  const title = String(formData.get("title") ?? "").trim().slice(0, 80);
+  const blurb = String(formData.get("blurb") ?? "").trim().slice(0, 400);
+  const position = Number(formData.get("position") ?? level) || level;
+  const rewards = parseRewards(String(formData.get("rewards") ?? ""));
+  const top1_re = Number(formData.get("top1_re") ?? 0) || 0;
+  const top2_re = Number(formData.get("top2_re") ?? 0) || 0;
+  const top3_re = Number(formData.get("top3_re") ?? 0) || 0;
+  if (!level || !title)
+    redirect(`/community-goals?error=${encodeURIComponent("A level needs a number and a title.")}`);
+  const { error } = await db
+    .from("vault_levels")
+    .insert({ level, energy_required, title, blurb, rewards, position, active: true, top1_re, top2_re, top3_re });
+  if (error) {
+    console.error("addVaultLevel", error.message);
+    redirect(`/community-goals?error=${encodeURIComponent("Couldn't save , is migration 0038 applied? (level must be unique)")}`);
+  }
+  revalidatePath("/community-goals");
+  redirect("/community-goals?saved=1");
+});
+
+export const updateVaultLevel = guardedAction("updateVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const patch = {
+    level: Number(formData.get("level") ?? 0),
+    energy_required: Number(formData.get("energy_required") ?? 0),
+    title: String(formData.get("title") ?? "").trim().slice(0, 80),
+    blurb: String(formData.get("blurb") ?? "").trim().slice(0, 400),
+    position: Number(formData.get("position") ?? 0),
+    rewards: parseRewards(String(formData.get("rewards") ?? "")),
+    top1_re: Number(formData.get("top1_re") ?? 0) || 0,
+    top2_re: Number(formData.get("top2_re") ?? 0) || 0,
+    top3_re: Number(formData.get("top3_re") ?? 0) || 0,
+  };
+  const { error } = await db.from("vault_levels").update(patch).eq("id", id);
+  if (error) {
+    console.error("updateVaultLevel", error.message);
+    redirect(`/community-goals?error=${encodeURIComponent("Couldn't update that level.")}`);
+  }
+  revalidatePath("/community-goals");
+  redirect("/community-goals?saved=1");
+});
+
+export const toggleVaultLevel = guardedAction("toggleVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("vault_levels")
+    .update({ active: formData.get("active") === "1" })
+    .eq("id", id);
+  if (error) console.error("toggleVaultLevel", error.message);
+  revalidatePath("/community-goals");
+});
+
+export const deleteVaultLevel = guardedAction("deleteVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db.from("vault_levels").delete().eq("id", id);
+  if (error) console.error("deleteVaultLevel", error.message);
+  revalidatePath("/community-goals");
+});
+
+// posted_at is writable so a post can be backdated to when the thing actually
+// happened, rather than when someone got round to writing it up.
+function newsPostedAt(formData: FormData): string | undefined {
+  const raw = String(formData.get("posted_at") ?? "").trim();
+  if (!raw) return undefined;
+  const at = new Date(raw);
+  return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
+}
+
+export const addNews = guardedAction("addNews", "owner", async (access, formData: FormData): Promise<void> => {
+  const body = String(formData.get("body") ?? "").trim().slice(0, 500);
+  const link_url = String(formData.get("link_url") ?? "").trim().slice(0, 500);
+  if (!body)
+    redirect(`/news?error=${encodeURIComponent("A post needs something to say.")}`);
+  const posted_at = newsPostedAt(formData);
+  const { error } = await db.from("news").insert({
+    body,
+    link_url: link_url || null,
+    active: true,
+    ...(posted_at ? { posted_at } : {}),
+  });
+  if (error) {
+    console.error("addNews", error.message);
+    redirect(`/news?error=${encodeURIComponent("Couldn't save , is migration 0117 applied?")}`);
+  }
+  revalidatePath("/news");
+  redirect("/news?saved=1");
+});
+
+export const updateNews = guardedAction("updateNews", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const link_url = String(formData.get("link_url") ?? "").trim().slice(0, 500);
+  const posted_at = newsPostedAt(formData);
+  const patch = {
+    body: String(formData.get("body") ?? "").trim().slice(0, 500),
+    link_url: link_url || null,
+    ...(posted_at ? { posted_at } : {}),
+  };
+  const { error } = await db.from("news").update(patch).eq("id", id);
+  if (error) {
+    console.error("updateNews", error.message);
+    redirect(`/news?error=${encodeURIComponent("Couldn't update that post.")}`);
+  }
+  revalidatePath("/news");
+  redirect("/news?saved=1");
+});
+
+export const toggleNews = guardedAction("toggleNews", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("news")
+    .update({ active: formData.get("active") === "1" })
+    .eq("id", id);
+  if (error) console.error("toggleNews", error.message);
+  revalidatePath("/news");
+});
+
+export const deleteNews = guardedAction("deleteNews", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db.from("news").delete().eq("id", id);
+  if (error) console.error("deleteNews", error.message);
+  revalidatePath("/news");
+});
+
+export const addStoryNode = guardedAction("addStoryNode", "owner", async (access, formData: FormData): Promise<void> => {
+  const s = (k: string, max: number) => String(formData.get(k) ?? "").trim().slice(0, max);
+  const title = s("title", 120);
+  if (!title)
+    redirect(`/story?error=${encodeURIComponent("A node needs a title.")}`);
+  const { error } = await db.from("story_nodes").insert({
+    kind: s("kind", 20) || "chapter",
+    seal: s("seal", 8),
+    tag: s("tag", 40),
+    duration: s("duration", 40),
+    title,
+    body: s("body", 1200),
+    quote: s("quote", 300),
+    outcome: s("outcome", 400),
+    position: Number(formData.get("position") ?? 0),
+  });
+  if (error) {
+    console.error("addStoryNode", error.message);
+    redirect(`/story?error=${encodeURIComponent("Couldn't save , is migration 0040 applied?")}`);
+  }
+  revalidatePath("/story");
+  redirect("/story?saved=1");
+});
+
+export const updateStoryNode = guardedAction("updateStoryNode", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const s = (k: string, max: number) => String(formData.get(k) ?? "").trim().slice(0, max);
+  const { error } = await db
+    .from("story_nodes")
+    .update({
+      kind: s("kind", 20) || "chapter",
+      seal: s("seal", 8),
+      tag: s("tag", 40),
+      duration: s("duration", 40),
+      title: s("title", 120),
+      body: s("body", 1200),
+      quote: s("quote", 300),
+      outcome: s("outcome", 400),
+      position: Number(formData.get("position") ?? 0),
+    })
+    .eq("id", id);
+  if (error) {
+    console.error("updateStoryNode", error.message);
+    redirect(`/story?error=${encodeURIComponent("Couldn't update that node.")}`);
+  }
+  revalidatePath("/story");
+  redirect("/story?saved=1");
+});
+
+export const toggleStoryNode = guardedAction("toggleStoryNode", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("story_nodes")
+    .update({ active: formData.get("active") === "1" })
+    .eq("id", id);
+  if (error) console.error("toggleStoryNode", error.message);
+  revalidatePath("/story");
+});
+
+export const deleteStoryNode = guardedAction("deleteStoryNode", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db.from("story_nodes").delete().eq("id", id);
+  if (error) console.error("deleteStoryNode", error.message);
+  revalidatePath("/story");
+});
+
+// A first-time reviewer confirms they read the YSWS guidelines. Requires the
+// review permission (so only actual reviewers can ack), records the current
+// version against their Slack id, then drops them into the review queue.
+export const acknowledgeGuidelines = guardedAction("acknowledgeGuidelines", "reviewer", async (access) => {
+  await ackGuidelines(access.session.slackId, GUIDELINES_VERSION);
+  redirect("/review");
+});
+
+// Escape hatch off the same gate: records the ack (so they aren't bounced back
+// to the gate every page load) without requiring the read-through, but pings
+// every owner via Pixo DM so a skip never goes unnoticed. Fire-and-forget,
+// a Slack hiccup shouldn't block the reviewer from reaching the queue.
+export const skipGuidelines = guardedAction("skipGuidelines", "reviewer", async (access) => {
+  await ackGuidelines(access.session.slackId, GUIDELINES_VERSION);
+  const handle = (await slackHandle(access.session.slackId)) ?? access.session.slackId;
+  const text = `:fast_forward: <@${access.session.slackId}> (${handle}) skipped the reviewer guidelines gate instead of reading it before entering the review queue.`;
+  Promise.all(ownerSlackIds().map((id) => dmUser(id, text))).catch((e) =>
+    console.error("skipGuidelines notify", (e as Error).message),
+  );
+  redirect("/review");
+});
+
+export const createShowNTellRound = guardedAction("createShowNTellRound", "owner", async (access, formData: FormData): Promise<void> => {
+  const title = String(formData.get("title") ?? "").trim().slice(0, 120);
+  if (!title) return;
+  const { error } = await db.from("show_n_tell_rounds").insert({
+    title,
+    created_by: actorName(access),
+  });
+  if (error) throw new Error(error.message);
+  revalidatePath("/show-n-tell");
+});
+
+// Only one round is open at a time (the DB's partial unique index backstops
+// this) - closing every other round first means the client just calls this
+// on whichever round it wants live, no separate "close the old one" step.
+export const openShowNTellRound = guardedAction("openShowNTellRound", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error: closeError } = await db
+    .from("show_n_tell_rounds")
+    .update({ is_open: false, closed_at: new Date().toISOString() })
+    .eq("is_open", true)
+    .neq("id", id);
+  if (closeError) throw new Error(closeError.message);
+  const { error } = await db
+    .from("show_n_tell_rounds")
+    .update({ is_open: true, opened_at: new Date().toISOString(), closed_at: null })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidatePath("/show-n-tell");
+});
+
+export const closeShowNTellRound = guardedAction("closeShowNTellRound", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db
+    .from("show_n_tell_rounds")
+    .update({ is_open: false, closed_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidatePath("/show-n-tell");
+});
+
+export const addShowNTellEntry = guardedAction("addShowNTellEntry", "owner", async (access, formData: FormData): Promise<void> => {
+  const roundId = Number(formData.get("roundId") ?? 0);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  if (!roundId || !projectId) return;
+  const { error } = await db.from("show_n_tell_entries").insert({
+    round_id: roundId,
+    project_id: projectId,
+    added_by: actorName(access),
+  });
+  // A duplicate (round_id, project_id) is a double-click, not a real error -
+  // the entry's already there either way.
+  if (error && !error.message?.includes("duplicate")) throw new Error(error.message);
+  revalidatePath("/show-n-tell");
+});
+
+// A freeform entry not backed by any real projects row - e.g. something shown
+// live at an event that was never entered into Pixl. Stored with project_id
+// null and a custom_name instead (see 0167_show_n_tell_custom_entries.sql).
+export const addCustomShowNTellEntry = guardedAction("addCustomShowNTellEntry", "owner", async (access, formData: FormData): Promise<void> => {
+  const roundId = Number(formData.get("roundId") ?? 0);
+  const customName = String(formData.get("customName") ?? "").trim().slice(0, 120);
+  if (!roundId || !customName) return;
+  const { error } = await db.from("show_n_tell_entries").insert({
+    round_id: roundId,
+    custom_name: customName,
+    added_by: actorName(access),
+  });
+  if (error) throw new Error(error.message);
+  revalidatePath("/show-n-tell");
+});
+
+export const removeShowNTellEntry = guardedAction("removeShowNTellEntry", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const { error } = await db.from("show_n_tell_entries").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidatePath("/show-n-tell");
+});

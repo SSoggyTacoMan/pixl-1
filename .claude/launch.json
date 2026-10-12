@@ -2,25 +2,22 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev"
-      ],
-      "port": 3000
+      "name": "pixl-dashboard",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "--cwd", "apps/pixl-dashboard", "dev"],
+      "port": 4901
     },
     {
-      "name": "game-web",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": [
-        "-m",
-        "http.server",
-        "4321",
-        "--directory",
-        "apps/game/web"
-      ],
-      "port": 4321
+      "name": "internal-dashboard",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "--cwd", "apps/internal-dashboard", "dev"],
+      "port": 4900
+    },
+    {
+      "name": "server",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "--cwd", "apps/server", "dev"],
+      "port": 3000
     }
   ]
 }

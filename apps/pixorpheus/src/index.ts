@@ -1,4 +1,4 @@
-import { app } from "./slack/app.js";
+import { app, http } from "./slack/app.js";
 import { setBotIdentity } from "./slack/identity.js";
 import { loadMemory, loadPersonalityMemory } from "./memory/users.js";
 import { loadProgramMemory } from "./memory/program.js";
@@ -9,7 +9,7 @@ import { scheduleNewMembersDigest } from "./chat/newMembersDigest.js";
 import { scheduleDailyCompact } from "./chat/dailyCompact.js";
 
 // Side-effect imports, each of these registers its Bolt listeners
-// (commands/actions/events/routes) against the shared `app`/`receiver`.
+// (commands/actions/events) against the shared `app`, or HTTP routes on `http`.
 import "./tickets/events.js";
 import "./tickets/actions.js";
 import "./tickets/views.js";
@@ -31,7 +31,11 @@ import "./external/dmApi.js";
 import "./external/reviewPostApi.js";
 
 (async () => {
-  await app.start(process.env.PORT || 3000);
+  // Slack over Socket Mode (no inbound Slack traffic), then the in-cluster
+  // HTTP endpoints on PORT.
+  await app.start();
+  const port = Number(process.env.PORT) || 3000;
+  await new Promise<void>((resolve) => http.listen(port, () => resolve()));
   try {
     const auth = await app.client.auth.test();
     setBotIdentity(auth.user_id!, auth.bot_id!);

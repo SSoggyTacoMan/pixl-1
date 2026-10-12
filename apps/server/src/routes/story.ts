@@ -1,17 +1,15 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 
 const router = Router();
 
 // The season timeline (Chronicle). Authored in the dashboard; the web /timeline
 // page renders whatever active nodes come back here, in order.
 router.get("/api/story", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("story_nodes")
     .select("kind, seal, tag, duration, title, body, quote, outcome")
     .eq("active", true)

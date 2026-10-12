@@ -1,13 +1,21 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
-import { verifySessionToken } from "../auth/session.js";
+import { issueSessionToken, verifySessionToken } from "../auth/session.js";
 import { db } from "../db/pgCompat.js";
 import authRouter from "./auth.js";
 
+const STATE = "client-state-0123456789";
+const DASHBOARD_CALLBACK = "https://pixl.hackclub.com/api/auth/callback";
+const DASHBOARD_KEY = "d".repeat(48);
+const INTERNAL_KEY = "i".repeat(48);
+process.env.SERVICE_KEY_PIXL_DASHBOARD = DASHBOARD_KEY;
+process.env.SERVICE_KEY_INTERNAL_DASHBOARD = INTERNAL_KEY;
+
 async function startTestApp() {
   const app = express();
+  app.use(express.json());
   app.use(authRouter);
   const server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -82,6 +90,8 @@ function mockUsersTable(initialRows: Record<string, unknown>[] = []) {
     let filters: Record<string, unknown> = {};
     let insertPayload: Record<string, unknown> | null = null;
     let updatePayload: Record<string, unknown> | null = null;
+    // .maybeSingle() selects return one row (or null), like db-js.
+    let one = false;
     const chain: Record<string, unknown> = {
       select: () => chain,
       eq: (col: string, val: unknown) => {
@@ -90,7 +100,10 @@ function mockUsersTable(initialRows: Record<string, unknown>[] = []) {
       },
       limit: () => chain,
       single: () => chain,
-      maybeSingle: () => chain,
+      maybeSingle: () => {
+        one = true;
+        return chain;
+      },
       insert: (row: Record<string, unknown>) => {
         insertPayload = row;
         return chain;
@@ -113,7 +126,7 @@ function mockUsersTable(initialRows: Record<string, unknown>[] = []) {
           const matches = rows.filter((r) =>
             Object.entries(filters).every(([k, v]) => r[k] === v),
           );
-          result = { data: matches, error: null };
+          result = { data: one ? (matches[0] ?? null) : matches, error: null };
         }
         return Promise.resolve(result).then(resolve, reject);
       },
@@ -157,7 +170,29 @@ function mockHcaFetch(identity: Record<string, unknown>) {
   };
 }
 
-async function driveHcaCallback(baseUrl: string, startQuery = "") {
+function exchangeRaw(baseUrl: string, code: string) {
+  return fetch(`${baseUrl}/auth/exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "https://play.pixl.hackclub.com" },
+    body: JSON.stringify({ code }),
+  });
+}
+
+// Trades the code on a callback redirect for the session, as the game does.
+async function exchange(baseUrl: string, target: URL) {
+  const res = await exchangeRaw(baseUrl, target.searchParams.get("code") ?? "");
+  expect(res.status).toBe(200);
+  return (await res.json()) as {
+    token: string;
+    user: { id: string; displayName: string; slackId: string | null };
+    isNew: boolean;
+    needsLegalName: boolean;
+  };
+}
+
+const DEFAULT_START = `?redirect=${encodeURIComponent("https://play.pixl.hackclub.com/")}&state=${STATE}`;
+
+async function driveHcaCallback(baseUrl: string, startQuery = DEFAULT_START) {
   const startRes = await fetch(`${baseUrl}/auth/hackclub${startQuery}`, { redirect: "manual" });
   const location = startRes.headers.get("location")!;
   const state = new URL(location).searchParams.get("state")!;
@@ -182,12 +217,11 @@ describe("GET /auth/hackclub/callback", () => {
       const callbackRes = await driveHcaCallback(app.baseUrl);
 
       expect(callbackRes.status).toBe(302);
-      const redirectTarget = new URL(callbackRes.headers.get("location")!);
-      const token = redirectTarget.searchParams.get("token")!;
-      const session = verifySessionToken(token);
+      const grant = await exchange(app.baseUrl, new URL(callbackRes.headers.get("location")!));
+      const session = verifySessionToken(grant.token);
       expect(session?.userId).toBe("winner-user-id");
       // Never claims the "new signup" path for the race's loser.
-      expect(redirectTarget.searchParams.get("new")).not.toBe("1");
+      expect(grant.isNew).toBe(false);
       // select (miss) -> insert (23505) -> select (post-race refetch)
       expect(race.usersInsertAttempts()).toBe(3);
     } finally {
@@ -228,10 +262,9 @@ describe("GET /auth/hackclub/callback", () => {
       const callbackRes = await driveHcaCallback(app.baseUrl);
 
       expect(callbackRes.status).toBe(302);
-      const redirectTarget = new URL(callbackRes.headers.get("location")!);
-      expect(redirectTarget.searchParams.get("new")).toBe("1");
-      const token = redirectTarget.searchParams.get("token")!;
-      const session = verifySessionToken(token);
+      const grant = await exchange(app.baseUrl, new URL(callbackRes.headers.get("location")!));
+      expect(grant.isNew).toBe(true);
+      const session = verifySessionToken(grant.token);
       expect(session?.userId).toBe(users.insertedRows()[0]?.id);
       // Exactly one users row ever gets created for this identity.
       expect(users.insertedRows()).toHaveLength(1);
@@ -260,11 +293,10 @@ describe("GET /auth/hackclub/callback", () => {
       const callbackRes = await driveHcaCallback(app.baseUrl);
 
       expect(callbackRes.status).toBe(302);
-      const redirectTarget = new URL(callbackRes.headers.get("location")!);
-      const token = redirectTarget.searchParams.get("token")!;
-      const session = verifySessionToken(token);
+      const grant = await exchange(app.baseUrl, new URL(callbackRes.headers.get("location")!));
+      const session = verifySessionToken(grant.token);
       expect(session?.userId).toBe("existing-user-id");
-      expect(redirectTarget.searchParams.get("new")).not.toBe("1");
+      expect(grant.isNew).toBe(false);
       // No new row was ever created for a login that already had one.
       expect(users.insertedRows()).toHaveLength(0);
     } finally {
@@ -374,7 +406,7 @@ describe("GET /auth/hackclub/callback -> HCA eligibility", () => {
       ],
     );
     expect(r.status).toBe(302);
-    expect(new URL(r.location!).searchParams.get("token")).toBeTruthy();
+    expect(new URL(r.location!).searchParams.get("code")).toBeTruthy();
     expect(r.inserted).toHaveLength(0);
     const refresh = r.updated.find((u) => "hca_verification_status" in u);
     expect(refresh?.hca_verification_status).toBe("ineligible");
@@ -560,22 +592,77 @@ describe("GET /auth/hackclub/callback -> new signup display_name validation", ()
   });
 });
 
-// F-8: apps/web-shell's proxy.ts must be able to tell a genuine login
-// round trip apart from an arbitrary ?token= on a link. It does that by
-// requiring ?ln= to match a cookie it set itself before the browser ever
-// left for this flow - this only proves this server's half: a nonce handed
-// to /auth/hackclub comes back unchanged on the callback's final redirect.
-describe("GET /auth/hackclub -> callback (F-8 login nonce round-trip)", () => {
-  test("a nonce passed to /auth/hackclub comes back as ln= on the final redirect", async () => {
-    const users = mockUsersTable([]);
-    const hca = mockHcaFetch({ id: "hca-nonce-identity", first_name: "Nonce", last_name: "Tester" });
+describe("GET /auth/hackclub redirect allowlist", () => {
+  const start = (baseUrl: string, redirect: string) =>
+    fetch(`${baseUrl}/auth/hackclub?redirect=${encodeURIComponent(redirect)}&state=${STATE}`, { redirect: "manual" });
+
+  test("the game and the Pixl Dashboard are accepted", async () => {
     const app = await startTestApp();
     try {
-      const callbackRes = await driveHcaCallback(app.baseUrl, "?nonce=abc123def456");
+      for (const ok of ["https://play.pixl.hackclub.com/", "https://pixl.hackclub.com/api/auth/callback"]) {
+        const res = await start(app.baseUrl, ok);
+        expect(res.status).toBe(302);
+        expect(res.headers.get("location")).toStartWith("https://auth.hackclub.com/oauth/authorize");
+      }
+    } finally {
+      await app.close();
+    }
+  });
 
-      expect(callbackRes.status).toBe(302);
-      const redirectTarget = new URL(callbackRes.headers.get("location")!);
-      expect(redirectTarget.searchParams.get("ln")).toBe("abc123def456");
+  test("localhost, other hosts, http and look-alikes are refused", async () => {
+    const app = await startTestApp();
+    try {
+      for (const bad of [
+        "http://localhost:7777/callback",
+        "https://localhost/callback",
+        "http://127.0.0.1:3000/",
+        "http://play.pixl.hackclub.com/",
+        "https://evil.example/",
+        "https://play.pixl.hackclub.com.evil.example/",
+        "https://dash.pixl.hackclub.com/",
+        "https://user:pass@play.pixl.hackclub.com/",
+        "javascript:alert(1)",
+        "/relative",
+        // A login code may only land on the two pages that exchange it.
+        "https://pixl.hackclub.com/account",
+        "https://pixl.hackclub.com/api/auth/callback?next=/x",
+        "https://play.pixl.hackclub.com/?x=1",
+        "https://play.pixl.hackclub.com/shop",
+      ]) {
+        const res = await start(app.baseUrl, bad);
+        expect(res.status).toBe(400);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a missing or malformed state is refused", async () => {
+    const app = await startTestApp();
+    try {
+      const redirect = encodeURIComponent("https://play.pixl.hackclub.com/");
+      expect((await fetch(`${app.baseUrl}/auth/hackclub?redirect=${redirect}`, { redirect: "manual" })).status).toBe(400);
+      expect((await fetch(`${app.baseUrl}/auth/hackclub?redirect=${redirect}&state=a%20b`, { redirect: "manual" })).status).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("code exchange login", () => {
+  test("the callback puts a code and the client state on the redirect, never a token", async () => {
+    const users = mockUsersTable([]);
+    const hca = mockHcaFetch({ id: "hca-code-identity", first_name: "Code", last_name: "Tester" });
+    const app = await startTestApp();
+    try {
+      const res = await driveHcaCallback(app.baseUrl);
+      expect(res.status).toBe(302);
+      const target = new URL(res.headers.get("location")!);
+      expect(target.origin).toBe("https://play.pixl.hackclub.com");
+      expect(target.searchParams.get("state")).toBe(STATE);
+      expect(target.searchParams.get("code")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(target.searchParams.has("token")).toBe(false);
+      expect(target.searchParams.has("name")).toBe(false);
     } finally {
       users.restore();
       hca.restore();
@@ -583,16 +670,130 @@ describe("GET /auth/hackclub -> callback (F-8 login nonce round-trip)", () => {
     }
   });
 
-  test("no nonce means no ln= on the final redirect (the Godot client's flow, unaffected)", async () => {
+  test("a code works exactly once", async () => {
     const users = mockUsersTable([]);
-    const hca = mockHcaFetch({ id: "hca-no-nonce-identity", first_name: "No", last_name: "Nonce" });
+    const hca = mockHcaFetch({ id: "hca-once-identity", first_name: "Once", last_name: "Only" });
     const app = await startTestApp();
     try {
-      const callbackRes = await driveHcaCallback(app.baseUrl);
+      const target = new URL((await driveHcaCallback(app.baseUrl)).headers.get("location")!);
+      const first = await exchangeRaw(app.baseUrl, target.searchParams.get("code")!);
+      expect(first.status).toBe(200);
+      const body = (await first.json()) as { token: string; user: { id: string; displayName: string }; isNew: boolean; needsLegalName: boolean };
+      expect(verifySessionToken(body.token)?.userId).toBe(body.user.id);
+      expect(body.user.displayName).toBe("Once Only");
+      expect(body.isNew).toBe(true);
+      expect(body.needsLegalName).toBe(false);
+      const second = await exchangeRaw(app.baseUrl, target.searchParams.get("code")!);
+      expect(second.status).toBe(400);
+    } finally {
+      users.restore();
+      hca.restore();
+      await app.close();
+    }
+  });
 
-      expect(callbackRes.status).toBe(302);
-      const redirectTarget = new URL(callbackRes.headers.get("location")!);
-      expect(redirectTarget.searchParams.has("ln")).toBe(false);
+  test("the exchange is refused from another origin, with no origin, or with a wrong service key", async () => {
+    const users = mockUsersTable([]);
+    const hca = mockHcaFetch({ id: "hca-caller-identity", first_name: "Caller", last_name: "Check" });
+    const app = await startTestApp();
+    try {
+      const code = new URL((await driveHcaCallback(app.baseUrl)).headers.get("location")!).searchParams.get("code")!;
+      const post = (headers: Record<string, string>) =>
+        fetch(`${app.baseUrl}/auth/exchange`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...headers },
+          body: JSON.stringify({ code }),
+        });
+      expect((await post({})).status).toBe(401);
+      expect((await post({ Origin: "https://pixl.hackclub.com" })).status).toBe(401);
+      expect((await post({ "x-pixl-service-key": "x".repeat(40) })).status).toBe(401);
+      // The internal dashboard's key is a real key but not allowed here.
+      expect((await post({ "x-pixl-service-key": INTERNAL_KEY })).status).toBe(401);
+      // None of those spent the code.
+      expect((await post({ Origin: "https://play.pixl.hackclub.com" })).status).toBe(200);
+    } finally {
+      users.restore();
+      hca.restore();
+      await app.close();
+    }
+  });
+
+  test("the token's client comes from the login's redirect, matched by the caller; the body can't override it", async () => {
+    const users = mockUsersTable([]);
+    const hca = mockHcaFetch({ id: "hca-client-identity", first_name: "Client", last_name: "Kind" });
+    const app = await startTestApp();
+    const freshCode = async (redirect = "https://play.pixl.hackclub.com/") =>
+      new URL(
+        (await driveHcaCallback(app.baseUrl, `?redirect=${encodeURIComponent(redirect)}&state=${STATE}`)).headers.get("location")!,
+      ).searchParams.get("code")!;
+    const webCode = () => freshCode(DASHBOARD_CALLBACK);
+    const post = async (headers: Record<string, string>, body: Record<string, unknown>) => {
+      const res = await fetch(`${app.baseUrl}/auth/exchange`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      return verifySessionToken(((await res.json()) as { token: string }).token);
+    };
+    try {
+      expect((await post({ "x-pixl-service-key": DASHBOARD_KEY }, { code: await webCode() }))?.client).toBe("web");
+      expect((await post({ Origin: "https://play.pixl.hackclub.com" }, { code: await freshCode() }))?.client).toBe("game");
+      // A client field in the body is stripped, never honored.
+      expect(
+        (await post({ Origin: "https://play.pixl.hackclub.com" }, { code: await freshCode(), client: "web" }))?.client,
+      ).toBe("game");
+      expect(
+        (await post({ "x-pixl-service-key": DASHBOARD_KEY }, { code: await webCode(), client: "game" }))?.client,
+      ).toBe("web");
+    } finally {
+      users.restore();
+      hca.restore();
+      await app.close();
+    }
+  });
+
+  test("a login code only redeems for the client its login was started for", async () => {
+    const users = mockUsersTable([]);
+    const hca = mockHcaFetch({ id: "hca-bound-identity", first_name: "Bound", last_name: "Code" });
+    const app = await startTestApp();
+    const freshCode = async (redirect: string) =>
+      new URL(
+        (await driveHcaCallback(app.baseUrl, `?redirect=${encodeURIComponent(redirect)}&state=${STATE}`)).headers.get("location")!,
+      ).searchParams.get("code")!;
+    const post = (headers: Record<string, string>, code: string) =>
+      fetch(`${app.baseUrl}/auth/exchange`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ code }),
+      });
+    try {
+      // A game login's code, traded by the Pixl Dashboard's backend: refused,
+      // and spent (the game can't use it afterwards either).
+      const gameCode = await freshCode("https://play.pixl.hackclub.com/");
+      expect((await post({ "x-pixl-service-key": DASHBOARD_KEY }, gameCode)).status).toBe(400);
+      expect((await post({ Origin: "https://play.pixl.hackclub.com" }, gameCode)).status).toBe(400);
+      // A Pixl Dashboard login's code, traded from the game's origin: refused.
+      const webCode = await freshCode(DASHBOARD_CALLBACK);
+      expect((await post({ Origin: "https://play.pixl.hackclub.com" }, webCode)).status).toBe(400);
+      // The matching caller works.
+      const ok = await post({ "x-pixl-service-key": DASHBOARD_KEY }, await freshCode(DASHBOARD_CALLBACK));
+      expect(ok.status).toBe(200);
+      expect(verifySessionToken(((await ok.json()) as { token: string }).token)?.client).toBe("web");
+    } finally {
+      users.restore();
+      hca.restore();
+      await app.close();
+    }
+  });
+
+  test("a player with no name on file from HCA needs a legal name", async () => {
+    const users = mockUsersTable([]);
+    const hca = mockHcaFetch({ id: "hca-nameless-identity", primary_email: "x@example.com" });
+    const app = await startTestApp();
+    try {
+      const grant = await exchange(app.baseUrl, new URL((await driveHcaCallback(app.baseUrl)).headers.get("location")!));
+      expect(grant.needsLegalName).toBe(true);
     } finally {
       users.restore();
       hca.restore();
@@ -601,8 +802,8 @@ describe("GET /auth/hackclub -> callback (F-8 login nonce round-trip)", () => {
   });
 });
 
-describe("GET /auth/hackclub/callback retry link keeps the login nonce", () => {
-  test("a throttled token exchange offers a retry that still carries the nonce", async () => {
+describe("GET /auth/hackclub/callback retry link", () => {
+  test("a throttled token exchange offers a retry with the same redirect and state", async () => {
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       if (String(url).includes("/oauth/token")) return new Response("slow your roll!", { status: 429 });
@@ -610,32 +811,14 @@ describe("GET /auth/hackclub/callback retry link keeps the login nonce", () => {
     }) as typeof fetch;
     const app = await startTestApp();
     try {
-      const redirect = encodeURIComponent("https://pixl.hackclub.com/shop/");
-      const res = await driveHcaCallback(app.baseUrl, `?web_redirect=${redirect}&nonce=abc123def456`);
+      const redirect = encodeURIComponent("https://pixl.hackclub.com/api/auth/callback");
+      const res = await driveHcaCallback(app.baseUrl, `?redirect=${redirect}&state=${STATE}`);
       expect(res.status).toBe(429);
-      const html = await res.text();
-      const href = /href="([^"]+)"/.exec(html)![1];
+      const href = /href="([^"]+)"/.exec(await res.text())![1].replace(/&#38;/g, "&");
       const retry = new URL(href, "http://x");
       expect(retry.pathname).toBe("/auth/hackclub");
-      expect(retry.searchParams.get("web_redirect")).toBe("https://pixl.hackclub.com/shop/");
-      expect(retry.searchParams.get("nonce")).toBe("abc123def456");
-    } finally {
-      globalThis.fetch = realFetch;
-      await app.close();
-    }
-  });
-
-  test("without a nonce the retry link has none", async () => {
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      if (String(url).includes("/oauth/token")) return new Response("boom", { status: 500 });
-      return realFetch(url as string, init);
-    }) as typeof fetch;
-    const app = await startTestApp();
-    try {
-      const res = await driveHcaCallback(app.baseUrl);
-      const href = /href="([^"]+)"/.exec(await res.text())![1];
-      expect(href).toBe("/auth/hackclub");
+      expect(retry.searchParams.get("redirect")).toBe("https://pixl.hackclub.com/api/auth/callback");
+      expect(retry.searchParams.get("state")).toBe(STATE);
     } finally {
       globalThis.fetch = realFetch;
       await app.close();
@@ -643,55 +826,118 @@ describe("GET /auth/hackclub/callback retry link keeps the login nonce", () => {
   });
 });
 
-describe("GET /auth/demo", () => {
-  const originalAllowDemo = process.env.ALLOW_DEMO_LOGIN;
-  afterEach(() => {
-    if (originalAllowDemo === undefined) delete process.env.ALLOW_DEMO_LOGIN;
-    else process.env.ALLOW_DEMO_LOGIN = originalAllowDemo;
-  });
-
-  test("a losing concurrent demo signup logs into the winner's account instead of 500ing", async () => {
-    process.env.ALLOW_DEMO_LOGIN = "true";
-    const winnerRow = {
-      id: "demo-winner-id",
-      oauth_provider: "demo",
-      oauth_id: "demo_race",
-      display_name: "race",
-    };
-    const race = mockUsersRace(winnerRow);
+describe("POST /auth/flow/:name", () => {
+  test("needs a Bearer session", async () => {
     const app = await startTestApp();
     try {
-      const res = await fetch(`${app.baseUrl}/auth/demo?name=race`);
-      const body = (await res.json()) as { token: string; name: string };
-
-      expect(res.status).toBe(200);
-      const session = verifySessionToken(body.token);
-      expect(session?.userId).toBe("demo-winner-id");
-      expect(race.usersInsertAttempts()).toBe(3);
+      const res = await fetch(`${app.baseUrl}/auth/flow/resync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redirect: "https://pixl.hackclub.com/account" }),
+      });
+      expect(res.status).toBe(401);
     } finally {
-      race.restore();
       await app.close();
     }
   });
 
-  test("a normal demo login reuses the same account on a second request instead of creating another", async () => {
-    process.env.ALLOW_DEMO_LOGIN = "true";
+  test("returns the HCA URL for each flow and refuses unknown flows and bad redirects", async () => {
+    // Revocation and ban lookups read users/bans; nothing is revoked or banned.
     const users = mockUsersTable([]);
     const app = await startTestApp();
+    const token = issueSessionToken({ client: "web", userId: "flow-user", displayName: "Flow" });
+    const post = (name: string, redirect: string) =>
+      fetch(`${app.baseUrl}/auth/flow/${name}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ redirect }),
+      });
     try {
-      const first = await fetch(`${app.baseUrl}/auth/demo?name=normal-demo-player`);
-      const firstBody = (await first.json()) as { token: string };
-      const firstSession = verifySessionToken(firstBody.token);
-
-      const second = await fetch(`${app.baseUrl}/auth/demo?name=normal-demo-player`);
-      const secondBody = (await second.json()) as { token: string };
-      const secondSession = verifySessionToken(secondBody.token);
-
-      expect(firstSession?.userId).toBe(secondSession?.userId);
-      // One signup, one login - not two accounts for the same demo identity.
-      expect(users.insertedRows()).toHaveLength(1);
+      for (const name of ["verify-address", "resync", "legal-name"]) {
+        const res = await post(name, "https://pixl.hackclub.com/account");
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { url: string };
+        expect(body.url).toStartWith("https://auth.hackclub.com/oauth/authorize");
+        expect(body.url).not.toContain(token);
+      }
+      expect((await post("demo", "https://pixl.hackclub.com/")).status).toBe(400);
+      expect((await post("resync", "http://localhost:7777/callback")).status).toBe(400);
     } finally {
       users.restore();
+      await app.close();
+    }
+  });
+});
+
+describe("verify-address identity binding", () => {
+  const ADDRESS = { line_1: "1 Victim St", city: "Burlington", country: "US", postal_code: "05401", primary: true };
+  async function runVerifyAddress(hcaIdentityId: string) {
+    process.env.PII_ENCRYPTION_KEY ??= "a".repeat(64);
+    const users = mockUsersTable([{ id: "addr-user", oauth_provider: "hackclub", oauth_id: "hca-addr-owner" }]);
+    const hca = mockHcaFetch({ id: hcaIdentityId, addresses: [ADDRESS] });
+    const app = await startTestApp();
+    try {
+      const token = issueSessionToken({ client: "web", userId: "addr-user", displayName: "Addr" });
+      const start = await fetch(`${app.baseUrl}/auth/flow/verify-address`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ redirect: "https://pixl.hackclub.com/account" }),
+      });
+      expect(start.status).toBe(200);
+      const state = new URL(((await start.json()) as { url: string }).url).searchParams.get("state")!;
+      const res = await fetch(`${app.baseUrl}/auth/hackclub/callback?code=fake-code&state=${state}`, { redirect: "manual" });
+      return { res, updates: users.updatedRows().filter((u) => "address_line1" in u) };
+    } finally {
+      users.restore();
+      hca.restore();
+      await app.close();
+    }
+  }
+
+  test("someone else's HCA consent never writes their address onto the flow starter's account", async () => {
+    const { res, updates } = await runVerifyAddress("hca-someone-else");
+    expect(res.status).toBe(403);
+    expect(updates).toHaveLength(0);
+  });
+
+  test("the account's own HCA identity refreshes the address", async () => {
+    const { res, updates } = await runVerifyAddress("hca-addr-owner");
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get("location")!).searchParams.get("addr_verified")).toBe("1");
+    expect(updates).toHaveLength(1);
+  });
+});
+
+describe("removed backdoors", () => {
+  test("/auth/demo no longer exists", async () => {
+    const app = await startTestApp();
+    try {
+      const res = await fetch(`${app.baseUrl}/auth/demo?name=anyone`);
+      expect(res.status).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("ban check fails closed at login", () => {
+  test("a bans lookup error issues no login code", async () => {
+    const users = mockUsersTable([{ id: "ban-user", oauth_provider: "hackclub", oauth_id: "hca-ban-check", display_name: "B" }]);
+    const usersFrom = db.from;
+    db.from = ((table: string) =>
+      table === "bans"
+        ? chainable({ data: null, error: { message: "connection refused" } })
+        : usersFrom(table)) as typeof db.from;
+    const hca = mockHcaFetch({ id: "hca-ban-check", first_name: "Ban", last_name: "Check" });
+    const app = await startTestApp();
+    try {
+      const res = await driveHcaCallback(app.baseUrl);
+      expect(res.status).toBe(503);
+      expect(res.headers.get("location")).toBeNull();
+    } finally {
+      db.from = usersFrom;
+      users.restore();
+      hca.restore();
       await app.close();
     }
   });

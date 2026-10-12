@@ -1,0 +1,303 @@
+import { requirePage } from "@/lib/guard";
+import { listFormSubmissions, listFormConfigs, type FormSubmissionRow } from "@/lib/db";
+import { slackAvatarsFor, slackHandles } from "@/lib/slack";
+import {
+  decideFormSubmission,
+  saveFormConfig,
+  markFormSubmissionInteresting,
+  unmarkFormSubmissionInteresting,
+} from "@/app/actions";
+import { PendingButton } from "@/app/_components/PendingButton";
+import { FormEditor } from "./FormEditor";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+
+export const dynamic = "force-dynamic";
+
+function dateLabel(iso: string | null): string {
+  if (!iso) return "-";
+  return new Date(iso).toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function initials(name: string): string {
+  return (
+    name
+      .replace(/^@/, "")
+      .split(/[\s_]+/)
+      .map((w) => w[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "?"
+  );
+}
+
+function Avatar({ url, name }: { url?: string; name: string }) {
+  return url ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={url} alt="" className="w-9 h-9 rounded-full object-cover shrink-0" />
+  ) : (
+    <span className="grid place-items-center w-9 h-9 rounded-full bg-primary/15 text-primary text-xs font-semibold shrink-0">
+      {initials(name)}
+    </span>
+  );
+}
+
+function SubmissionCard({
+  s,
+  avatarUrl,
+  showUnmark,
+  questionLabels,
+}: {
+  s: FormSubmissionRow;
+  avatarUrl?: string;
+  showUnmark: boolean;
+  questionLabels: Map<string, string>;
+}) {
+  return (
+    <Card className="p-4 md:p-5 gap-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Avatar url={avatarUrl} name={s.name || s.slack_id} />
+        <span className="font-semibold">{s.name || s.slack_id}</span>
+        <Badge variant="secondary">{s.form_key}</Badge>
+        {s.interesting_at && (
+          <Badge variant="warning" title={`Kept by ${s.interesting_by} on ${dateLabel(s.interesting_at)}`}>
+            ⭐ interesting
+          </Badge>
+        )}
+        <span className="text-xs text-muted-foreground ml-auto">{dateLabel(s.created_at)}</span>
+      </div>
+      <div className="space-y-2 text-sm">
+        {Object.entries(s.answers).map(([key, value]) => (
+          <div key={key}>
+            <div className="text-xs font-medium text-muted-foreground">
+              {questionLabels.get(key) ?? key}
+            </div>
+            <div className="whitespace-pre-wrap break-words">{value}</div>
+          </div>
+        ))}
+      </div>
+      <form action={decideFormSubmission} className="flex flex-col gap-2 pt-2 border-t border-border">
+        <input type="hidden" name="id" value={s.id} />
+        <Textarea
+          name="note"
+          placeholder="Optional note, included in the DM…"
+          rows={2}
+          className="text-sm resize-y"
+        />
+        <div className="flex gap-2 flex-wrap">
+          <PendingButton
+            name="decision"
+            value="accepted"
+            size="sm"
+            className="bg-mint text-ink border-transparent hover:bg-mint/90"
+            pendingText="Accepting…"
+          >
+            Accept
+          </PendingButton>
+          <PendingButton
+            name="decision"
+            value="rejected"
+            size="sm"
+            variant="outline"
+            pendingText="Rejecting…"
+            className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10"
+          >
+            Reject
+          </PendingButton>
+        </div>
+      </form>
+      {showUnmark ? (
+        <form action={unmarkFormSubmissionInteresting} className="pt-1">
+          <input type="hidden" name="id" value={s.id} />
+          <PendingButton variant="outline" size="sm" pendingText="Moving back…">
+            Not interesting anymore
+          </PendingButton>
+        </form>
+      ) : (
+        <details className="pt-1">
+          <summary className="text-xs text-muted-foreground cursor-pointer select-none">
+            Not ready to decide? Keep it for later
+          </summary>
+          <form
+            action={markFormSubmissionInteresting}
+            className="flex flex-col gap-2 mt-2"
+          >
+            <input type="hidden" name="id" value={s.id} />
+            <Textarea
+              name="note"
+              placeholder="Optional extra note, included in the DM…"
+              rows={2}
+              className="text-sm resize-y"
+            />
+            <PendingButton
+              variant="secondary"
+              size="sm"
+              pendingText="Marking…"
+              className="w-fit"
+            >
+              ⭐ Mark as interesting
+            </PendingButton>
+          </form>
+        </details>
+      )}
+    </Card>
+  );
+}
+
+// Every public, no-account form submission (pixl.hackclub.com/form/*, see
+// apps/server/src/routes/forms.ts) lands here for accept/reject. Submitters
+// never got a Pixl account - decideFormSubmission DMs them directly by the
+// Slack id they verified via Hack Club Auth at submit time.
+export default async function FormsPage() {
+  await requirePage("owner");
+  const [submissions, configs] = await Promise.all([listFormSubmissions(), listFormConfigs()]);
+  const pending = submissions.filter((s) => s.status === "pending" && !s.interesting_at);
+  const interesting = submissions.filter((s) => s.status === "pending" && s.interesting_at);
+  // Split out from "decided" so accepted applicants have their own place to
+  // scan later - the accept DM already goes out immediately, this is just
+  // for going back to message them again afterwards (e.g. once onboarding).
+  const accepted = submissions.filter((s) => s.status === "accepted");
+  const rejected = submissions.filter((s) => s.status === "rejected");
+  const [avatars, handles] = await Promise.all([
+    slackAvatarsFor(submissions.map((s) => s.slack_id)),
+    slackHandles(submissions.map((s) => s.slack_id)),
+  ]);
+  // form_key -> {question key -> label}, so an answer's heading shows the
+  // actual question asked instead of its internal storage key (e.g.
+  // "message") - falls back to the raw key if a question was since
+  // renamed/removed in FormEditor.
+  const questionLabelsByForm = new Map(
+    configs.map((c) => [c.form_key, new Map(c.questions.map((q) => [q.key, q.label]))]),
+  );
+  const emptyLabels = new Map<string, string>();
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Forms</h1>
+        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
+          Submissions from the public forms at pixl.hackclub.com/form/* - submitters verify their
+          real Slack identity but never get a Pixl account, so accept/reject DMs them directly.
+        </p>
+      </div>
+
+      <div>
+        <div className="text-sm font-medium text-muted-foreground mb-3">Form settings</div>
+        <div className="grid gap-4">
+          {configs.map((c) => (
+            <FormEditor key={c.form_key} config={c} />
+          ))}
+          <Card className="p-4 md:p-5 gap-3">
+            <div className="text-sm font-medium">New form</div>
+            <form action={saveFormConfig} className="flex gap-2 items-end flex-wrap">
+              <div className="space-y-1.5">
+                <label className="text-xs text-muted-foreground block">
+                  Form key (used in the URL, e.g. "review" for /form/review)
+                </label>
+                <Input name="formKey" placeholder="my-form" className="w-56" required pattern="[a-z0-9_-]{1,50}" />
+              </div>
+              <input type="hidden" name="title" value="" />
+              <input type="hidden" name="description" value="" />
+              <input type="hidden" name="closeAt" value="" />
+              <input type="hidden" name="questionsJson" value="[]" />
+              <PendingButton size="sm" variant="outline" pendingText="Creating…">
+                Create
+              </PendingButton>
+            </form>
+          </Card>
+        </div>
+      </div>
+
+      {interesting.length > 0 && (
+        <div>
+          <div className="text-sm font-medium text-muted-foreground mb-3">
+            ⭐ {interesting.length} kept for later
+          </div>
+          <div className="grid gap-4">
+            {interesting.map((s) => (
+              <SubmissionCard
+                key={s.id}
+                s={s}
+                avatarUrl={avatars.get(s.slack_id)}
+                showUnmark
+                questionLabels={questionLabelsByForm.get(s.form_key) ?? emptyLabels}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div className="text-sm font-medium text-muted-foreground mb-3">
+          {pending.length} pending
+        </div>
+        {pending.length === 0 ? (
+          <Card className="p-8 text-center text-muted-foreground text-sm">Nothing pending.</Card>
+        ) : (
+          <div className="grid gap-4">
+            {pending.map((s) => (
+              <SubmissionCard
+                key={s.id}
+                s={s}
+                avatarUrl={avatars.get(s.slack_id)}
+                showUnmark={false}
+                questionLabels={questionLabelsByForm.get(s.form_key) ?? emptyLabels}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {accepted.length > 0 && (
+        <div>
+          <div className="text-sm font-medium text-muted-foreground mb-3">
+            ✅ {accepted.length} accepted - for DMing later
+          </div>
+          <Card className="overflow-hidden py-0 divide-y divide-border">
+            {accepted.map((s) => (
+              <div key={s.id} className="p-3.5 flex items-center gap-3 flex-wrap">
+                <Avatar url={avatars.get(s.slack_id)} name={s.name || s.slack_id} />
+                <div className="min-w-0">
+                  <div className="font-medium">{s.name || s.slack_id}</div>
+                  <div className="text-xs text-muted-foreground font-mono">
+                    {handles.get(s.slack_id) ?? s.slack_id}
+                  </div>
+                </div>
+                <Badge variant="secondary">{s.form_key}</Badge>
+                <span className="text-xs text-muted-foreground ml-auto">
+                  accepted by {s.decided_by} · {dateLabel(s.decided_at)}
+                </span>
+              </div>
+            ))}
+          </Card>
+        </div>
+      )}
+
+      {rejected.length > 0 && (
+        <div>
+          <div className="text-sm font-medium text-muted-foreground mb-3">Rejected</div>
+          <Card className="overflow-hidden py-0 divide-y divide-border">
+            {rejected.map((s) => (
+              <div key={s.id} className="p-3.5 flex items-center gap-3 flex-wrap">
+                <Avatar url={avatars.get(s.slack_id)} name={s.name || s.slack_id} />
+                <span className="font-medium">{s.name || s.slack_id}</span>
+                <Badge variant="secondary">{s.form_key}</Badge>
+                <span className="text-xs text-muted-foreground">
+                  by {s.decided_by} · {dateLabel(s.decided_at)}
+                </span>
+              </div>
+            ))}
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}

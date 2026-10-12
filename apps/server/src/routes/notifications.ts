@@ -1,17 +1,9 @@
 import { Router } from "express";
-import { timingSafeEqual } from "crypto";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { z } from "zod";
+import { db } from "../db/client.js";
+import { validate, v } from "../http/validate.js";
 
 const router = Router();
-
-function validAdminKey(given: string): boolean {
-  const key = process.env.ADMIN_API_KEY;
-  if (!key || !given) return false;
-  const a = Buffer.from(given);
-  const b = Buffer.from(key);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
 
 // Drop a notification into a user's inbox. Best-effort: failures are logged,
 // never thrown, so they can't break the action that triggered them.
@@ -20,21 +12,21 @@ export async function addNotification(
   title: string,
   body: string,
 ): Promise<void> {
-  const { error } = await supabase
+  const { error } = await db
     .from("notifications")
     .insert({ user_id: userId, title, body });
   if (error) console.error("[notifications] insert failed", error);
 }
 
-// Automation hook: external tools push notifications with the server's API
-// key. Omit userId to broadcast to every registered player.
-router.post("/api/admin/notifications", async (req, res) => {
-  const key =
-    req.header("x-api-key") ??
-    (typeof req.query.key === "string" ? req.query.key : "");
-  if (!validAdminKey(key))
-    return res.status(401).json({ ok: false, reason: "Bad API key." });
+// Service hook (behind adminServiceGate, see index.ts): push a notification
+// to one player, or omit userId to broadcast to every registered player.
+const adminNotificationBody = z.object({
+  title: z.string().max(1000),
+  body: z.string().max(5000),
+  userId: v.uuid.optional(),
+});
 
+router.post("/api/admin/notifications", validate({ query: v.noQuery, body: adminNotificationBody }), async (req, res) => {
   const title =
     typeof req.body?.title === "string" ? req.body.title.trim().slice(0, 100) : "";
   const body =
@@ -44,7 +36,7 @@ router.post("/api/admin/notifications", async (req, res) => {
 
   const userId = typeof req.body?.userId === "string" ? req.body.userId : "";
   if (userId) {
-    const { error } = await supabase
+    const { error } = await db
       .from("notifications")
       .insert({ user_id: userId, title, body });
     if (error) {
@@ -54,7 +46,7 @@ router.post("/api/admin/notifications", async (req, res) => {
     return res.json({ ok: true, sent: 1 });
   }
 
-  const { data, error } = await supabase.from("users").select("id");
+  const { data, error } = await db.from("users").select("id");
   if (error) {
     console.error("[notifications] admin user list failed", error);
     return res.status(500).json({ ok: false });
@@ -65,7 +57,7 @@ router.post("/api/admin/notifications", async (req, res) => {
     body,
   }));
   for (let i = 0; i < rows.length; i += 500) {
-    const { error: insertError } = await supabase
+    const { error: insertError } = await db
       .from("notifications")
       .insert(rows.slice(i, i + 500));
     if (insertError) {
@@ -77,11 +69,10 @@ router.post("/api/admin/notifications", async (req, res) => {
 });
 
 router.get("/api/notifications", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("notifications")
     .select("*")
     .eq("user_id", session.userId)
@@ -96,12 +87,11 @@ router.get("/api/notifications", async (req, res) => {
   res.json({ ok: true, notifications, unread });
 });
 
-router.post("/api/notifications/read", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/notifications/read", validate({ query: v.noQuery, body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("notifications")
     .update({ read: true })
     .eq("user_id", session.userId)

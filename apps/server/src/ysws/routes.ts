@@ -1,10 +1,12 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { addNotification } from "../routes/notifications.js";
 import { yswsShipForSlackId, yswsShipsForSlackId } from "./archive.js";
 import { availableShips, collectTaken, nameFromShip } from "./imports.js";
-import { parseProjectBody } from "../routes/projects.js";
+import { parseProjectBody, toPlayerProject } from "../routes/projects.js";
+import { allowedImageUrl } from "../http/imageUrls.js";
+import { z } from "zod";
+import { validate, v } from "../http/validate.js";
 
 const router = Router();
 
@@ -14,11 +16,10 @@ function cleanSlackId(raw: unknown): string {
 }
 
 router.get("/api/projects/ysws-available", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("slack_id")
     .eq("id", session.userId)
@@ -29,7 +30,7 @@ router.get("/api/projects/ysws-available", async (req, res) => {
   const ships = await yswsShipsForSlackId(slackId);
   if (ships.length === 0) return res.json({ ok: true, ships: [] });
 
-  const { data: mine, error: mineError } = await supabase
+  const { data: mine, error: mineError } = await db
     .from("projects")
     .select("repo_url, demo_url, imported_ysws_entry_id")
     .eq("user_id", session.userId);
@@ -62,15 +63,14 @@ router.get("/api/projects/ysws-available", async (req, res) => {
   });
 });
 
-router.post("/api/projects/import-ysws", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/import-ysws", validate({ query: v.noQuery, body: z.object({ entryId: z.union([z.string().max(200), z.number()]) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const entryId = String(req.body?.entryId ?? "").trim();
   if (entryId === "") return res.status(400).json({ ok: false, error: "entry_required" });
 
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("slack_id")
     .eq("id", session.userId)
@@ -81,7 +81,7 @@ router.post("/api/projects/import-ysws", async (req, res) => {
   const ship = await yswsShipForSlackId(slackId, entryId);
   if (!ship) return res.status(404).json({ ok: false, error: "ship_not_found" });
 
-  const { data: dupe } = await supabase
+  const { data: dupe } = await db
     .from("projects")
     .select("id")
     .eq("user_id", session.userId)
@@ -94,12 +94,14 @@ router.post("/api/projects/import-ysws", async (req, res) => {
     description: ship.description,
     repoUrl: ship.codeUrl,
     demoUrl: ship.demoUrl,
-    imageUrl: ship.screenshotUrl,
+    // A screenshot hosted anywhere but the Hack Club CDN is dropped, not
+    // carried over (http/imageUrls.ts); the player can upload one.
+    imageUrl: allowedImageUrl(ship.screenshotUrl) ?? "",
   });
   if (parsed.error !== undefined)
     return res.status(400).json({ ok: false, error: parsed.error });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .insert({
       user_id: session.userId,
@@ -122,7 +124,7 @@ router.post("/api/projects/import-ysws", async (req, res) => {
     "Project imported",
     `"${parsed.fields.name}" came in from ${ship.ysws}. Its ${ship.hours}h there don't carry over, only new tracked work counts here.`,
   );
-  res.json({ ok: true, project: data });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 export default router;

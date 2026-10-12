@@ -1,13 +1,21 @@
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Server, IncomingMessage } from "http";
-import { verifySessionToken } from "../auth/session.js";
-import { isSessionRevoked, lookupSessionRevokedAt, parseRevokedAt } from "../auth/revocation.js";
+import { verifySessionToken, type VerifiedSession } from "../auth/session.js";
+import { config } from "../config.generated.js";
+import { auditRequest, auditRequestThrottled } from "../audit.js";
+import {
+  effectiveRevokedAt,
+  isSessionRevoked,
+  lookupSessionRevokedAt,
+  selectRevocation,
+  type RevocationRow,
+} from "../auth/revocation.js";
 import { consumeRateLimit, peekRateLimit, type RateLimitOptions } from "../rateLimit.js";
 import { requestIpKey } from "../clientIp.js";
-import { activeBan, censorChat, recordChatViolation } from "../moderation.js";
+import { censorChat, lookupActiveBan, recordChatViolation } from "../moderation.js";
 import { areFriends } from "../social.js";
 import { getPixoChatReply } from "../pixoChat.js";
-import { supabase, type PlayerStateRow } from "../db/client.js";
+import { db, type PlayerStateRow } from "../db/client.js";
 import { orValue } from "../db/pgCompat.js";
 import {
   type Lobby,
@@ -218,6 +226,25 @@ const SAVE_INTERVAL_MS = 5000;
 // never broadcast, store, or reach any client.
 const IMG_TAG_RE = /\[img\b[^\]]*\][\s\S]*?\[\/img\]/gi;
 
+/**
+ * Normalizes player-authored chat/DM text before it is stored or broadcast.
+ * The Godot client renders chat in RichTextLabels with BBCode on, so a raw
+ * "[" let any player inject tags ([url], [color], [font_size], fake system
+ * lines) into everyone else's chat. Square brackets become parentheses here:
+ * the client also escapes player text, this is the server-side half so older
+ * clients and anything else reading chat_messages are covered too.
+ * Exported for tests.
+ */
+export function sanitizePlayerChat(input: unknown, max: number): string {
+  return String(input ?? "")
+    .replace(IMG_TAG_RE, " ")
+    .replace(/\[/g, "(")
+    .replace(/\]/g, ")")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
 function broadcastToScene(
   scene: string,
   message: object,
@@ -247,7 +274,7 @@ function snapshotForScene(scene: string, exceptUserId?: string) {
 // Position is now stored per (user, scene), so saving upserts the row for the
 // player's *current* scene rather than overwriting a single global position.
 async function persist(p: ConnectedPlayer) {
-  const { error } = await supabase
+  const { error } = await db
     .from("player_state")
     .upsert(
       {
@@ -270,7 +297,7 @@ async function loadSceneState(
   userId: string,
   scene: string,
 ): Promise<PlayerStateRow | null> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("player_state")
     .select("*")
     .eq("user_id", userId)
@@ -302,7 +329,7 @@ function sendLobbyTheme(p: ConnectedPlayer) {
 // Sends the player their saved NPC positions for a scene so the client can
 // place villagers where they last left them (empty list on a first visit).
 async function sendNpcInit(p: ConnectedPlayer, scene: string) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("npc_state")
     .select("npc_id,pos_x,pos_y")
     .eq("user_id", p.userId)
@@ -347,7 +374,7 @@ async function persistNpcs(
   }
   if (rows.length === 0) return;
 
-  const { error } = await supabase
+  const { error } = await db
     .from("npc_state")
     .upsert(rows, { onConflict: "user_id,scene,npc_id" });
   if (error) console.error("Failed to persist npc_state", error);
@@ -446,18 +473,21 @@ export function endUserSession(userId: string, revokedAtMs: number): boolean {
   return true;
 }
 
+// Connected players all hold game tokens, so the game cutoff applies (the
+// later of the all-clients and game-only cutoffs); a web logout never
+// closes a socket.
 export async function sweepRevokedSessions() {
   if (players.size === 0) return;
-  const { data, error } = await supabase
-    .from("users")
-    .select("id, sessions_revoked_at")
-    .in("id", [...players.keys()]);
+  const ids = [...players.keys()];
+  const { data, error } = await selectRevocation((columns) =>
+    db.from("users").select(`id, ${columns}`).in("id", ids),
+  );
   if (error) {
-    if (error.code !== "42703") console.error("Failed to sweep revoked sessions", error.message);
+    console.error("Failed to sweep revoked sessions", error.message);
     return;
   }
-  for (const row of data ?? []) {
-    const state = parseRevokedAt(row.sessions_revoked_at);
+  for (const row of (data ?? []) as (RevocationRow & { id: unknown })[]) {
+    const state = effectiveRevokedAt(row, "game");
     if (state.ok && state.revokedAtMs !== null) endUserSession(row.id as string, state.revokedAtMs);
   }
 }
@@ -466,7 +496,7 @@ export async function sweepRevokedSessions() {
 // players who are banned while already connected.
 async function sweepBans() {
   if (players.size === 0) return;
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("bans")
     .select("user_id, expires_at")
     .in("user_id", [...players.keys()])
@@ -517,17 +547,76 @@ setInterval(() => {
   }
 }, UPGRADE_WINDOW_MS).unref();
 
+// WebSocket authentication: the upgrade carries no credentials (no query
+// token). Only the game's own origin may open a socket, and the first frame
+// it sends must be {"type":"auth","token":"<jwt>"} within
+// WS_AUTH_TIMEOUT_MS. Until that succeeds the server sends nothing at all -
+// the client treats the first message it receives as "auth OK". A missing,
+// malformed, invalid, expired, revoked or non-game token closes with 4401.
+export const WS_AUTH_TIMEOUT_MS = 5_000;
+export const WS_AUTH_FAILED = 4401;
+const MAX_AUTH_FRAME_BYTES = 4096;
+
+export function isAllowedWsOrigin(origin: string | undefined): boolean {
+  return origin === config.urls.play;
+}
+
+export function parseWsAuth(
+  raw: RawData | string,
+  isBinary: boolean,
+  verify: (token: string) => VerifiedSession | null = verifySessionToken,
+): VerifiedSession | null {
+  if (isBinary) return null;
+  const text = raw.toString();
+  if (text.length > MAX_AUTH_FRAME_BYTES) return null;
+  let msg: unknown;
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof msg !== "object" || msg === null) return null;
+  const { type, token } = msg as { type?: unknown; token?: unknown };
+  if (type !== "auth" || typeof token !== "string" || token.length === 0) return null;
+  // Only game tokens open a socket: a Pixl Dashboard ("web") token, or a
+  // pre-split token with no client claim, fails auth like a forged one.
+  const session = verify(token);
+  return session && session.client === "game" ? session : null;
+}
+
+function auditWsFailure(req: IncomingMessage, reason: string, userId?: string): void {
+  auditRequestThrottled(req, {
+    action: "ws.auth_failed",
+    target: "ws",
+    result: "denied",
+    ...(userId ? { actorType: "player" as const, actorId: userId } : {}),
+    meta: { reason },
+  });
+}
+
 export function attachWebSocketServer(httpServer: Server) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 });
 
   httpServer.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "", "http://localhost");
+    const url = new URL(req.url ?? "/", config.urls.server);
     if (url.pathname !== "/ws") {
       socket.destroy();
       return;
     }
     const ip = requestIpKey(req);
     if (upgradeRateLimited(ip)) {
+      socket.destroy();
+      return;
+    }
+    const origin = req.headers.origin;
+    if (!isAllowedWsOrigin(origin)) {
+      auditRequestThrottled(req, {
+        action: "origin.rejected",
+        target: "ws",
+        result: "denied",
+        meta: { origin: String(origin ?? "(none)").slice(0, 200) },
+      });
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -561,50 +650,60 @@ export function attachWebSocketServer(httpServer: Server) {
       (ws as WebSocket & { isAlive?: boolean }).isAlive = true;
     });
 
-    const url = new URL(req.url ?? "", "http://localhost");
-    const token = url.searchParams.get("token");
-    const session = token ? verifySessionToken(token) : null;
     const ip = requestIpKey(req);
-
-    if (!session) {
-      console.log("Connection rejected: invalid/missing token");
-      ws.close(4001, "Unauthorized");
-      return;
-    }
-
-    console.log(
-      "Connection authorized for userId:",
-      session.userId,
-      "name:",
-      session.displayName,
-    );
-
     let player: ConnectedPlayer | null = null;
 
-    (async () => {
-      const revocation = await lookupSessionRevokedAt(session.userId);
+    // The first frame must authenticate (see parseWsAuth). Nothing is sent
+    // to the client before that succeeds.
+    let authHandled = false;
+    const authTimer = setTimeout(() => {
+      if (authHandled) return;
+      authHandled = true;
+      auditWsFailure(req, "timeout");
+      ws.close(WS_AUTH_FAILED, "Unauthorized");
+    }, WS_AUTH_TIMEOUT_MS);
+    authTimer.unref?.();
+    ws.on("close", () => clearTimeout(authTimer));
+
+    const startSession = async (session: VerifiedSession) => {
+      const revocation = await lookupSessionRevokedAt(session.userId, "game");
       if (!revocation.ok) {
         ws.close(1013, "Try again later");
         return;
       }
       if (isSessionRevoked(session, revocation.revokedAtMs)) {
         console.log("Connection rejected: revoked session", session.userId);
-        ws.close(4001, "Unauthorized");
+        auditWsFailure(req, "revoked", session.userId);
+        ws.close(WS_AUTH_FAILED, "Unauthorized");
         return;
       }
 
-      const ban = await activeBan(session.userId);
+      // Fail closed, same as the revocation check above.
+      const banLookup = await lookupActiveBan(session.userId);
+      if (!banLookup.ok) {
+        ws.close(1013, "Try again later");
+        return;
+      }
+      const ban = banLookup.ban;
       if (ban) {
         const message = ban.expires_at
           ? `You've been temporarily banned from Pixl until ${new Date(ban.expires_at).toUTCString()}.`
           : "You've been permanently banned from Pixl.";
         console.log("Connection rejected: banned", session.userId, message);
+        auditWsFailure(req, "banned", session.userId);
         ws.close(4003, message.slice(0, 120));
         return;
       }
+      if (ws.readyState !== WebSocket.OPEN) return;
+
+      console.log("Connection authorized for userId:", session.userId, "name:", session.displayName);
+      auditRequest(
+        { headers: req.headers, socket: req.socket, session: { userId: session.userId, slackId: session.slackId } },
+        { action: "ws.connect", target: "ws", result: "ok" },
+      );
 
       // Default to the player's most recently active scene/position.
-      const { data: stateRows, error } = await supabase
+      const { data: stateRows, error } = await db
         .from("player_state")
         .select("*")
         .eq("user_id", session.userId)
@@ -616,7 +715,7 @@ export function attachWebSocketServer(httpServer: Server) {
       const state = (stateRows && stateRows[0]) as PlayerStateRow | undefined;
 
       // Pull the player's chosen skin descriptor (defaults handled by the DB).
-      const { data: userRow } = await supabase
+      const { data: userRow } = await db
         .from("users")
         .select("skin")
         .eq("id", session.userId)
@@ -639,7 +738,7 @@ export function attachWebSocketServer(httpServer: Server) {
         }
       }
 
-      const { data: blockRows } = await supabase
+      const { data: blockRows } = await db
         .from("blocks")
         .select("blocked_id")
         .eq("blocker_id", session.userId);
@@ -718,9 +817,24 @@ export function attachWebSocketServer(httpServer: Server) {
         },
         player.userId,
       );
-    })();
+    };
 
     ws.on("message", (raw, isBinary) => {
+      if (!authHandled) {
+        authHandled = true;
+        clearTimeout(authTimer);
+        const session = parseWsAuth(raw, isBinary);
+        if (!session) {
+          auditWsFailure(req, "invalid_token");
+          ws.close(WS_AUTH_FAILED, "Unauthorized");
+          return;
+        }
+        startSession(session).catch((err: unknown) => {
+          console.error("[ws] session start failed", (err as Error)?.message ?? err);
+          if (ws.readyState === WebSocket.OPEN) ws.close(1011, "Server error");
+        });
+        return;
+      }
       if (!player) return;
       if (players.get(player.userId) !== player) return;
 
@@ -937,7 +1051,7 @@ export function attachWebSocketServer(httpServer: Server) {
 
         // Persist the choice, then tell everyone in the scene (the sender
         // included) so all clients re-skin this player.
-        void supabase
+        void db
           .from("users")
           .update({ skin })
           .eq("id", player.userId)
@@ -953,11 +1067,7 @@ export function attachWebSocketServer(httpServer: Server) {
       }
 
       if (msg.type === "chat") {
-        const raw = String(msg.text ?? "")
-          .replace(IMG_TAG_RE, " ")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 280);
+        const raw = sanitizePlayerChat(msg.text, 280);
 
         if (/^\/pixo(\s|$)/i.test(raw)) {
           const question = raw.replace(/^\/pixo\s*/i, "").trim();
@@ -1003,7 +1113,7 @@ export function attachWebSocketServer(httpServer: Server) {
         if (text !== raw.slice(0, 200)) void punishChat(player, ws, raw.slice(0, 200));
         if (!text) return;
 
-        void supabase
+        void db
           .from("chat_messages")
           .insert({
             user_id: player.userId,
@@ -1031,11 +1141,7 @@ export function attachWebSocketServer(httpServer: Server) {
 
       if (msg.type === "dm") {
         const targetName = String(msg.to ?? "").trim();
-        const raw = String(msg.text ?? "")
-          .replace(IMG_TAG_RE, " ")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 200);
+        const raw = sanitizePlayerChat(msg.text, 200);
         if (!targetName || !raw) return;
         const text = censorChat(raw);
         if (text !== raw) void punishChat(player, ws, raw);
@@ -1095,7 +1201,7 @@ export function attachWebSocketServer(httpServer: Server) {
         const blocking = msg.type === "block";
         void (async () => {
           if (blocking) {
-            await supabase
+            await db
               .from("blocks")
               .upsert(
                 { blocker_id: self.userId, blocked_id: targetId },
@@ -1103,7 +1209,7 @@ export function attachWebSocketServer(httpServer: Server) {
               );
             self.blocked.add(targetId);
           } else {
-            await supabase
+            await db
               .from("blocks")
               .delete()
               .eq("blocker_id", self.userId)
@@ -1153,7 +1259,7 @@ export function attachWebSocketServer(httpServer: Server) {
               ws.send(JSON.stringify({ type: "lobby_denied", reason }));
           };
           if (!inviteId) return deny("That invite is no longer valid.");
-          const { data, error } = await supabase
+          const { data, error } = await db
             .from("village_invites")
             .select("*")
             .eq("id", inviteId)
@@ -1180,7 +1286,7 @@ export function attachWebSocketServer(httpServer: Server) {
           if (!lobby) return deny("That village no longer exists.");
           if (lobbyMemberCount(lobby.id, asking.userId) >= lobby.capacity)
             return deny("That village is full.");
-          const { error: updateError } = await supabase
+          const { error: updateError } = await db
             .from("village_invites")
             .update({ status: "accepted" })
             .eq("id", inviteId)
@@ -1338,7 +1444,7 @@ export function attachWebSocketServer(httpServer: Server) {
             return;
           }
           void (async () => {
-            const { data, error } = await supabase.rpc("buy_village_theme", {
+            const { data, error } = await db.rpc("buy_village_theme", {
               p_user_id: player.userId,
               p_lobby_id: lobby.id,
               p_theme: theme,

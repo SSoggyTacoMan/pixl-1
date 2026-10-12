@@ -15,7 +15,7 @@ async function startTestApp(banState: (userId: string) => Promise<BanState>) {
   app.use(
     enforceActiveBans({
       banState,
-      verify: (token) => (token === "valid-token" ? { userId: "u1", displayName: "Test" } : null),
+      verify: (token) => (token === "valid-token" ? { userId: "u1", displayName: "Test", client: "web" as const, iat: 0 } : null),
     }),
   );
   app.post("/api/shop/buy/1", (_req, res) => res.json({ ok: true, bought: true }));
@@ -33,7 +33,7 @@ describe("enforceActiveBans", () => {
   test("a banned user's shop purchase is denied before the route runs", async () => {
     const { baseUrl, close } = await startTestApp(async () => "banned");
     try {
-      const res = await fetch(`${baseUrl}/api/shop/buy/1?token=valid-token`, { method: "POST" });
+      const res = await fetch(`${baseUrl}/api/shop/buy/1`, { method: "POST", headers: { Authorization: "Bearer valid-token" } });
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ ok: false, error: "banned" });
     } finally {
@@ -44,7 +44,7 @@ describe("enforceActiveBans", () => {
   test("a not-banned user's shop purchase reaches the route normally", async () => {
     const { baseUrl, close } = await startTestApp(async () => "clear");
     try {
-      const res = await fetch(`${baseUrl}/api/shop/buy/1?token=valid-token`, { method: "POST" });
+      const res = await fetch(`${baseUrl}/api/shop/buy/1`, { method: "POST", headers: { Authorization: "Bearer valid-token" } });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, bought: true });
     } finally {
@@ -65,7 +65,7 @@ describe("enforceActiveBans", () => {
   test("an invalid/garbage token is left to the route's own auth check, not blocked here", async () => {
     const { baseUrl, close } = await startTestApp(async () => "banned");
     try {
-      const res = await fetch(`${baseUrl}/api/shop/buy/1?token=garbage`, { method: "POST" });
+      const res = await fetch(`${baseUrl}/api/shop/buy/1`, { method: "POST", headers: { Authorization: "Bearer garbage" } });
       // the lookup always says banned in this test, so if the middleware were
       // (wrongly) treating an unverifiable token as some default identity,
       // this would be a 403 instead of falling through to the route.
@@ -80,7 +80,7 @@ describe("enforceActiveBans when the ban lookup fails", () => {
   test("a state-changing request is refused with a retryable 503", async () => {
     const { baseUrl, close } = await startTestApp(async () => "unknown");
     try {
-      const res = await fetch(`${baseUrl}/api/shop/buy/1?token=valid-token`, { method: "POST" });
+      const res = await fetch(`${baseUrl}/api/shop/buy/1`, { method: "POST", headers: { Authorization: "Bearer valid-token" } });
       expect(res.status).toBe(503);
       expect(res.headers.get("retry-after")).toBe("5");
       expect(await res.json()).toEqual({ ok: false, error: "ban_check_unavailable" });
@@ -92,7 +92,7 @@ describe("enforceActiveBans when the ban lookup fails", () => {
   test("a read-only request still goes through", async () => {
     const { baseUrl, close } = await startTestApp(async () => "unknown");
     try {
-      const res = await fetch(`${baseUrl}/api/public/thing?token=valid-token`);
+      const res = await fetch(`${baseUrl}/api/public/thing`, { headers: { Authorization: "Bearer valid-token" } });
       expect(res.status).toBe(200);
     } finally {
       await close();
@@ -104,7 +104,7 @@ describe("enforceActiveBans when the ban lookup fails", () => {
       throw new Error("db down");
     });
     try {
-      const res = await fetch(`${baseUrl}/api/shop/buy/1?token=valid-token`, { method: "POST" });
+      const res = await fetch(`${baseUrl}/api/shop/buy/1`, { method: "POST", headers: { Authorization: "Bearer valid-token" } });
       expect(res.status).toBe(503);
     } finally {
       await close();

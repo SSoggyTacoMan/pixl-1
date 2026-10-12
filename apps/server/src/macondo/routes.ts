@@ -1,9 +1,11 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { addNotification } from "../routes/notifications.js";
-import { parseProjectBody } from "../routes/projects.js";
+import { parseProjectBody, toPlayerProject } from "../routes/projects.js";
+import { allowedImageUrl, demoteDisallowedMarkdownImages } from "../http/imageUrls.js";
 import { macondoProjectForSlackId, macondoProjectsForSlackId } from "./client.js";
+import { z } from "zod";
+import { validate, v } from "../http/validate.js";
 
 const router = Router();
 const SOURCE = "macondo";
@@ -28,11 +30,10 @@ function sourceDate(raw: string): string {
 }
 
 router.get("/api/projects/macondo-available", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("slack_id")
     .eq("id", session.userId)
@@ -40,7 +41,7 @@ router.get("/api/projects/macondo-available", async (req, res) => {
   const slackId = cleanSlackId((userRow as { slack_id?: string } | null)?.slack_id);
   if (!slackId) return res.json({ ok: true, projects: [] });
 
-  const { data: mine, error: mineError } = await supabase
+  const { data: mine, error: mineError } = await db
     .from("projects")
     .select("imported_unshipped_source, imported_unshipped_ref")
     .eq("user_id", session.userId);
@@ -73,16 +74,15 @@ router.get("/api/projects/macondo-available", async (req, res) => {
   });
 });
 
-router.post("/api/projects/import-macondo", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/import-macondo", validate({ query: v.noQuery, body: z.object({ ref: v.num }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const projectId = Number(req.body?.ref);
   if (!Number.isSafeInteger(projectId) || projectId <= 0)
     return res.status(400).json({ ok: false, error: "project_required" });
 
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("slack_id")
     .eq("id", session.userId)
@@ -90,7 +90,7 @@ router.post("/api/projects/import-macondo", async (req, res) => {
   const slackId = cleanSlackId((userRow as { slack_id?: string } | null)?.slack_id);
   if (!slackId) return res.status(400).json({ ok: false, error: "no_slack_link" });
 
-  const { data: dupe } = await supabase
+  const { data: dupe } = await db
     .from("projects")
     .select("id")
     .eq("user_id", session.userId)
@@ -111,13 +111,13 @@ router.post("/api/projects/import-macondo", async (req, res) => {
     description: project.description,
     repoUrl: project.repoUrl,
     demoUrl: project.demoUrl,
-    imageUrl: project.thumbnailUrl,
+    imageUrl: allowedImageUrl(project.thumbnailUrl) ?? "",
     projectType: projectTypeForMacondo(project.type),
     kind: project.type === "hardware" ? "hardware" : "software",
   });
   if (parsed.error !== undefined) return res.status(400).json({ ok: false, error: parsed.error });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .insert({
       user_id: session.userId,
@@ -137,19 +137,19 @@ router.post("/api/projects/import-macondo", async (req, res) => {
   const journals = project.journals.filter((journal) => !journal.archived && journal.content);
   let journalsImported = 0;
   if (journals.length > 0) {
-    const { error: journalError } = await supabase.from("project_journals").insert(
+    const { error: journalError } = await db.from("project_journals").insert(
       journals.map((journal) => ({
         project_id: data.id,
         user_id: session.userId,
         title: journal.title,
-        content: journal.content,
+        content: demoteDisallowedMarkdownImages(journal.content),
         hours: 0,
         created_at: sourceDate(journal.createdAt),
       })),
     );
     if (journalError) {
       console.error("[macondo] journal import failed", journalError);
-      await supabase
+      await db
         .from("projects")
         .delete()
         .eq("id", data.id)
@@ -166,7 +166,7 @@ router.post("/api/projects/import-macondo", async (req, res) => {
       journalsImported > 0 ? ` with ${journalsImported} journal${journalsImported === 1 ? "" : "s"}` : ""
     }. Historical Macondo hours don't carry over; new time tracked here does.`,
   );
-  res.json({ ok: true, project: data, journalsImported });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId), journalsImported });
 });
 
 export default router;

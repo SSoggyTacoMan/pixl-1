@@ -185,3 +185,30 @@ export async function fetchHackatimeStats(token: string | null): Promise<Hackati
     return { ...DISCONNECTED, error: "fetch_failed" };
   }
 }
+
+// Whose Hackatime account an OAuth token belongs to. The connect callback
+// checks this against the Pixl account that started the flow, so a token
+// for someone else's Hackatime (a consent link forwarded to another player)
+// is never stored. null = couldn't tell, which callers treat as a mismatch.
+const ME_PATH = "/api/v1/authenticated/me";
+
+export function hackatimeSlackIdFrom(body: unknown): string | null {
+  type Ids = { slack_id?: unknown; slack_uid?: unknown };
+  const o = body as (Ids & { user?: Ids; data?: Ids }) | null;
+  const raw = o?.slack_id ?? o?.slack_uid ?? o?.user?.slack_id ?? o?.user?.slack_uid ?? o?.data?.slack_id ?? o?.data?.slack_uid;
+  return typeof raw === "string" && /^[A-Z0-9]{6,20}$/.test(raw) ? raw : null;
+}
+
+export async function fetchHackatimeSlackId(token: string): Promise<string | null> {
+  try {
+    const res = await fetch(BASE + ME_PATH, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return null;
+    return hackatimeSlackIdFrom(await res.json());
+  } catch (e) {
+    console.error("[hackatime] identity fetch failed:", (e as Error)?.message ?? e);
+    return null;
+  }
+}

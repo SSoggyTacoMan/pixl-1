@@ -3,6 +3,7 @@ import { app } from "../slack/app.js";
 import { PIXL_MAIN_CHANNEL } from "../constants.js";
 import { db } from "../db/client.js";
 import { aiPost } from "../ai/client.js";
+import { safeCompactSummary } from "./compactSummary.js";
 import { ensureUserName, getDisplayName } from "../memory/users.js";
 
 // Pixo's "/compact" feature (see pixo:compact in messageHandler.ts): an
@@ -90,7 +91,7 @@ async function summarizeMessages(client: WebClient, msgs: CompactMessage[]): Pro
       ],
       max_tokens: 500,
     });
-    return res.data.choices?.[0]?.message?.content?.trim() || null;
+    return safeCompactSummary(res.data.choices?.[0]?.message?.content);
   } catch (e: any) {
     console.error("[daily-compact] summarize failed:", e?.message ?? e);
     return null;
@@ -132,7 +133,9 @@ export async function getStoredCompact(
     .eq("compact_date", dateStr)
     .maybeSingle();
   if (!data) return null;
-  return { summary: (data as any).summary, messageCount: (data as any).message_count };
+  const summary = safeCompactSummary((data as any).summary);
+  if (!summary) return null;
+  return { summary, messageCount: (data as any).message_count };
 }
 
 /** Live-computes a compact for "today so far", there's no stored row for an in-progress day. */

@@ -1,5 +1,5 @@
 # Build context is apps/server (this app has its own bun.lock and no workspace
-# deps, so it installs standalone the same way it does on Railway).
+# deps, so it installs standalone with --frozen-lockfile).
 #
 # Bun installs and runs tsc; the runtime stage is plain node because that is
 # what `bun run start` does (node dist/index.js) and what packages/config's

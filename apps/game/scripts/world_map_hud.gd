@@ -398,8 +398,8 @@ func _refresh_markers() -> void:
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/sidequests?token=" + NetworkManager.session_token.uri_encode()
-	if req.request(url) != OK:
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/sidequests"
+	if req.request(url, NetworkManager.auth_headers()) != OK:
 		req.queue_free()
 		return
 	var r: Array = await req.request_completed

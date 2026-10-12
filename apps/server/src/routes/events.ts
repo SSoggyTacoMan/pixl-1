@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
 import { activeEvents, communityGoalProgress } from "../events.js";
 import { totalCommunityRe } from "../xp.js";
 
@@ -10,8 +9,7 @@ const router = Router();
 // event - it's the "Core Integrity" total shown in the web shell's topbar,
 // always present regardless of whether a weekend event is running.
 router.get("/api/events/active", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [events, communityRe] = await Promise.all([activeEvents(), totalCommunityRe()]);

@@ -1,6 +1,5 @@
 export interface TicketRow {
   msg_ts: string;
-  ticket_msg_ts: string | null;
   title_prompt_ts: string | null;
   description: string | null;
   title: string | null;

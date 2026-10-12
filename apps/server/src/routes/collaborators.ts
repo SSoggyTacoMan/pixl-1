@@ -1,9 +1,13 @@
 import { randomInt } from "crypto";
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { addNotification } from "./notifications.js";
 import { fetchTrackedSecondsSince } from "../hackatime/api.js";
+import { z } from "zod";
+import { validate, v, optStr, params } from "../http/validate.js";
+import { auditRequest } from "../audit.js";
+import { rateLimit } from "../rateLimit.js";
+import { requestIpKey } from "../clientIp.js";
 
 const router = Router();
 
@@ -21,7 +25,7 @@ interface CollaboratorRow {
 }
 
 async function projectOwner(projectId: number): Promise<{ id: number; name: string; user_id: string } | null> {
-  const { data } = await supabase
+  const { data } = await db
     .from("projects")
     .select("id, name, user_id")
     .eq("id", projectId)
@@ -32,9 +36,8 @@ async function projectOwner(projectId: number): Promise<{ id: number; name: stri
 // Owner invites another player onto their project. Re-invites a
 // previously declined/removed collaborator instead of stacking a duplicate
 // row, mirroring friends.ts's handling of a stale request row.
-router.post("/api/projects/:id/collaborators/invite", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/collaborators/invite", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ userId: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const projectId = Number(req.params.id);
@@ -48,14 +51,14 @@ router.post("/api/projects/:id/collaborators/invite", async (req, res) => {
   if (!targetId || targetId === session.userId)
     return res.status(400).json({ ok: false, reason: "Invalid target." });
 
-  const { data: target } = await supabase
+  const { data: target } = await db
     .from("users")
     .select("id, display_name")
     .eq("id", targetId)
     .single();
   if (!target) return res.status(404).json({ ok: false, reason: "No such player." });
 
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("project_collaborators")
     .select("id, status")
     .eq("project_id", projectId)
@@ -65,7 +68,7 @@ router.post("/api/projects/:id/collaborators/invite", async (req, res) => {
   if (existing) {
     if (existing.status === "accepted" || existing.status === "pending")
       return res.json({ ok: true, status: existing.status });
-    const { error } = await supabase
+    const { error } = await db
       .from("project_collaborators")
       .update({ status: "pending", invited_by: session.userId, responded_at: null })
       .eq("id", existing.id);
@@ -74,7 +77,7 @@ router.post("/api/projects/:id/collaborators/invite", async (req, res) => {
       return res.status(500).json({ ok: false });
     }
   } else {
-    const { error } = await supabase.from("project_collaborators").insert({
+    const { error } = await db.from("project_collaborators").insert({
       project_id: projectId,
       user_id: targetId,
       invited_by: session.userId,
@@ -96,8 +99,7 @@ router.post("/api/projects/:id/collaborators/invite", async (req, res) => {
 
 // Visible to the owner and to anyone (pending or accepted) invited onto it.
 router.get("/api/projects/:id/collaborators", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const projectId = Number(req.params.id);
@@ -106,7 +108,7 @@ router.get("/api/projects/:id/collaborators", async (req, res) => {
   const project = await projectOwner(projectId);
   if (!project) return res.status(404).json({ ok: false });
 
-  const { data: rows, error } = await supabase
+  const { data: rows, error } = await db
     .from("project_collaborators")
     .select("*")
     .eq("project_id", projectId)
@@ -124,7 +126,7 @@ router.get("/api/projects/:id/collaborators", async (req, res) => {
   const ids = collaborators.map((c) => c.user_id);
   const names = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: users } = await supabase
+    const { data: users } = await db
       .from("users")
       .select("id, display_name")
       .in("id", ids);
@@ -149,11 +151,10 @@ router.get("/api/projects/:id/collaborators", async (req, res) => {
 // The caller's own incoming invites across every project, for a "pending
 // invites" list on the Projects page.
 router.get("/api/collaborations/pending", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data: rows, error } = await supabase
+  const { data: rows, error } = await db
     .from("project_collaborators")
     .select("id, project_id, invited_by, created_at, projects(name)")
     .eq("user_id", session.userId)
@@ -166,7 +167,7 @@ router.get("/api/collaborations/pending", async (req, res) => {
   const inviterIds = [...new Set((rows ?? []).map((r) => r.invited_by as string))];
   const names = new Map<string, string>();
   if (inviterIds.length > 0) {
-    const { data: users } = await supabase
+    const { data: users } = await db
       .from("users")
       .select("id, display_name")
       .in("id", inviterIds);
@@ -184,15 +185,14 @@ router.get("/api/collaborations/pending", async (req, res) => {
   });
 });
 
-router.post("/api/collaborators/:id/accept", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/collaborators/:id/accept", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_collaborators")
     .update({ status: "accepted", responded_at: new Date().toISOString() })
     .eq("id", id)
@@ -217,15 +217,14 @@ router.post("/api/collaborators/:id/accept", async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/api/collaborators/:id/decline", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/collaborators/:id/decline", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_collaborators")
     .update({ status: "declined", responded_at: new Date().toISOString() })
     .eq("id", id)
@@ -244,15 +243,14 @@ router.post("/api/collaborators/:id/decline", async (req, res) => {
 // Owner removes an accepted collaborator, or a collaborator leaves on their
 // own, either way the row is marked 'removed' (not deleted) to keep past
 // payout history intact.
-router.post("/api/collaborators/:id/remove", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/collaborators/:id/remove", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: row } = await supabase
+  const { data: row } = await db
     .from("project_collaborators")
     .select("id, project_id, user_id, status")
     .eq("id", id)
@@ -264,7 +262,7 @@ router.post("/api/collaborators/:id/remove", async (req, res) => {
   const isSelf = row.user_id === session.userId;
   if (!isOwner && !isSelf) return res.status(404).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("project_collaborators")
     .update({ status: "removed", responded_at: new Date().toISOString() })
     .eq("id", id);
@@ -278,9 +276,8 @@ router.post("/api/collaborators/:id/remove", async (req, res) => {
 // An accepted collaborator links their own Hackatime projects (their own
 // account, tracked separately from the owner's, see parseProjectBody's
 // hackatime_projects handling in projects.ts for the same shape).
-router.put("/api/collaborators/:id/hackatime", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.put("/api/collaborators/:id/hackatime", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ hackatimeProjects: z.array(z.string().max(200)).max(200).nullable().optional() }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -290,7 +287,7 @@ router.put("/api/collaborators/:id/hackatime", async (req, res) => {
     ? req.body.hackatimeProjects.map((p: unknown) => String(p)).slice(0, 50)
     : [];
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_collaborators")
     .update({ hackatime_projects: hackatimeProjects })
     .eq("id", id)
@@ -307,7 +304,7 @@ router.put("/api/collaborators/:id/hackatime", async (req, res) => {
   // Recompute their tracked seconds right away instead of leaving it stale
   // until the owner's next ship, otherwise linking a project here has no
   // visible effect until then, which reads as "save does nothing."
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("hackatime_token, slack_id")
     .eq("id", session.userId)
@@ -317,7 +314,7 @@ router.put("/api/collaborators/:id/hackatime", async (req, res) => {
     (userRow as { hackatime_token?: string } | null)?.hackatime_token ?? null,
     hackatimeProjects,
   );
-  await supabase
+  await db
     .from("project_collaborators")
     .update({ hackatime_seconds: hackatimeSeconds })
     .eq("id", id);
@@ -337,15 +334,14 @@ export function randomCode(): string {
 // Owner gets (or generates, first time) a shareable join code, an
 // alternative to the name-search invite above. Anyone holding the code can
 // redeem it to join instantly, no lookup needed.
-router.post("/api/projects/:id/collaborators/code", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/collaborators/code", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const projectId = Number(req.params.id);
   if (!Number.isFinite(projectId)) return res.status(400).json({ ok: false });
 
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("projects")
     .select("id, user_id, join_code")
     .eq("id", projectId)
@@ -358,24 +354,69 @@ router.post("/api/projects/:id/collaborators/code", async (req, res) => {
   // few times against the unique index rather than trusting that.
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = randomCode();
-    const { error } = await supabase.from("projects").update({ join_code: code }).eq("id", projectId);
+    const { error } = await db.from("projects").update({ join_code: code }).eq("id", projectId);
     if (!error) return res.json({ ok: true, code });
   }
+  res.status(500).json({ ok: false });
+});
+
+// Owner replaces the join code, e.g. after it leaked or after removing
+// someone who still has it. The old code stops working at once.
+router.post("/api/projects/:id/collaborators/code/rotate", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
+  if (!session) return res.status(401).json({ ok: false });
+
+  const projectId = Number(req.params.id);
+  const { data: existing } = await db
+    .from("projects")
+    .select("id, user_id")
+    .eq("id", projectId)
+    .eq("user_id", session.userId)
+    .maybeSingle();
+  if (!existing || existing.user_id !== session.userId) {
+    auditRequest(req, { action: "collaborators.code.rotate", target: `project:${projectId}`, result: "denied" });
+    return res.status(404).json({ ok: false });
+  }
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = randomCode();
+    const { error } = await db
+      .from("projects")
+      .update({ join_code: code })
+      .eq("id", projectId)
+      .eq("user_id", session.userId);
+    if (!error) {
+      auditRequest(req, { action: "collaborators.code.rotate", target: `project:${projectId}`, result: "ok" });
+      return res.json({ ok: true, code });
+    }
+  }
+  auditRequest(req, { action: "collaborators.code.rotate", target: `project:${projectId}`, result: "error" });
   res.status(500).json({ ok: false });
 });
 
 // Any player redeems a code to join that project as an accepted
 // collaborator immediately, the code itself is the invitation, so there's
 // no separate pending/accept step like the name-search invite has.
-router.post("/api/collaborators/redeem", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+// Redeeming is the only thing between a guesser and joining someone's
+// project, so it gets its own limit on top of the global one: per player
+// (a guess costs a signed-in account) and, more loosely, per IP (so a pile
+// of alts behind one address doesn't multiply it).
+const redeemPerUser = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 10,
+  name: "collab_redeem_user",
+  key: (req) => req.session?.userId ?? requestIpKey(req),
+});
+const redeemPerIp = rateLimit({ windowMs: 15 * 60_000, max: 40, name: "collab_redeem_ip" });
+
+router.post("/api/collaborators/redeem", redeemPerUser, redeemPerIp, validate({ query: v.noQuery, body: z.object({ code: optStr(64) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const code = String(req.body?.code ?? "").trim().toUpperCase();
   if (!code) return res.status(400).json({ ok: false, reason: "Enter a code." });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("id, name, user_id")
     .eq("join_code", code)
@@ -384,7 +425,7 @@ router.post("/api/collaborators/redeem", async (req, res) => {
   if (project.user_id === session.userId)
     return res.status(400).json({ ok: false, reason: "That's your own project." });
 
-  const { data: existingRow } = await supabase
+  const { data: existingRow } = await db
     .from("project_collaborators")
     .select("id, status")
     .eq("project_id", project.id)
@@ -394,7 +435,11 @@ router.post("/api/collaborators/redeem", async (req, res) => {
   if (existingRow) {
     if (existingRow.status === "accepted")
       return res.json({ ok: true, projectId: project.id, projectName: project.name, status: "accepted" });
-    const { error } = await supabase
+    // Someone the owner (or they themselves) removed can't walk back in with
+    // a code they kept; only a fresh invite from the owner brings them back.
+    if (existingRow.status === "removed")
+      return res.status(403).json({ ok: false, error: "removed", reason: "You were removed from this project. Ask the owner to invite you again." });
+    const { error } = await db
       .from("project_collaborators")
       .update({ status: "accepted", responded_at: new Date().toISOString() })
       .eq("id", existingRow.id);
@@ -403,7 +448,7 @@ router.post("/api/collaborators/redeem", async (req, res) => {
       return res.status(500).json({ ok: false });
     }
   } else {
-    const { error } = await supabase.from("project_collaborators").insert({
+    const { error } = await db.from("project_collaborators").insert({
       project_id: project.id,
       user_id: session.userId,
       invited_by: project.user_id,

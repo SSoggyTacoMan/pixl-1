@@ -1,4 +1,4 @@
--- description/repo_url/demo_url existed on the old Supabase projects table but
+-- description/repo_url/demo_url existed on the old hosted projects table but
 -- were never written into a migration file, so the Orchard database was built
 -- without them. The create-project route has inserted all three since ad0fd8f,
 -- which meant every create failed with 42703 "column description does not exist".

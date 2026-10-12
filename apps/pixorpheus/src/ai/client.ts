@@ -95,10 +95,10 @@ export async function aiCall(
   if (!onDelta) {
     const res = await postOpenRouter(openrouterKey, orBody, 25000);
     const data = (await res.json().catch(() => ({}))) as AIResponse["data"];
-    console.log(
-      "[openrouter] ok - content:",
-      JSON.stringify(data?.choices?.[0]?.message?.content)?.slice(0, 80),
-    );
+    // Length only: the content is generated from minors' messages and can
+    // echo them, so it never goes to stdout.
+    const content = data?.choices?.[0]?.message?.content;
+    console.log("[openrouter] ok - content length:", typeof content === "string" ? content.length : 0);
     return { data };
   }
 
@@ -141,7 +141,7 @@ export async function aiCall(
   } finally {
     reader.cancel().catch(() => {});
   }
-  console.log("[openrouter] ok (stream) - content:", JSON.stringify(full).slice(0, 80));
+  console.log("[openrouter] ok (stream) - content length:", full.length);
   return { data: { choices: [{ message: { content: full } }] } };
 }
 

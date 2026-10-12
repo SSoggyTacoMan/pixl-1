@@ -36,7 +36,7 @@ fixed, never redefined per theme (see the comment next to it in `pixl.css`).
 ## Consuming it
 
 Nothing imports `@pixl/theme` at runtime, for the same reason nothing imports
-`@pixl/config` at runtime: Railway/Vercel build from per-app roots, and the
+`@pixl/config` at runtime: Orchard builds apps from per-app Docker contexts, and the
 game runs from an exported PCK. Generated, committed copies reach every
 consumer instead:
 
@@ -47,8 +47,8 @@ bun run theme:sync
 Run that after editing `palette.json`. It rewrites:
 
 - `apps/game/theme.json` - read by `apps/game/scripts/pixl_theme.gd`
-- the color-token lines inside `apps/game/web/pixl.css`'s `:root{}` and
-  `:root[data-theme="light"]{}` blocks, between `/* <pixl-theme:...> */`
+- the color-token lines inside `apps/pixl-dashboard/app/globals.css`'s `:root{}` and
+  `:root[data-theme="dark"]{}` blocks, between `/* <pixl-theme:...> */`
   markers. Everything else in those blocks (the LEDGER design-philosophy
   comment, `--img-slot`, structural vars like `--sans`/`--radius`/`--notch`)
   is hand-authored and untouched by the sync.

@@ -407,3 +407,16 @@ describe("urlAlive - HTTPS with pinned DNS", () => {
     }
   });
 });
+
+describe("isBlockedIp special-purpose ranges", () => {
+  for (const ip of [
+    "198.18.0.1", "198.19.255.254", "192.0.0.8", "224.0.0.1", "239.255.255.250", "240.0.0.1", "255.255.255.255",
+    "64:ff9b::7f00:1", "64:ff9b::10.0.0.1", "64:ff9b::a9fe:a9fe", "2002:7f00:1::1", "2002::1",
+    "fec0::1", "feb0::1", "ff02::1", "fe90::1",
+    "0:0:0:0:0:ffff:7f00:1", "::ffff:7f00:1", "::ffff:a9fe:a9fe", "::127.0.0.1", "0:0:0:0:0:0:0:1", "fe80::1%eth0",
+  ])
+    test(`blocks ${ip}`, () => expect(isBlockedIp(ip)).toBe(true));
+
+  for (const ip of ["198.20.0.1", "192.0.1.1", "223.255.255.254", "64:ff9b::808:808", "::ffff:8.8.8.8", "2001:4860:4860::8888"])
+    test(`allows ${ip}`, () => expect(isBlockedIp(ip)).toBe(false));
+});

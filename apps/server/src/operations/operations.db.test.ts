@@ -18,6 +18,7 @@ let admin: ReturnType<typeof postgres>;
 let sql: ReturnType<typeof postgres>;
 let dbName = "";
 let testUrl = "";
+let setJwtSecret = false;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
@@ -110,15 +111,21 @@ d("operations (real Postgres)", () => {
     await admin.unsafe(`create database ${dbName}`);
     testUrl = ADMIN_URL!.replace(/\/[^/?]*(\?|$)/, `/${dbName}$1`);
     sql = postgres(testUrl, { max: 8, onnotice: () => {} });
-    process.env.DATABASE_URL = testUrl;
-    process.env.JWT_SECRET ||= "test-secret";
+    if (process.env.JWT_SECRET === undefined) {
+      process.env.JWT_SECRET = "test-secret";
+      setJwtSecret = true;
+    }
     await sql.unsafe(loadSql("testdb/base-schema.sql"));
     await sql.unsafe(loadSql("../../drizzle/0183_operations.sql"));
     await sql.unsafe(loadSql("../../drizzle/0184_blackout_window_fix.sql"));
     await sql.unsafe(loadSql("../../drizzle/0210_blackout_withdraw_needs_changes.sql"));
+    await sql.unsafe(loadSql("../../drizzle/0214_audit_log.sql"));
+    await (await import("../db/pgCompat.js")).connectForTests(testUrl);
   });
 
   afterAll(async () => {
+    await (await import("../db/pgCompat.js")).connectForTests(null);
+    if (setJwtSecret) delete process.env.JWT_SECRET;
     await sql?.end({ timeout: 2 });
     if (admin) {
       await admin.unsafe(`drop database if exists ${dbName} with (force)`);
@@ -170,8 +177,6 @@ d("operations (real Postgres)", () => {
 
   test("3+4. work between join and Blackout's end counts, whenever it ships; only work not yet in the past is excluded (real evidence code, mocked Hackatime)", async () => {
     await setOp(-48, 48);
-    process.env.DATABASE_URL = testUrl;
-    process.env.JWT_SECRET ||= "test-secret";
     const { recordShipForOperations } = await import("./service.js");
 
     const uid = await mkUser();
@@ -242,8 +247,6 @@ d("operations (real Postgres)", () => {
   // reship -> the reviewer's decision still sees all 10h, whether that
   // review happens after Blackout ends or while it's still active.
   test("evidence refresh at review time (no reship): 4h before ship + 6h after ship, all the way to Blackout's end", async () => {
-    process.env.DATABASE_URL = testUrl;
-    process.env.JWT_SECRET ||= "test-secret";
     const { recordShipForOperations, refreshEntryEvidence } = await import("./service.js");
     const realFetch = globalThis.fetch;
     const withEmptySpans = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -707,8 +710,8 @@ d("operations (real Postgres)", () => {
     expect(e.system_reason).toBe("Project banned");
   });
 
-  test("top-up examples: 1 approved hour at $4 adds about $1, at $5 and $6 adds nothing", async () => {
-    await setOp(-2, 24);
+  test("floor mode top-up examples: 1 approved hour at $4 adds about $1, at $5 and $6 adds nothing", async () => {
+    await setOp(-2, 24, { rate: 5, mode: "floor" });
     const out: Record<number, { uplift: number; rows: number }> = {};
     for (const normal of [4, 5, 6]) {
       const { uid, pid } = await shippedProject({ hours: 1 });
@@ -724,8 +727,8 @@ d("operations (real Postgres)", () => {
     expect(out[6]).toEqual({ uplift: 0, rows: 0 });
   });
 
-  test("normal payout plus top-up lands on the floor, and the cost stat counts only the top-up", async () => {
-    await setOp(-2, 24, { rate: 5 });
+  test("floor mode: normal payout plus top-up lands on the floor, and the cost stat counts only the top-up", async () => {
+    await setOp(-2, 24, { rate: 5, mode: "floor" });
     const { uid, pid } = await shippedProject({ hours: 10 });
     const normalPx = Math.round((10 * 4) / PX);
     await sql`insert into pixel_transactions (user_id, project_id, amount, hours, reason) values (${uid}, ${pid}, ${normalPx}, 10, 'project_approved')`;
@@ -876,9 +879,11 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
     const { default: express } = await import("express");
     const { default: router } = await import("../routes/operations.js");
     const { issueSessionToken } = await import("../auth/session.js");
-    token = (uid) => issueSessionToken({ userId: uid, displayName: "t" });
+    token = (uid) => issueSessionToken({ client: "web", userId: uid, displayName: "t" });
+    const { authGate } = await import("../http/gate.js");
     const app = express();
     app.use(express.json());
+    app.use(authGate());
     app.use(router);
     await new Promise<void>((res) => { server = app.listen(0, () => res()); });
     base = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
@@ -894,8 +899,10 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
     return { uid: u.id as string, pid: Number(p.id) };
   }
   const post = (path: string, tok: string | null, body: unknown) =>
-    fetch(`${base}${path}?${tok ? `token=${tok}` : ""}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
+      body: JSON.stringify(body),
     });
 
   test("17. unauthenticated and non-owner callers can't enter, and there is no route to change eligibility", async () => {
@@ -914,7 +921,7 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
       "get /api/operations/:slug",
       "post /api/operations/:slug/entries",
     ]);
-    expect((await fetch(`${base}/api/operations/${SLUG}/entries/${pid}/decision`, { method: "POST" })).status).toBe(404);
+    expect((await fetch(`${base}/api/operations/${SLUG}/entries/${pid}/decision`, { method: "POST", headers: { Authorization: `Bearer ${token(uid)}` } })).status).toBe(404);
     expect(uid).toBeTruthy();
   });
 
@@ -933,26 +940,30 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
     expect(e.first_qualified_ship_at).toBeNull();
     expect(new Date(e.joined_at).getTime()).toBeGreaterThan(Date.now() - 60_000);
     expect(Number(e.operation_id)).not.toBe(999);
-    expect((await post(`/api/operations/Not_A_Slug/entries`, token(uid), { projectId: pid })).status).toBe(404);
+    expect((await post(`/api/operations/Not_A_Slug/entries`, token(uid), { projectId: pid })).status).toBe(400);
+    expect((await post(`/api/operations/operation-missing/entries`, token(uid), { projectId: pid })).status).toBe(404);
     expect((await post(`/api/operations/nope/entries`, token(uid), { projectId: pid })).status).toBe(404);
   });
 
-  test("public status hides the briefing before the start and never leaks per-player data anonymously", async () => {
+  test("status needs a session, hides the briefing before the start and never leaks another player's entries", async () => {
     await db2`insert into operations (slug, name, starts_at, ends_at) values ('operation-later', 'Later', now() + interval '3 days', now() + interval '6 days')`;
-    const later = await (await fetch(`${base}/api/operations/operation-later`)).json();
+    expect((await fetch(`${base}/api/operations/operation-later`)).status).toBe(401);
+    const { uid: other } = await newProject();
+    const asOther = { headers: { Authorization: `Bearer ${token(other)}` } };
+    const later = await (await fetch(`${base}/api/operations/operation-later`, asOther)).json();
     expect(later.operation).toMatchObject({ status: "upcoming", briefingUnlocked: false });
     expect(later.operation.rateUsd).toBeUndefined();
     expect(later.operation.endsAt).toBeUndefined();
-    expect(later.entries).toBeUndefined();
+    expect(later.entries).toEqual([]);
 
-    const live = await (await fetch(`${base}/api/operations/${SLUG}`)).json();
+    const live = await (await fetch(`${base}/api/operations/${SLUG}`, asOther)).json();
     expect(live.operation).toMatchObject({ status: "active", briefingUnlocked: true, rateUsd: 1, rateMode: "additive", gracePeriodHours: 72 });
     expect(live.operation.power).toBeDefined();
-    expect(live.entries).toBeUndefined();
+    expect(live.entries).toEqual([]);
 
     const { uid, pid } = await newProject();
     await post(`/api/operations/${SLUG}/entries`, token(uid), { projectId: pid });
-    const mine = await (await fetch(`${base}/api/operations/${SLUG}?token=${token(uid)}`)).json();
+    const mine = await (await fetch(`${base}/api/operations/${SLUG}`, { headers: { Authorization: `Bearer ${token(uid)}` } })).json();
     expect(mine.entries).toHaveLength(1);
     expect(mine.entries[0]).toMatchObject({ projectId: pid, label: "entered" });
     expect(Object.keys(mine.entries[0]).sort()).toEqual(["firstShipAt", "graceDeadline", "joinedAt", "label", "projectId"]);
@@ -961,7 +972,7 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
   test("withdraw works before the first Blackout ship and during a fix window, never mid-review", async () => {
     const { uid, pid } = await newProject();
     await post(`/api/operations/${SLUG}/entries`, token(uid), { projectId: pid });
-    const del = (p: number) => fetch(`${base}/api/operations/${SLUG}/entries/${p}?token=${token(uid)}`, { method: "DELETE" });
+    const del = (p: number) => fetch(`${base}/api/operations/${SLUG}/entries/${p}`, { method: "DELETE", headers: { Authorization: `Bearer ${token(uid)}` } });
     const count = async () => (await db2`select count(*)::int as n from operation_entries where project_id = ${pid}`)[0].n;
     expect((await del(pid)).status).toBe(200);
     expect(await count()).toBe(0);
@@ -973,7 +984,7 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
     await db2`update projects set status = 'needs_changes' where id = ${pid}`;
     await db2`select operation_request_changes(${pid})`;
     const nonOwner = await newProject();
-    const delAs = (u: string) => fetch(`${base}/api/operations/${SLUG}/entries/${pid}?token=${token(u)}`, { method: "DELETE" });
+    const delAs = (u: string) => fetch(`${base}/api/operations/${SLUG}/entries/${pid}`, { method: "DELETE", headers: { Authorization: `Bearer ${token(u)}` } });
     expect((await delAs(nonOwner.uid)).status).toBe(400);
     expect((await del(pid)).status).toBe(200);
     expect(await count()).toBe(0);
@@ -993,7 +1004,7 @@ describe("operations HTTP routes (real router, real Postgres)", () => {
     await db2`insert into operation_entry_contributors (entry_id, user_id, role, settled_at)
       values (${entryId}, ${uid}, 'owner', now())
       on conflict (entry_id, user_id) do update set settled_at = now()`;
-    const r = await fetch(`${base}/api/operations/${SLUG}/entries/${pid}?token=${token(uid)}`, { method: "DELETE" });
+    const r = await fetch(`${base}/api/operations/${SLUG}/entries/${pid}`, { method: "DELETE", headers: { Authorization: `Bearer ${token(uid)}` } });
     expect(r.status).toBe(400);
   });
 });

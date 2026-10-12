@@ -4,12 +4,13 @@
  *   bun run config:sync
  *
  * This package is a *build-time* source of truth, not a runtime dependency.
- * Nothing imports "@pixl/config" at runtime, deliberately: both Railway services
- * build from a `/apps/<app>` root directory, so a workspace package sitting
- * outside that directory does not exist at install time and `bun install`
- * fails with "Workspace dependency @pixl/config not found". Generating a
- * self-contained file into each app sidesteps package resolution everywhere -
- * Railway, Vercel, the Godot export, and plain <script> tags all just work.
+ * Nothing imports "@pixl/config" at runtime, deliberately: on Orchard the
+ * server, Pixo and the internal dashboard build from their own `apps/<app>`
+ * Docker build context, so a workspace package sitting outside that directory
+ * does not exist at install time and `bun install` fails with "Workspace
+ * dependency @pixl/config not found". Generating a self-contained file into
+ * each app sidesteps package resolution everywhere - per-app Docker builds,
+ * the Godot export, and plain <script> tags all just work.
  *
  * Every target below is committed (the apps need them to build and run) but
  * generated. Hand-edits are overwritten on the next run. See README.md.
@@ -45,22 +46,6 @@ await write(
   `${ROOT}apps/game/pixl.json`,
   `${JSON.stringify({ _generated: NOTE, ...config }, null, 2)}\n`,
 );
-
-// --- The game's web pages ---------------------------------------------------
-// pixl.js is loaded by all 14 pages, so one injected block reaches every one of
-// them without touching a single HTML file.
-const OPEN = "  // <pixl-config>";
-const CLOSE = "  // </pixl-config>";
-const WEB_TARGET = `${ROOT}apps/game/web/pixl.js`;
-const web = await readFile(WEB_TARGET, "utf8");
-const start = web.indexOf(OPEN);
-const end = web.indexOf(CLOSE);
-if (start === -1 || end === -1) {
-  console.error(`[config:sync] missing ${OPEN} / ${CLOSE} markers in ${WEB_TARGET}`);
-  process.exit(1);
-}
-const block = [OPEN, `  // ${NOTE}`, `  const config = ${pretty.replace(/\n/g, "\n  ")};`, CLOSE];
-await write(WEB_TARGET, web.slice(0, start) + block.join("\n") + web.slice(end + CLOSE.length));
 
 // --- TypeScript apps --------------------------------------------------------
 // Self-contained on purpose: no import of this package, so each app's build only
@@ -212,9 +197,8 @@ export const launchDateLabel = formatDate(launchDate, {
 for (const target of [
   "apps/server/src/config.generated.ts",
   "apps/pixorpheus/src/config.generated.ts",
-  "apps/landing/app/_generated/config.ts",
-  "apps/dashboard/app/_generated/config.ts",
-  "apps/web-shell/app/_generated/config.ts",
+  "apps/internal-dashboard/app/_generated/config.ts",
+  "apps/pixl-dashboard/app/_generated/config.ts",
 ]) {
   await write(`${ROOT}${target}`, ts);
 }

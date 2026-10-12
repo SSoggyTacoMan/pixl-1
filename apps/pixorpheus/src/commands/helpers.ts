@@ -1,59 +1,30 @@
 import { app } from "../slack/app.js";
 import { db } from "../db/client.js";
-import { checkIsHelper, checkIsInTicketChannel } from "../tickets/service.js";
+import { audit } from "../audit.js";
+import { handleHelperAdmin, type HelperAdminDeps } from "./helperAdmin.js";
 
-app.command("/pixl-addhelper", async ({ command, ack, respond, client }) => {
-  await ack();
-  const requesterId = command.user_id;
-  const isAdmin = await checkIsHelper(requesterId);
-  const isInTicketChannel = await checkIsInTicketChannel(requesterId, client);
-
-  if (!isAdmin && !isInTicketChannel) {
-    await respond({
-      text: "Only support team members can add helpers. To bootstrap, add your Slack user ID to `SLACK_ADMIN_USER_IDS`.",
-    });
-    return;
-  }
-
-  const mention = command.text?.trim();
-  const userId = mention?.match(/<@([A-Z0-9]+)(?:\|[^>]+)?>/)?.[1] || mention;
-
-  if (!userId) {
-    await respond({ text: "Usage: `/pixl-addhelper @username`" });
-    return;
-  }
-
-  try {
-    await db()
+const helperAdminDeps: HelperAdminDeps = {
+  addHelper: async (slackUserId) => {
+    const { error } = await db()
       .from("helpers")
-      .upsert({ slack_user_id: userId }, { onConflict: "slack_user_id", ignoreDuplicates: true });
-    await respond({ text: `<@${userId}> is now a helper.` });
-  } catch (e) {
-    await respond({ text: "Failed to add helper." });
-  }
+      .upsert({ slack_user_id: slackUserId }, { onConflict: "slack_user_id", ignoreDuplicates: true });
+    if (error) throw new Error(error.message);
+  },
+  removeHelper: async (slackUserId) => {
+    const { error } = await db().from("helpers").delete().eq("slack_user_id", slackUserId);
+    if (error) throw new Error(error.message);
+  },
+  audit,
+};
+
+app.command("/pixl-addhelper", async ({ command, ack, respond }) => {
+  await ack();
+  await respond({ text: await handleHelperAdmin("add", command.user_id, command.text, helperAdminDeps) });
 });
 
-app.command("/pixl-removehelper", async ({ command, ack, respond, client }) => {
+app.command("/pixl-removehelper", async ({ command, ack, respond }) => {
   await ack();
-  const requesterId = command.user_id;
-  const isInTicketChannel = await checkIsInTicketChannel(requesterId, client);
-  const isHelper = await checkIsHelper(requesterId);
-
-  if (!isHelper && !isInTicketChannel) {
-    await respond({ text: "Only support team members can remove helpers." });
-    return;
-  }
-
-  const mention = command.text?.trim();
-  const userId = mention?.match(/<@([A-Z0-9]+)(?:\|[^>]+)?>/)?.[1] || mention;
-
-  if (!userId) {
-    await respond({ text: "Usage: `/pixl-removehelper @username`" });
-    return;
-  }
-
-  await db().from("helpers").delete().eq("slack_user_id", userId);
-  await respond({ text: `<@${userId}> is no longer a helper.` });
+  await respond({ text: await handleHelperAdmin("remove", command.user_id, command.text, helperAdminDeps) });
 });
 
 app.command("/pixl-helpers", async ({ ack, respond }) => {

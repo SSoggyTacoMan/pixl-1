@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { clientIpFrom, isCloudflareAddress, normalizeIp, rateLimitIpKey, requestIpKey } from "./clientIp.js";
 
 const CF_PEER = "162.158.10.20";
@@ -130,13 +129,5 @@ describe("requestIpKey", () => {
     };
     expect(requestIpKey(req)).toBe("2001:db8:0:0::/64");
     expect(requestIpKey({ ...req, headers: { ...req.headers, "x-forwarded-for": DIRECT_PEER } })).toBe(DIRECT_PEER);
-  });
-});
-
-describe("landing copy", () => {
-  test("apps/landing/lib/clientIp.ts is byte-identical to this module", () => {
-    const server = readFileSync(new URL("./clientIp.ts", import.meta.url), "utf8");
-    const landing = readFileSync(new URL("../../landing/lib/clientIp.ts", import.meta.url), "utf8");
-    expect(landing).toBe(server);
   });
 });

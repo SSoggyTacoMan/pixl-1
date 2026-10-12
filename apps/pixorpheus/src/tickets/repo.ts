@@ -6,7 +6,6 @@ export function normalizeTicket(t: Record<string, unknown> | null | undefined): 
   return {
     ...t,
     msg_ts: tsStr(t.msg_ts),
-    ticket_msg_ts: tsStr(t.ticket_msg_ts),
     title_prompt_ts: tsStr(t.title_prompt_ts),
   } as TicketRow;
 }

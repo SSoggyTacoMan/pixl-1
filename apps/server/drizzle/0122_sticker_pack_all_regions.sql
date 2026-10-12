@@ -10,7 +10,7 @@
 -- discrepancy left untouched here). The (name, region) unique constraint from
 -- 0100 means ON CONFLICT DO NOTHING makes this idempotent.
 --
--- Safe to run more than once. Run this in the Supabase SQL editor.
+-- Safe to run more than once. Run this with psql against the Orchard database.
 
 INSERT INTO shop_items
   (name, description, price, image_url, options, config_options,

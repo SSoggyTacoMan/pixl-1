@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
+import { z } from "zod";
+import { validate, v, params } from "../http/validate.js";
 
 const router = Router();
 
@@ -12,10 +13,9 @@ const router = Router();
 // Browsable signed out (same pattern as the shop catalog), voting requires
 // a session.
 router.get("/api/show-n-tell", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
 
-  const { data: round } = await supabase
+  const { data: round } = await db
     .from("show_n_tell_rounds")
     .select("id, title, opened_at")
     .eq("is_open", true)
@@ -26,7 +26,7 @@ router.get("/api/show-n-tell", async (req, res) => {
   // pgCompat only supports one level of embedded relation select (see its
   // own header comment) - projects(...users(...)) would be two levels deep,
   // so the owner name is fetched separately below instead of nesting.
-  const { data: entries, error } = await supabase
+  const { data: entries, error } = await db
     .from("show_n_tell_entries")
     .select("id, project_id, custom_name, projects(name, description, image_url, user_id)")
     .eq("round_id", round.id);
@@ -39,7 +39,7 @@ router.get("/api/show-n-tell", async (req, res) => {
   const counts = new Map<number, number>();
   const mine = new Set<number>();
   if (entryIds.length > 0) {
-    const { data: votes } = await supabase
+    const { data: votes } = await db
       .from("show_n_tell_votes")
       .select("entry_id, user_id")
       .in("entry_id", entryIds);
@@ -59,7 +59,7 @@ router.get("/api/show-n-tell", async (req, res) => {
   ];
   const ownerName = new Map<string, string>();
   if (ownerIds.length > 0) {
-    const { data: owners } = await supabase
+    const { data: owners } = await db
       .from("users")
       .select("id, display_name")
       .in("id", ownerIds);
@@ -74,7 +74,7 @@ router.get("/api/show-n-tell", async (req, res) => {
     .filter((id): id is number => id != null);
   const myCollabProjectIds = new Set<number>();
   if (session && realProjectIds.length > 0) {
-    const { data: collabRows } = await supabase
+    const { data: collabRows } = await db
       .from("project_collaborators")
       .select("project_id")
       .in("project_id", realProjectIds)
@@ -120,9 +120,8 @@ router.get("/api/show-n-tell", async (req, res) => {
 // Voting on a DIFFERENT entry in the same round moves the vote there instead
 // of stacking (one live vote per round, per user), and voting for your own
 // entry (owner or an accepted collaborator) is rejected outright.
-router.post("/api/show-n-tell/entries/:id/vote", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/show-n-tell/entries/:id/vote", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const entryId = Number(req.params.id);
@@ -134,20 +133,20 @@ router.post("/api/show-n-tell/entries/:id/vote", async (req, res) => {
   // (never checked below) and made every vote fail with round_closed. Two
   // plain queries instead, same workaround already used in the GET handler
   // above for the same reason.
-  const { data: entry } = await supabase
+  const { data: entry } = await db
     .from("show_n_tell_entries")
     .select("id, round_id, project_id")
     .eq("id", entryId)
     .maybeSingle();
   if (!entry) return res.status(400).json({ ok: false, error: "round_closed" });
-  const { data: round } = await supabase
+  const { data: round } = await db
     .from("show_n_tell_rounds")
     .select("is_open")
     .eq("id", entry.round_id as number)
     .maybeSingle();
   if (!round?.is_open) return res.status(400).json({ ok: false, error: "round_closed" });
 
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from("show_n_tell_votes")
     .select("id")
     .eq("entry_id", entryId)
@@ -155,7 +154,7 @@ router.post("/api/show-n-tell/entries/:id/vote", async (req, res) => {
     .maybeSingle();
 
   if (existing) {
-    const { error } = await supabase.from("show_n_tell_votes").delete().eq("id", existing.id);
+    const { error } = await db.from("show_n_tell_votes").delete().eq("id", existing.id);
     if (error) return res.status(500).json({ ok: false });
     return res.json({ ok: true, voted: false });
   }
@@ -164,14 +163,14 @@ router.post("/api/show-n-tell/entries/:id/vote", async (req, res) => {
   // accepted collaborator on it. A custom (non-project) entry has no owner,
   // so this is skipped entirely for those.
   if (entry.project_id != null) {
-    const { data: project } = await supabase
+    const { data: project } = await db
       .from("projects")
       .select("user_id")
       .eq("id", entry.project_id as number)
       .maybeSingle();
     if (project?.user_id === session.userId)
       return res.status(400).json({ ok: false, error: "own_project" });
-    const { data: collab } = await supabase
+    const { data: collab } = await db
       .from("project_collaborators")
       .select("id")
       .eq("project_id", entry.project_id as number)
@@ -181,15 +180,31 @@ router.post("/api/show-n-tell/entries/:id/vote", async (req, res) => {
     if (collab) return res.status(400).json({ ok: false, error: "own_project" });
   }
 
-  // Only one live vote per round, per user - drop any existing vote this
-  // user has on another entry in the same round before adding the new one.
-  const { data: roundEntries } = await supabase
+  // Only one live vote per round, per user. With 0217 applied the database
+  // enforces it (UNIQUE (round_id, user_id), round_id filled by a trigger
+  // from the entry), so one upsert moves the vote atomically - two parallel
+  // requests can no longer both land. Before 0217 there is no such
+  // constraint (42P10) or column (42703): fall back to delete + insert.
+  const { error: upsertError } = await db
+    .from("show_n_tell_votes")
+    .upsert(
+      { entry_id: entryId, user_id: session.userId, round_id: entry.round_id as number },
+      { onConflict: "round_id,user_id" },
+    );
+  if (!upsertError) return res.json({ ok: true, voted: true });
+  const code = (upsertError as { code?: string }).code;
+  if (code !== "42P10" && code !== "42703") {
+    console.error("[show-n-tell] vote upsert failed", upsertError);
+    return res.status(500).json({ ok: false });
+  }
+
+  const { data: roundEntries } = await db
     .from("show_n_tell_entries")
     .select("id")
     .eq("round_id", entry.round_id as number);
   const roundEntryIds = (roundEntries ?? []).map((e) => e.id as number);
   if (roundEntryIds.length > 0) {
-    const { error: clearError } = await supabase
+    const { error: clearError } = await db
       .from("show_n_tell_votes")
       .delete()
       .eq("user_id", session.userId)
@@ -200,7 +215,7 @@ router.post("/api/show-n-tell/entries/:id/vote", async (req, res) => {
     }
   }
 
-  const { error } = await supabase
+  const { error } = await db
     .from("show_n_tell_votes")
     .insert({ entry_id: entryId, user_id: session.userId });
   if (error) {

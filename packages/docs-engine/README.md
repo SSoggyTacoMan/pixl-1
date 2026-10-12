@@ -1,7 +1,8 @@
 # @pixl/docs-engine
 
-Builds `docs/*.md` into one static page per doc under `apps/game/web/docs/`,
-each with its own `<head>`, its own Open Graph tags and its own preview card.
+Builds an Open Graph preview card per `docs/*.md` page into
+`apps/pixl-dashboard/public/docs/<slug>/og.png`. The pages themselves are
+rendered at request time by `apps/pixl-dashboard` (it imports `src/markdown.ts`).
 
 ```bash
 bun run docs:build      # from the repo root
@@ -42,8 +43,7 @@ Available tokens: `basePx` `maxPx` `baseUsd` `maxUsd` `reCap` `maxLevel`
 
 ## Output
 
-Everything under `apps/game/web/docs/<slug>/` is generated and gets wiped on
-each build. `docs.css` and `docs.js` sit alongside and are hand-maintained.
+Everything under `apps/pixl-dashboard/public/docs/<slug>/` is generated.
 
 The preview cards are drawn by `src/png.ts` (a small PNG encoder) and
 `src/font.ts` (a 5x7 bitmap font) rather than a rasterizer dependency, so the

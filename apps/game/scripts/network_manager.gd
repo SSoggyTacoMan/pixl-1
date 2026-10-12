@@ -19,44 +19,55 @@ signal lobby_denied(reason: String)
 signal village_invited(invite_id: int, from_name: String, lobby_name: String)
 signal lobby_theme_changed(theme: String)
 signal name_result(ok: bool, text: String)
+signal login_failed(reason: String)
 
-const DEV_SERVER_URL = "http://localhost:4728"
-const DEV_WS_URL = "ws://localhost:4728/ws"
-
-const USE_PROD: bool = true
-
-# The prod hosts live in packages/config/pixl.json and reach the export through
+# The hosts live in packages/config/pixl.json and reach the export through
 # res://pixl.json, so moving domains is one config edit plus `bun run
 # config:sync` rather than a hunt through the scripts. These are vars, not
 # consts, because a const has to be known at parse time and this reads the
-# synced file at runtime.
-var SERVER_HTTP_URL: String = PixlConfig.url("server", "https://server.pixl.hackclub.com") if USE_PROD else DEV_SERVER_URL
-var SERVER_WS_URL: String = PixlConfig.url("ws", "wss://server.pixl.hackclub.com/ws") if USE_PROD else DEV_WS_URL
+# synced file at runtime. There is no dev/local override on purpose: the
+# server only accepts the configured play origin.
+var SERVER_HTTP_URL: String = PixlConfig.url("server", "https://server.pixl.hackclub.com")
+var SERVER_WS_URL: String = PixlConfig.url("ws", "wss://server.pixl.hackclub.com/ws")
 
 var session_token: String = ""
 var user_id: String = ""
 var display_name: String = ""
 var _blocked: Dictionary = {}
 var is_new_account: bool = false
+var needs_legal_name: bool = false
 var ban_message: String = ""
+# Shown once on the login screen after the server forced a re-login (4401).
+var login_notice: String = ""
 var local_skin: String = "cvc:1"
 var current_scene_name: String = "village"
 var current_lobby_id: String = ""
 var current_lobby_theme: String = ""
 var _socket: WebSocketPeer = WebSocketPeer.new()
 var _connected: bool = false
+# True once the server has answered our first-message auth (it sends nothing
+# before the session checks pass). Nothing else is sent until then.
+var _authed: bool = false
+var _auth_sent: bool = false
 const WebLogin := preload("res://scripts/web_login.gd")
 const TOKEN_SAVE_PATH = "user://session.dat"
-const LOCAL_CALLBACK_PORT = 7777
-var _tcp_server: TCPServer = TCPServer.new()
-var _listening: bool = false
 var _http: HTTPRequest
 var _pending_scene_change: String = ""
 var _connect_deadline_msec: int = 0
 const CONNECT_TIMEOUT_MSEC := 8000
 
 func _is_socket_open() -> bool:
-	return _socket.get_ready_state() == WebSocketPeer.STATE_OPEN
+	return _authed and _socket.get_ready_state() == WebSocketPeer.STATE_OPEN
+
+## Headers for an authenticated call to the game server. The session token only
+## ever travels in the Authorization header, never in a URL.
+func auth_headers(extra: Array = []) -> PackedStringArray:
+	var headers := PackedStringArray()
+	if session_token != "":
+		headers.append("Authorization: Bearer " + session_token)
+	for h in extra:
+		headers.append(String(h))
+	return headers
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -64,8 +75,11 @@ func _ready() -> void:
 	_http = HTTPRequest.new()
 	add_child(_http)
 
-	if OS.has_feature("web"):
-		_check_web_login_callback()
+	# A fresh return from Hack Club Auth carries a one-time code to exchange;
+	# that exchange replaces whatever session was saved, so don't also connect
+	# with the old one in the meantime.
+	if OS.has_feature("web") and _check_web_login_callback():
+		return
 
 	_try_auto_login()
 
@@ -101,29 +115,32 @@ func clear_session() -> void:
 	session_token = ""
 	display_name = ""
 	user_id = ""
+	needs_legal_name = false
 	if FileAccess.file_exists(TOKEN_SAVE_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(TOKEN_SAVE_PATH))
-	# The dashboard and the rest of the web pages hold their own copy of the
-	# token, so drop that one too rather than leaving them signed in.
 	WebPages.sign_out()
 
 func _process(_delta: float) -> void:
-	if _listening:
-		_process_login_listener()
 	if not _connected:
 		return
 	_socket.poll()
 	var state = _socket.get_ready_state()
 	if state == WebSocketPeer.STATE_OPEN:
 		_connect_deadline_msec = 0
-		if _pending_scene_change != "":
-			var sc := _pending_scene_change
-			_pending_scene_change = ""
-			_socket.send_text(JSON.stringify({ "type": "change_scene", "scene": sc }))
+		if not _auth_sent:
+			# The server closes with 4401 unless this is the first message.
+			_auth_sent = true
+			_socket.send_text(JSON.stringify({ "type": "auth", "token": session_token }))
 		while _socket.get_available_packet_count() > 0:
 			var pkt := _socket.get_packet()
 			if _socket.was_string_packet():
+				# The server only talks to us once the auth was accepted.
+				_authed = true
 				_handle_message(pkt.get_string_from_utf8())
+		if _authed and _pending_scene_change != "":
+			var sc := _pending_scene_change
+			_pending_scene_change = ""
+			_socket.send_text(JSON.stringify({ "type": "change_scene", "scene": sc }))
 	elif state == WebSocketPeer.STATE_CONNECTING:
 		# The handshake can hang indefinitely (never reaching OPEN or CLOSED)
 		# on a flaky connection - without this, request_lobby_list() and
@@ -134,10 +151,16 @@ func _process(_delta: float) -> void:
 	elif state == WebSocketPeer.STATE_CLOSED:
 		var was_connected := _connected
 		_connected = false
+		_authed = false
 		if was_connected:
 			var code = _socket.get_close_code()
 			if code == 4001:
 				clear_session()
+			elif code == 4401:
+				# Missing, invalid, expired or revoked token: sign in again.
+				clear_session()
+				login_notice = "Your session expired. Please log in again."
+				get_tree().change_scene_to_file("res://scenes/login.tscn")
 			elif code == 4003:
 				ban_message = _socket.get_close_reason()
 				if ban_message == "":
@@ -146,87 +169,65 @@ func _process(_delta: float) -> void:
 		emit_signal("disconnected_from_server")
 
 func start_login() -> void:
-	if OS.has_feature("web"):
-		_start_login_web()
-	else:
-		_start_login_desktop()
-
-func _start_login_desktop() -> void:
-	var err = _tcp_server.listen(LOCAL_CALLBACK_PORT, "127.0.0.1")
-	if err != OK:
-		push_error("Could not start local login listener: %s" % err)
+	if not OS.has_feature("web"):
+		# The server only redirects back to the configured web origins, so
+		# there is no way to finish a login in a native build.
+		login_failed.emit("Logging in only works in the web version at " + PixlConfig.url("play", "https://play.pixl.hackclub.com"))
 		return
-	_listening = true
-	OS.shell_open(SERVER_HTTP_URL + "/auth/hackclub")
+	_start_login_web()
 
 func _start_login_web() -> void:
 	var nonce := WebLogin.begin()
-	if nonce == "":
-		push_error("Could not start a secure web login")
+	var redirect := WebLogin.return_url()
+	if nonce == "" or redirect == "":
+		login_failed.emit("Could not start a secure login. Try again.")
 		return
-	var current_url = JavaScriptBridge.eval(
-		"window.location.origin + window.location.pathname", true
-	)
-	var redirect_target = SERVER_HTTP_URL + "/auth/hackclub?web_redirect=" + String(current_url).uri_encode() + "&nonce=" + nonce
-	JavaScriptBridge.eval("window.location.href = '%s';" % redirect_target, true)
+	var target := SERVER_HTTP_URL + "/auth/hackclub?redirect=" + redirect.uri_encode() + "&state=" + nonce.uri_encode()
+	JavaScriptBridge.eval("window.location.href = %s;" % JSON.stringify(target), true)
 
-func _check_web_login_callback() -> void:
-	var login := WebLogin.take()
-	if login.is_empty():
-		return
-	session_token = String(login.get("token", ""))
-	display_name = String(login.get("name", ""))
-	is_new_account = bool(login.get("isNew", false))
-	_save_session()
-	emit_signal("logged_in", display_name)
-	_connect_to_server()
+# Returns true when the page was loaded by a login redirect and a code
+# exchange is now in flight.
+func _check_web_login_callback() -> bool:
+	var code := WebLogin.take_code()
+	if code == "":
+		return false
+	_exchange_login_code(code)
+	return true
 
-func _process_login_listener() -> void:
-	if not _tcp_server.is_connection_available():
-		return
-	var conn: StreamPeerTCP = _tcp_server.take_connection()
-	await get_tree().create_timer(0.05).timeout
-	conn.poll()
-	var available = conn.get_available_bytes()
-	if available <= 0:
-		return
-	var request = conn.get_utf8_string(available)
-	var token = _extract_query_param(request, "token")
-	var name = _extract_query_param(request, "name")
-	var body = "<html><body style='font-family:sans-serif;text-align:center;margin-top:4rem;'><h2>Logged in! You can close this tab.</h2></body></html>"
-	var response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" % [body.length(), body]
-	conn.put_data(response.to_utf8_buffer())
-	conn.disconnect_from_host()
-	_tcp_server.stop()
-	_listening = false
-	if token != "":
-		session_token = token
-		display_name = name
-		is_new_account = _extract_query_param(request, "new") == "1"
+func _exchange_login_code(code: String) -> void:
+	var req := HTTPRequest.new()
+	add_child(req)
+	req.request_completed.connect(func(_result, status, _headers, data):
+		req.queue_free()
+		var json = JSON.parse_string(data.get_string_from_utf8()) if data.size() > 0 else null
+		if status != 200 or typeof(json) != TYPE_DICTIONARY or String(json.get("token", "")) == "":
+			push_error("Login code exchange failed (HTTP %d)" % status)
+			login_failed.emit("Login failed. Please try again.")
+			# Fall back to whatever session was saved before, if any.
+			_try_auto_login()
+			return
+		session_token = String(json["token"])
+		var user = json.get("user", {})
+		if typeof(user) == TYPE_DICTIONARY:
+			user_id = String(user.get("id", ""))
+			display_name = String(user.get("displayName", ""))
+		is_new_account = bool(json.get("isNew", false))
+		needs_legal_name = bool(json.get("needsLegalName", false))
 		_save_session()
 		emit_signal("logged_in", display_name)
 		_connect_to_server()
-	else:
-		push_error("Login callback did not contain a token")
-
-func _extract_query_param(http_request: String, key: String) -> String:
-	var first_line = http_request.split("\r\n")[0]
-	var parts = first_line.split(" ")
-	if parts.size() < 2:
-		return ""
-	var path_and_query = parts[1]
-	var query_index = path_and_query.find("?")
-	if query_index == -1:
-		return ""
-	var query = path_and_query.substr(query_index + 1)
-	return _extract_query_param_from_string(query, key)
-
-func _extract_query_param_from_string(query: String, key: String) -> String:
-	for pair in query.split("&"):
-		var kv = pair.split("=")
-		if kv.size() == 2 and kv[0] == key:
-			return kv[1].uri_decode()
-	return ""
+	)
+	var err := req.request(
+		SERVER_HTTP_URL + "/auth/exchange",
+		PackedStringArray(["Content-Type: application/json"]),
+		HTTPClient.METHOD_POST,
+		JSON.stringify({ "code": code })
+	)
+	if err != OK:
+		req.queue_free()
+		push_error("Could not send login code exchange: %s" % err)
+		login_failed.emit("Login failed. Please try again.")
+		_try_auto_login()
 
 # --- CONNECTION ---
 func _connect_to_server() -> void:
@@ -235,8 +236,10 @@ func _connect_to_server() -> void:
 		_socket.close()
 		_connected = false
 
-	var url = SERVER_WS_URL + "?token=" + session_token
-	var err = _socket.connect_to_url(url)
+	_authed = false
+	_auth_sent = false
+	# No token in the URL: it goes in the first message once the socket opens.
+	var err = _socket.connect_to_url(SERVER_WS_URL)
 	if err != OK:
 		push_error("WebSocket connection failed: %s" % err)
 		return
@@ -381,8 +384,7 @@ func submit_display_name(name: String) -> void:
 				reason = String(json["reason"])
 			emit_signal("name_result", false, reason)
 	)
-	var url := SERVER_HTTP_URL + "/api/profile/name?token=" + session_token.uri_encode()
-	req.request(url, PackedStringArray(["Content-Type: application/json"]), HTTPClient.METHOD_POST, JSON.stringify({"name": name}))
+	req.request(SERVER_HTTP_URL + "/api/profile/name", auth_headers(["Content-Type: application/json"]), HTTPClient.METHOD_POST, JSON.stringify({"name": name}))
 
 # The socket can close mid-session (a network blip, or the server's 30s
 # heartbeat terminating us while a browser tab is throttled) and nothing in a
@@ -506,4 +508,17 @@ func logout() -> void:
 	if _socket.get_ready_state() != WebSocketPeer.STATE_CLOSED:
 		_socket.close()
 	_connected = false
+	_authed = false
+	_revoke_session_on_server()
 	clear_session()
+
+# Fire-and-forget: the local session is dropped either way, this just makes
+# sure the token is dead on the server too.
+func _revoke_session_on_server() -> void:
+	if session_token == "":
+		return
+	var req := HTTPRequest.new()
+	add_child(req)
+	req.request_completed.connect(func(_result, _status, _headers, _data): req.queue_free())
+	if req.request(SERVER_HTTP_URL + "/auth/logout", auth_headers(["Content-Type: application/json"]), HTTPClient.METHOD_POST, "{}") != OK:
+		req.queue_free()

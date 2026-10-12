@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { requestIpKey } from "./clientIp.js";
+import { auditRequestThrottled } from "./audit.js";
 
 // fixed window, per IP
 interface Bucket {
@@ -70,6 +71,12 @@ export function rateLimit(opts: RateLimitOptions) {
     if (req.method === "OPTIONS") return next();
     const retryAfter = consumeRateLimit(opts, opts.key?.(req) ?? requestIpKey(req));
     if (retryAfter !== null) {
+      auditRequestThrottled(req, {
+        action: "ratelimit.hit",
+        target: opts.name,
+        result: "denied",
+        meta: { method: req.method },
+      });
       res.setHeader("Retry-After", retryAfter);
       return res.status(429).json({ ok: false, error: "rate_limited" });
     }

@@ -1,0 +1,22 @@
+/* Scoped under .stt-page so these names never collide with other routes' CSS. */
+.stt-page .stt-list { display: flex; flex-direction: column; gap: 14px; margin-top: 22px; }
+.stt-page .stt-card { padding: 16px 18px; display: flex; gap: 14px; align-items: center; }
+.stt-page .stt-thumb { width: 64px; height: 64px; flex-shrink: 0; overflow: hidden; border: var(--bw) solid var(--stroke); background: var(--panel-deep); display: flex; align-items: center; justify-content: center; }
+.stt-page .stt-thumb img { width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; }
+.stt-page .stt-body { min-width: 0; flex: 1; }
+.stt-page .stt-name { font-family: var(--pixel); font-size: 16px; letter-spacing: .3px; color: var(--ink); overflow-wrap: anywhere; }
+.stt-page .stt-owner { font-size: 12.5px; color: var(--faint); margin-top: 2px; }
+.stt-page .stt-desc { font-size: 13px; color: var(--dim); margin-top: 6px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.stt-page .stt-vote { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.stt-page .stt-vote-btn { width: 52px; height: 52px; border: var(--bw) solid var(--stroke); background: var(--panel-deep); color: var(--ink); font-family: var(--pixel); font-size: 20px; cursor: pointer; }
+.stt-page .stt-vote-btn:hover { border-color: var(--accent); }
+.stt-page .stt-vote-btn:disabled { cursor: progress; }
+.stt-page .stt-vote-btn.voted { background: var(--accent); color: var(--panel-deep); border-color: var(--accent); }
+.stt-page .stt-vote-own { display: inline-flex; align-items: center; justify-content: center; color: var(--faint); cursor: default; }
+.stt-page .stt-vote-own:hover { border-color: var(--stroke); }
+.stt-page .stt-vote-count { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.stt-page .stt-rank { width: 26px; text-align: center; font-family: var(--pixel); font-size: 14px; color: var(--faint); flex-shrink: 0; }
+.stt-page .stt-rank.top1 { color: var(--gold); }
+.stt-page .stt-rank.top2 { color: var(--teal); }
+.stt-page .stt-rank.top3 { color: var(--gold-soft); }
+@media (max-width: 480px) { .stt-page .stt-thumb { width: 48px; height: 48px; } .stt-page .stt-card { gap: 10px; padding: 12px; } }

@@ -1,5 +1,48 @@
 import sharp from "sharp";
 
+// One libvips worker thread per sanitization: with the semaphore below this
+// bounds how much CPU a burst of uploads can take from the game server.
+sharp.concurrency(1);
+
+// Decompression-bomb limits. A tiny PNG can declare 100000x100000 pixels in
+// its header and make a full decode allocate tens of GB, so the declared size
+// is checked from the header (metadata() decodes no pixel data) before any
+// decode, and sharp is also told to refuse anything bigger on its own.
+export const MAX_INPUT_PIXELS = 40_000_000;
+export const MAX_IMAGE_SIDE = 10_000;
+
+// A decode that takes longer than this is aborted by libvips itself
+// (sharp's timeout()), so a pathological file can't hold one of the
+// MAX_CONCURRENT slots below forever. Real uploads under the pixel cap
+// decode in well under a second.
+export const DECODE_TIMEOUT_SEC = 15;
+
+// At most MAX_CONCURRENT decodes at once, at most MAX_WAITING queued behind
+// them; past that an upload is told to retry instead of piling up.
+const MAX_CONCURRENT = 2;
+const MAX_WAITING = 20;
+let running = 0;
+const waiting: (() => void)[] = [];
+
+export async function withSanitizeSlot<T>(fn: () => Promise<T>): Promise<T | typeof BUSY> {
+  if (running >= MAX_CONCURRENT) {
+    if (waiting.length >= MAX_WAITING) return BUSY;
+    await new Promise<void>((resolve) => waiting.push(resolve));
+  } else {
+    running++;
+  }
+  try {
+    return await fn();
+  } finally {
+    // Hand the slot straight to the next waiter (running stays the same), or
+    // free it.
+    const next = waiting.shift();
+    if (next) next();
+    else running--;
+  }
+}
+export const BUSY: unique symbol = Symbol("sanitize-busy");
+
 const MIME_TO_FORMAT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpeg",
@@ -20,8 +63,17 @@ export function sniffFormat(buf: Buffer): "png" | "jpeg" | "webp" | null {
 }
 
 export type SanitizeResult =
-  | { ok: true; buffer: Buffer }
-  | { ok: false; buffer?: undefined };
+  | { ok: true; buffer: Buffer; busy?: undefined }
+  | { ok: false; buffer?: undefined; busy?: true };
+
+export function declaredSizeOk(meta: { width?: number; height?: number; pages?: number }): boolean {
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  const pages = Math.max(1, meta.pages ?? 1);
+  if (!(w > 0 && h > 0)) return false;
+  if (w > MAX_IMAGE_SIDE || h > MAX_IMAGE_SIDE) return false;
+  return w * h * pages <= MAX_INPUT_PIXELS;
+}
 
 // Full decode + re-encode - catches truncation/format mismatches (a
 // malformed or mismatched file throws or fails the format check) and, as a
@@ -34,13 +86,21 @@ export async function sanitizeImage(buf: Buffer, mime: string): Promise<Sanitize
   const expected = MIME_TO_FORMAT[mime];
   if (!expected) return { ok: false };
   if (sniffFormat(buf) !== expected) return { ok: false };
-  try {
-    const { data, info } = await sharp(buf, { failOn: "error" }).toBuffer({ resolveWithObject: true });
-    if (info.format !== expected) return { ok: false };
-    return { ok: true, buffer: data };
-  } catch {
-    return { ok: false };
-  }
+  const result = await withSanitizeSlot(async (): Promise<SanitizeResult> => {
+    try {
+      const opts = { failOn: "error" as const, limitInputPixels: MAX_INPUT_PIXELS };
+      const meta = await sharp(buf, opts).metadata();
+      if (meta.format !== expected || !declaredSizeOk(meta)) return { ok: false };
+      const { data, info } = await sharp(buf, opts)
+        .timeout({ seconds: DECODE_TIMEOUT_SEC })
+        .toBuffer({ resolveWithObject: true });
+      if (info.format !== expected) return { ok: false };
+      return { ok: true, buffer: data };
+    } catch {
+      return { ok: false };
+    }
+  });
+  return result === BUSY ? { ok: false, busy: true } : result;
 }
 
 // Boolean-only convenience wrapper, kept for callers that just need the

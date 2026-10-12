@@ -1,6 +1,5 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 
 const router = Router();
 
@@ -23,32 +22,31 @@ function push(out: Entry[], kind: string, text: string, at: unknown): void {
 // players who've been here since before this endpoint existed still see their
 // history instead of an empty panel.
 router.get("/api/activity", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const [{ data: projects }, { data: journals }, { data: txs }, { data: unlocks }] =
     await Promise.all([
-      supabase
+      db
         .from("projects")
         .select("id, name, created_at, shipped_at, approved_at, rejected_at")
         .eq("user_id", session.userId)
         .is("archived_at", null)
         .order("created_at", { ascending: false })
         .limit(LIMIT),
-      supabase
+      db
         .from("project_journals")
         .select("project_id, hours, created_at")
         .eq("user_id", session.userId)
         .order("created_at", { ascending: false })
         .limit(LIMIT),
-      supabase
+      db
         .from("pixel_transactions")
         .select("project_id, amount, reason, created_at")
         .eq("user_id", session.userId)
         .order("created_at", { ascending: false })
         .limit(LIMIT),
-      supabase
+      db
         .from("sidequest_unlocks")
         .select("sidequest_id, unlocked_at")
         .eq("user_id", session.userId)
@@ -68,7 +66,7 @@ router.get("/api/activity", async (req, res) => {
     ),
   ];
   if (missing.length > 0) {
-    const { data } = await supabase
+    const { data } = await db
       .from("projects")
       .select("id, name")
       .in("id", missing);
@@ -80,7 +78,7 @@ router.get("/api/activity", async (req, res) => {
     ...new Set((unlocks ?? []).map((u) => u.sidequest_id as number)),
   ];
   if (questIds.length > 0) {
-    const { data } = await supabase
+    const { data } = await db
       .from("sidequests")
       .select("id, name")
       .in("id", questIds);

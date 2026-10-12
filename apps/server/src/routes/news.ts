@@ -1,12 +1,12 @@
 import { Router } from "express";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 
 const router = Router();
 
 // Program news, written from the dashboard. Deliberately unauthenticated: every
 // player sees the same posts, so there's nothing here worth a session check.
 router.get("/api/news", async (_req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("news")
     .select("id, body, link_url, posted_at")
     .eq("active", true)

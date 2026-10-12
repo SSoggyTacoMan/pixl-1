@@ -18,8 +18,3 @@ export const titlePrompts = new Map<string, { channel: string; ts: string }>();
 
 export const creatingTickets = new Set<string>();
 export const processedHelpMsgs = new Set<string>();
-
-/** Membership checks run on every button click; cache them so a rate-limited
- * conversations.members call can't stall the whole interaction flow each time. */
-export const ticketChannelMembership = new Map<string, { ok: boolean; at: number }>();
-export const MEMBERSHIP_TTL_MS = 5 * 60 * 1000;

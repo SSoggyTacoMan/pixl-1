@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { issueSessionToken } from "../auth/session.js";
+import { issueSessionToken, verifySessionToken } from "../auth/session.js";
 import { db } from "../db/pgCompat.js";
 import authRouter from "./auth.js";
 import projectsRouter from "./projects.js";
@@ -123,15 +121,15 @@ function mockHcaFetch(identity: Record<string, unknown>) {
   };
 }
 
-type Handler = (req: unknown, res: unknown) => unknown;
+type Handler = (req: unknown, res: unknown, next: (err?: unknown) => void) => unknown;
 interface RouterLike {
   stack: { route?: { path: string; methods: Record<string, boolean>; stack: { handle: Handler }[] } }[];
 }
 
-function routeHandler(router: unknown, method: "get" | "post", path: string): Handler {
+function routeStack(router: unknown, method: "get" | "post", path: string): Handler[] {
   const layer = (router as RouterLike).stack.find((l) => l.route?.path === path && l.route.methods[method]);
   if (!layer?.route) throw new Error(`no ${method.toUpperCase()} ${path} route`);
-  return layer.route.stack[0].handle;
+  return layer.route.stack.map((l) => l.handle);
 }
 
 interface FakeOut {
@@ -141,13 +139,20 @@ interface FakeOut {
   headers: Record<string, string>;
 }
 
-async function callRoute(
-  router: unknown,
-  method: "get" | "post",
-  path: string,
-  req: { query?: Record<string, string>; params?: Record<string, string>; body?: unknown } = {},
-): Promise<FakeOut> {
+interface FakeReq {
+  query?: Record<string, string>;
+  params?: Record<string, string>;
+  body?: unknown;
+  headers?: Record<string, string>;
+  // What the global auth gate (http/gate.ts) would have attached.
+  session?: { userId: string; displayName: string; iat: number };
+}
+
+// Runs every handler on the route (validate(), requireSession(), the
+// handler itself) in order, with just enough of req/res for them.
+async function callRoute(router: unknown, method: "get" | "post", path: string, req: FakeReq = {}): Promise<FakeOut> {
   const out: FakeOut = { status: 200, location: null, body: "", headers: {} };
+  let finished = false;
   const res: Record<string, unknown> = {};
   res.status = (code: number) => {
     out.status = code;
@@ -163,23 +168,48 @@ async function callRoute(
   res.type = () => res;
   res.send = (b: unknown) => {
     out.body = String(b ?? "");
+    finished = true;
     return res;
   };
   res.json = (b: unknown) => {
     out.body = JSON.stringify(b);
+    finished = true;
     return res;
   };
   res.redirect = (a: number | string, b?: string) => {
     out.status = typeof a === "number" ? a : 302;
     out.location = typeof a === "number" ? (b ?? null) : a;
+    finished = true;
     return res;
   };
-  const handler = routeHandler(router, method, path);
-  await handler({ query: req.query ?? {}, params: req.params ?? {}, body: req.body ?? {}, headers: {} }, res);
+  const fakeReq: Record<string, unknown> = {
+    method: method.toUpperCase(),
+    query: req.query ?? {},
+    params: req.params ?? {},
+    body: req.body ?? {},
+    headers: req.headers ?? {},
+    socket: {},
+    ...(req.session ? { session: req.session } : {}),
+  };
+  for (const handle of routeStack(router, method, path)) {
+    let advanced = false;
+    let failure: unknown;
+    await handle(fakeReq, res, (err?: unknown) => {
+      advanced = true;
+      failure = err;
+    });
+    // requireSession() chains async middlewares; give them a moment.
+    for (let i = 0; i < 20 && !advanced && !finished; i++) await turn();
+    if (failure) throw failure;
+    if (finished || !advanced) break;
+  }
   return out;
 }
 
-async function startLogin(query: Record<string, string> = {}) {
+const PLAY = "https://play.pixl.hackclub.com";
+const CLIENT_STATE = "client-state-0123456789";
+
+async function startLogin(query: Record<string, string>) {
   const out = await callRoute(authRouter, "get", "/auth/hackclub", { query });
   return new URL(out.location!).searchParams.get("state")!;
 }
@@ -188,25 +218,32 @@ async function finishLogin(state: string) {
   return callRoute(authRouter, "get", "/auth/hackclub/callback", { query: { code: "fake-code", state } });
 }
 
-async function login(query: Record<string, string> = {}) {
+async function login(query: Record<string, string>) {
   return finishLogin(await startLogin(query));
 }
 
-function ship(token: string) {
-  return callRoute(projectsRouter, "post", "/api/projects/:id/ship", {
-    query: { token },
-    params: { id: "1" },
-    body: { eligibilityAttested: true },
+// What the game does with the login redirect: trade the code for a token.
+async function tokenFrom(location: string | null): Promise<string> {
+  const code = new URL(location!).searchParams.get("code") ?? "";
+  const out = await callRoute(authRouter, "post", "/auth/exchange", {
+    headers: { origin: PLAY },
+    body: { code },
   });
+  return out.status === 200 ? ((JSON.parse(out.body) as { token: string }).token ?? "") : "";
 }
 
-function tokenFrom(location: string | null): string {
-  return new URL(location!).searchParams.get("token") ?? "";
+function ship(token: string) {
+  const session = verifySessionToken(token);
+  return callRoute(projectsRouter, "post", "/api/projects/:id/ship", {
+    params: { id: "1" },
+    body: {},
+    ...(session ? { session } : {}),
+  });
 }
 
 const HCA_ID = "hca-1";
 const RETURN_TO = "https://pixl.hackclub.com/projects/";
-const START = { web_redirect: RETURN_TO, nonce: "n1" };
+const START = { redirect: `${PLAY}/`, state: CLIENT_STATE };
 
 const verified = { id: HCA_ID, first_name: "Player", last_name: "One", verification_status: "verified", ysws_eligible: true };
 
@@ -248,7 +285,7 @@ describe("login stores fresh HCA state before it hands out a session", () => {
     setup([existingUser(stale)], verified);
     const done = await login(START);
     expect(done.status).toBe(302);
-    const r = await ship(tokenFrom(done.location));
+    const r = await ship(await tokenFrom(done.location));
     expect(r.status).toBe(400);
     expect(errorOf(r.body)).toBe("repo_required");
   });
@@ -260,7 +297,7 @@ describe("login stores fresh HCA state before it hands out a session", () => {
     );
     const done = await login(START);
     expect(done.status).toBe(302);
-    const r = await ship(tokenFrom(done.location));
+    const r = await ship(await tokenFrom(done.location));
     expect(r.status).toBe(403);
     expect(errorOf(r.body)).toBe("hca_verification_required");
   });
@@ -270,9 +307,9 @@ describe("login stores fresh HCA state before it hands out a session", () => {
     const done = await login(START);
     expect(done.status).toBe(503);
     expect(done.location).toBeNull();
-    expect(done.body).not.toContain("token=");
+    expect(done.body).not.toContain("code=");
     expect(done.headers["retry-after"]).toBeTruthy();
-    expect(done.body).toContain("nonce=n1");
+    expect(done.body).toContain(`state=${CLIENT_STATE}`);
     expect(world.committed("user-1")?.hca_verification_status).toBeNull();
   });
 
@@ -280,7 +317,7 @@ describe("login stores fresh HCA state before it hands out a session", () => {
     setup([existingUser()], verified, { failWrite: (p) => "real_name" in p });
     const done = await login(START);
     expect(done.status).toBe(302);
-    const r = await ship(tokenFrom(done.location));
+    const r = await ship(await tokenFrom(done.location));
     expect(errorOf(r.body)).toBe("repo_required");
   });
 
@@ -305,34 +342,40 @@ describe("login stores fresh HCA state before it hands out a session", () => {
   });
 });
 
-describe("GET /auth/hackclub/resync", () => {
-  const token = () => issueSessionToken({ userId: "user-1", displayName: "Player" });
-  const start = (query: Record<string, string>) => callRoute(authRouter, "get", "/auth/hackclub/resync", { query });
-  const stateOf = (location: string | null) => new URL(location!).searchParams.get("state")!;
+describe("POST /auth/flow/resync", () => {
+  const token = () => issueSessionToken({ client: "web", userId: "user-1", displayName: "Player" });
+  const start = (redirect: string, t?: string) =>
+    callRoute(authRouter, "post", "/auth/flow/:name", {
+      params: { name: "resync" },
+      body: { redirect },
+      headers: t ? { authorization: `Bearer ${t}` } : {},
+    });
+  const stateOf = (body: string) => new URL((JSON.parse(body) as { url: string }).url).searchParams.get("state")!;
 
   test("needs a session", async () => {
     setup([existingUser()], verified);
-    expect((await start({ web_redirect: RETURN_TO })).status).toBe(401);
+    expect((await start(RETURN_TO)).status).toBe(401);
   });
 
   test("refuses a redirect target that is not allowed", async () => {
     setup([existingUser()], verified);
-    expect((await start({ token: token(), web_redirect: "https://evil.example/" })).status).toBe(400);
+    expect((await start("https://evil.example/", token())).status).toBe(400);
   });
 
   test("re-checks HCA for the signed-in account, unlocks shipping at once, and issues no new session", async () => {
     setup([existingUser()], verified);
     const t = token();
-    const begun = await start({ token: t, web_redirect: RETURN_TO });
-    expect(begun.status).toBe(302);
-    expect(begun.location).toContain("https://auth.hackclub.com/oauth/authorize");
-    const done = await finishLogin(stateOf(begun.location));
+    const begun = await start(RETURN_TO, t);
+    expect(begun.status).toBe(200);
+    expect(begun.body).toContain("https://auth.hackclub.com/oauth/authorize");
+    expect(begun.body).not.toContain(t);
+    const done = await finishLogin(stateOf(begun.body));
     expect(done.status).toBe(302);
     const dest = new URL(done.location!);
     expect(dest.origin + dest.pathname).toBe(RETURN_TO);
     expect(dest.searchParams.get("hca_synced")).toBe("verified");
     expect(dest.searchParams.has("token")).toBe(false);
-    expect(dest.searchParams.has("ln")).toBe(false);
+    expect(dest.searchParams.has("code")).toBe(false);
     const r = await ship(t);
     expect(errorOf(r.body)).toBe("repo_required");
   });
@@ -340,8 +383,8 @@ describe("GET /auth/hackclub/resync", () => {
   test("reports pending without unlocking shipping", async () => {
     setup([existingUser()], { id: HCA_ID, first_name: "Player", last_name: "One", verification_status: "pending" });
     const t = token();
-    const begun = await start({ token: t, web_redirect: RETURN_TO });
-    const done = await finishLogin(stateOf(begun.location));
+    const begun = await start(RETURN_TO, t);
+    const done = await finishLogin(stateOf(begun.body));
     expect(new URL(done.location!).searchParams.get("hca_synced")).toBe("pending");
     const r = await ship(t);
     expect(r.status).toBe(403);
@@ -350,8 +393,8 @@ describe("GET /auth/hackclub/resync", () => {
 
   test("a different HCA identity cannot write eligibility onto this account", async () => {
     const world = setup([existingUser()], { ...verified, id: "someone-else" });
-    const begun = await start({ token: token(), web_redirect: RETURN_TO });
-    const done = await finishLogin(stateOf(begun.location));
+    const begun = await start(RETURN_TO, token());
+    const done = await finishLogin(stateOf(begun.body));
     expect(done.status).toBe(403);
     expect(done.location).toBeNull();
     expect(world.writes.some((w) => writesHca(w.payload))).toBe(false);
@@ -360,123 +403,11 @@ describe("GET /auth/hackclub/resync", () => {
 
   test("a state that cannot be saved is a retryable error, not a redirect", async () => {
     const world = setup([existingUser()], verified, { failWrite: writesHca });
-    const begun = await start({ token: token(), web_redirect: RETURN_TO });
-    const done = await finishLogin(stateOf(begun.location));
+    const begun = await start(RETURN_TO, token());
+    const done = await finishLogin(stateOf(begun.body));
     expect(done.status).toBe(503);
     expect(done.location).toBeNull();
     expect(done.headers["retry-after"]).toBeTruthy();
     expect(world.committed("user-1")?.hca_verification_status).toBeNull();
-  });
-});
-
-const webDir = join(import.meta.dir, "..", "..", "..", "game", "web");
-const pixlJs = readFileSync(join(webDir, "pixl.js"), "utf8");
-const projectsHtml = readFileSync(join(webDir, "projects", "index.html"), "utf8");
-
-function between(source: string, name: string): string {
-  const a = source.indexOf(`// <${name}>`);
-  const b = source.indexOf(`// </${name}>`);
-  if (a === -1 || b === -1) throw new Error(`${name} markers missing`);
-  return source.slice(a, b);
-}
-
-const loginBlock = between(pixlJs, "login-intake");
-const intakeBlock = between(pixlJs, "token-intake");
-const recheckBlock = between(projectsHtml, "hca-recheck");
-
-function makeBrowser(seed: Record<string, string> = {}) {
-  const store = new Map<string, string>(Object.entries(seed));
-  const localStorage = {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => void store.set(k, String(v)),
-    removeItem: (k: string) => void store.delete(k),
-  };
-  const load = (url: string) => {
-    const u = new URL(url);
-    const location = { origin: u.origin, pathname: u.pathname, search: u.search, hash: u.hash };
-    const history = { replaceState: () => {} };
-    const page = new Function(
-      "localStorage",
-      "crypto",
-      "Date",
-      "API",
-      "location",
-      "history",
-      `${loginBlock}\n${intakeBlock}\nreturn { token, loginUrl, params };`,
-    )(localStorage, globalThis.crypto, Date, "https://server.pixl.hackclub.com", location, history) as {
-      token: string;
-      loginUrl: () => string;
-      params: URLSearchParams;
-    };
-    return page;
-  };
-  const logout = () => store.delete("pixl_token");
-  return { store, load, logout };
-}
-
-function queryOf(url: string): Record<string, string> {
-  return Object.fromEntries(new URL(url).searchParams);
-}
-
-describe("browser: HCA state refreshes through a normal logout and login", () => {
-  const SEED = { pixl_theme_v2: "dark", pixl_onboarded: "1" };
-  const oldSession = () => issueSessionToken({ userId: "user-1", displayName: "Old Session" });
-
-  test("logout then login with a freshly verified identity unlocks shipping without clearing anything", async () => {
-    setup([existingUser()], verified);
-    const browser = makeBrowser({ ...SEED, pixl_token: oldSession() });
-
-    const before = browser.load(RETURN_TO);
-    const blocked = await ship(before.token);
-    expect(errorOf(blocked.body)).toBe("hca_verification_required");
-    expect(JSON.parse(blocked.body).hca_status).toBeNull();
-
-    browser.logout();
-    const signedOut = browser.load(RETURN_TO);
-    expect(signedOut.token).toBe("");
-
-    const done = await login(queryOf(signedOut.loginUrl()));
-    expect(done.status).toBe(302);
-    const back = browser.load(done.location!);
-    expect(back.token).toBe(tokenFrom(done.location));
-    expect(browser.store.get("pixl_token")).toBe(back.token);
-
-    const shipped = await ship(back.token);
-    expect(errorOf(shipped.body)).toBe("repo_required");
-    expect(browser.store.get("pixl_theme_v2")).toBe("dark");
-    expect(browser.store.get("pixl_onboarded")).toBe("1");
-  });
-
-  test("the re-check button refreshes the state on the current session, no re-login", async () => {
-    setup([existingUser()], verified);
-    const browser = makeBrowser({ pixl_token: oldSession() });
-    const page = browser.load(RETURN_TO);
-    expect((await ship(page.token)).status).toBe(403);
-
-    const begun = await callRoute(authRouter, "get", "/auth/hackclub/resync", {
-      query: { token: page.token, web_redirect: RETURN_TO },
-    });
-    const done = await finishLogin(new URL(begun.location!).searchParams.get("state")!);
-    const returned = browser.load(done.location!);
-    expect(returned.token).toBe(page.token);
-
-    const recheck = new Function(`${recheckBlock}\nreturn { takeHcaSynced };`)() as {
-      takeHcaSynced: (p: URLSearchParams) => string | null;
-    };
-    expect(recheck.takeHcaSynced(returned.params)).toBe("verified");
-    expect(errorOf((await ship(returned.token)).body)).toBe("repo_required");
-  });
-
-  test("a returned token the browser refuses to adopt cannot keep the old state alive", async () => {
-    setup([existingUser()], verified);
-    const browser = makeBrowser({ pixl_token: oldSession() });
-    const other = browser.load(RETURN_TO);
-    const done = await login({ web_redirect: RETURN_TO, nonce: "started-in-another-tab" });
-
-    const back = browser.load(done.location!);
-    expect(back.token).toBe(other.token);
-    expect(back.token).not.toBe(tokenFrom(done.location));
-
-    expect(errorOf((await ship(back.token)).body)).toBe("repo_required");
   });
 });

@@ -1,6 +1,5 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { addNotification } from "./notifications.js";
 import { findAllInYswsArchive } from "../ysws/archive.js";
 import { buildDoubleDip, type TeamMember } from "../ysws/doubleDip.js";
@@ -13,11 +12,39 @@ import {
   type HcaStateRow,
 } from "../hcaEligibility.js";
 import { normalizeProjectUrl, MAX_DEMO_URL_LENGTH } from "./projectUrlSafety.js";
+import { allowedImageUrl, markdownImagesAllowed } from "../http/imageUrls.js";
 import { isGitRepoUrl } from "./gitRepoUrl.js";
 import { urlAlive } from "./urlLiveness.js";
 import { recordShipForOperations } from "../operations/service.js";
+import { z } from "zod";
+import { validate, v, optStr, optBool, optNum, params } from "../http/validate.js";
 
 const router = Router();
+
+// Shapes and size bounds for project writes; parseProjectBody below still
+// does the trimming, clamping and URL safety checks.
+const urlArray = z.array(z.string().max(2000)).max(50).nullable().optional();
+const projectBody = z.object({
+  name: optStr(1000),
+  description: optStr(20_000),
+  repoUrl: optStr(20_000),
+  demoUrl: optStr(20_000),
+  imageUrl: optStr(20_000),
+  usedAi: optBool,
+  aiNotes: optStr(20_000),
+  projectType: optStr(64),
+  kind: optStr(32),
+  needsFunding: optBool,
+  fundingUsd: optNum,
+  cartScreenshotUrls: urlArray,
+  finishedBuild: optBool,
+  otherYsws: optBool,
+  otherYswsNotes: optStr(20_000),
+  hackatimeProjects: z.array(z.string().max(200)).max(200).nullable().optional(),
+  level: optNum,
+  sidequestId: optNum,
+});
+const journalBody = z.object({ content: optStr(50_000), title: optStr(1000), hours: optNum });
 
 // The date a project's Hackatime hours count from: the event cutoff, or the
 // earlier date a reviewer extended it to (projects.hours_extended_since).
@@ -78,9 +105,13 @@ const PLAYER_PROJECT_FIELDS = [
   "hours_extended_since",
 ] as const;
 
-export function toPlayerProject(p: Record<string, unknown>): Record<string, unknown> {
+// viewerId is the signed-in player the row is going to. The join code is a
+// bearer credential for joining the project, so only the owner ever sees it
+// (collaborators get the project too, via the list); no viewerId = hidden.
+export function toPlayerProject(p: Record<string, unknown>, viewerId?: string): Record<string, unknown> {
   const safe: Record<string, unknown> = {};
   for (const field of PLAYER_PROJECT_FIELDS) safe[field] = p[field] ?? null;
+  if (viewerId === undefined || p.user_id !== viewerId) safe.join_code = null;
   // Credited (possibly deflated) hours only become real once a project is
   // actually approved - a stale value from an earlier review cycle must not
   // leak back out on the very next save/ship/unship.
@@ -133,11 +164,10 @@ const PROJECT_TYPES = [
 // List the logged-in user's projects, newest first , their own plus any
 // they're an accepted collaborator on (view/log-hours only, not editable).
 router.get("/api/projects", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data: owned, error } = await supabase
+  const { data: owned, error } = await db
     .from("projects")
     .select("*")
     .eq("user_id", session.userId)
@@ -148,7 +178,7 @@ router.get("/api/projects", async (req, res) => {
     return res.status(500).json({ ok: false });
   }
 
-  const { data: collabRows } = await supabase
+  const { data: collabRows } = await db
     .from("project_collaborators")
     .select("project_id")
     .eq("user_id", session.userId)
@@ -156,7 +186,7 @@ router.get("/api/projects", async (req, res) => {
   const collabProjectIds = (collabRows ?? []).map((r) => r.project_id as number);
   let collaborating: Record<string, unknown>[] = [];
   if (collabProjectIds.length > 0) {
-    const { data } = await supabase
+    const { data } = await db
       .from("projects")
       .select("*")
       .in("id", collabProjectIds)
@@ -173,7 +203,7 @@ router.get("/api/projects", async (req, res) => {
   const ids = projects.map((p) => p.id as number);
   const earned = new Map<number, number>();
   if (ids.length > 0) {
-    const { data: txs } = await supabase
+    const { data: txs } = await db
       .from("pixel_transactions")
       .select("project_id, amount")
       .in("project_id", ids)
@@ -187,7 +217,7 @@ router.get("/api/projects", async (req, res) => {
   const journalSeconds = new Map<number, number>();
   const ownedIds = (owned ?? []).map((p) => p.id as number);
   if (ownedIds.length > 0) {
-    const { data: jrows } = await supabase
+    const { data: jrows } = await db
       .from("project_journals")
       .select("project_id, hours")
       .in("project_id", ownedIds);
@@ -198,7 +228,7 @@ router.get("/api/projects", async (req, res) => {
       );
   }
   if (collabProjectIds.length > 0) {
-    const { data: jrows } = await supabase
+    const { data: jrows } = await db
       .from("project_journals")
       .select("project_id, hours")
       .in("project_id", collabProjectIds)
@@ -221,7 +251,7 @@ router.get("/api/projects", async (req, res) => {
     ),
   ];
   if (trialIds.length > 0) {
-    const { data: sqs } = await supabase
+    const { data: sqs } = await db
       .from("sidequests")
       .select("id, name, reward, prize_shop_item_id")
       .in("id", trialIds);
@@ -234,7 +264,7 @@ router.get("/api/projects", async (req, res) => {
     ];
     const itemName = new Map<number, string>();
     if (itemIds.length > 0) {
-      const { data: items } = await supabase.from("shop_items").select("id, name").in("id", itemIds);
+      const { data: items } = await db.from("shop_items").select("id, name").in("id", itemIds);
       for (const i of items ?? []) itemName.set(i.id as number, i.name as string);
     }
     for (const s of sqs ?? []) {
@@ -250,7 +280,7 @@ router.get("/api/projects", async (req, res) => {
   res.json({
     ok: true,
     projects: projects.map((p) => ({
-      ...toPlayerProject(p),
+      ...toPlayerProject(p, session.userId),
       is_owner: p.is_owner,
       pixels_earned: earned.get(p.id as number) ?? 0,
       journal_seconds: journalSeconds.get(p.id as number) ?? 0,
@@ -399,11 +429,22 @@ export function parseProjectBody(
   // depth against a dangerous scheme landing here the same way repo_url/
   // demo_url could. <img src="javascript:...">  doesn't execute in modern
   // browsers, but there's no reason to store a non-http(s) value here either.
-  const imageUrlResult = normalizeProjectUrl(body?.imageUrl);
-  const imageUrl = imageUrlResult.ok ? imageUrlResult.url : "";
-  const cartScreenshotUrls = needsFunding && Array.isArray(body?.cartScreenshotUrls)
-    ? body.cartScreenshotUrls.map((u: unknown) => String(u)).slice(0, 10)
+  // Only Hack Club CDN URLs (what /api/uploads returns): an arbitrary host
+  // would see the IP of everyone who views the project, and could swap the
+  // picture after review. See http/imageUrls.ts.
+  const rawImage = String(body?.imageUrl ?? "").trim();
+  const imageUrl = rawImage ? allowedImageUrl(rawImage) : "";
+  if (imageUrl === null) return { error: "invalid_image_url" };
+  const rawCart: unknown[] = needsFunding && Array.isArray(body?.cartScreenshotUrls)
+    ? body.cartScreenshotUrls.slice(0, 10)
     : [];
+  const cartScreenshotUrls: string[] = [];
+  for (const u of rawCart) {
+    if (typeof u === "string" && u.trim() === "") continue;
+    const ok = allowedImageUrl(u);
+    if (ok === null) return { error: "invalid_image_url" };
+    cartScreenshotUrls.push(ok);
+  }
   // Whether the physical thing actually exists and can be filmed working -
   // distinct from needsFunding, which by definition happens before a build
   // exists. Hardware-only, same reasoning as needsFunding above.
@@ -449,7 +490,7 @@ async function resolveTrialLink(
 ): Promise<{ error: string } | { id: number | null }> {
   const want = Number(wantSidequest);
   if (!Number.isFinite(want) || want <= 0) return { id: null };
-  const { data: unlock } = await supabase
+  const { data: unlock } = await db
     .from("sidequest_unlocks")
     .select("sidequest_id, sidequests!inner(active)")
     .eq("user_id", userId)
@@ -461,9 +502,8 @@ async function resolveTrialLink(
 }
 
 // Create a project, optionally linked to HackTime project names.
-router.post("/api/projects", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects", validate({ query: v.noQuery, body: projectBody }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const parsed = parseProjectBody(req.body);
@@ -473,7 +513,7 @@ router.post("/api/projects", async (req, res) => {
   const trial = await resolveTrialLink(session.userId, req.body?.sidequestId);
   if ("error" in trial) return res.status(400).json({ ok: false, error: trial.error });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .insert({ user_id: session.userId, ...parsed.fields, sidequest_id: trial.id })
     .select()
@@ -483,13 +523,12 @@ router.post("/api/projects", async (req, res) => {
     return res.status(500).json({ ok: false });
   }
   void addNotification(session.userId, "Project logged", `You logged "${parsed.fields.name}".`);
-  res.json({ ok: true, project: toPlayerProject(data) });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 // Update one of the user's own projects.
-router.put("/api/projects/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.put("/api/projects/:id", validate({ query: v.noQuery, params: params({ id: v.id }), body: projectBody }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -503,7 +542,7 @@ router.put("/api/projects/:id", async (req, res) => {
   // approved its level is what lifetimeRe() weights hours by, so a player must
   // NOT be able to re-grade an approved project (that would retroactively inflate
   // their RE). Keep the existing level on approved projects; the reviewer owns it.
-  const { data: cur } = await supabase
+  const { data: cur } = await db
     .from("projects")
     .select("status, level, sidequest_id, bom_url")
     .eq("id", id)
@@ -525,7 +564,7 @@ router.put("/api/projects/:id", async (req, res) => {
     fields.sidequest_id = (cur as { sidequest_id?: number | null }).sidequest_id ?? null;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .update(fields)
     .eq("id", id)
@@ -536,7 +575,7 @@ router.put("/api/projects/:id", async (req, res) => {
     console.error("[projects] update failed", error);
     return res.status(500).json({ ok: false });
   }
-  res.json({ ok: true, project: toPlayerProject(data) });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 // Ship a project for review: draft/needs_changes -> shipped, or approved ->
@@ -544,15 +583,14 @@ router.put("/api/projects/:id", async (req, res) => {
 // thumbnail, and an eligibility attestation (not a school assignment or paid
 // Hack Club work). Undisclosed matches against the Hack Club YSWS archive get
 // a system note for the reviewer plus a mod_actions entry.
-router.post("/api/projects/:id/ship", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ updateNotes: optStr(20000), shipNote: optStr(10000), otherYsws: optBool, otherYswsNotes: optStr(10000), acceptNoTrialPrize: optBool, eligibilityAttested: optBool }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: project, error } = await supabase
+  const { data: project, error } = await db
     .from("projects")
     .select("*")
     .eq("id", id)
@@ -567,7 +605,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
   if (!shippable.includes(project.status as string) && !project.rejected_at)
     return res.status(400).json({ ok: false, error: "already_shipped" });
 
-  const { data: hcaRow, error: hcaError } = await supabase
+  const { data: hcaRow, error: hcaError } = await db
     .from("users")
     .select("hca_verification_status, hca_ysws_eligible")
     .eq("id", session.userId)
@@ -642,7 +680,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
     }
   }
 
-  const { data: userRow } = await supabase
+  const { data: userRow } = await db
     .from("users")
     .select("hackatime_token, slack_id, display_name, address_line1, address_city, address_country, address_postal")
     .eq("id", session.userId)
@@ -692,7 +730,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
   // stays Hackatime-only for its floor.
   let journalSeconds = 0;
   if (isHardware) {
-    const { data: jrows } = await supabase
+    const { data: jrows } = await db
       .from("project_journals")
       .select("hours")
       .eq("project_id", id)
@@ -719,7 +757,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
   // Hackatime account, filtered by the projects *they* linked) so review-time
   // crediting has up-to-date numbers per person. Purely informational , it
   // never gates whether this ship goes through.
-  const { data: collaborators } = await supabase
+  const { data: collaborators } = await db
     .from("project_collaborators")
     .select("id, user_id, hackatime_projects")
     .eq("project_id", id)
@@ -730,7 +768,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
   const collaboratorTeam: TeamMember[] = [];
   if (collaborators && collaborators.length > 0) {
     const collaboratorIds = collaborators.map((c) => c.user_id as string);
-    const { data: collabUsers } = await supabase
+    const { data: collabUsers } = await db
       .from("users")
       .select("id, hackatime_token, slack_id, display_name")
       .in("id", collaboratorIds);
@@ -752,7 +790,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
           tokenFor.get(c.user_id as string) ?? null,
           collabLinked,
         );
-        await supabase
+        await db
           .from("project_collaborators")
           .update({ hackatime_seconds: collabSeconds })
           .eq("id", c.id);
@@ -787,7 +825,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
   const wantSidequest = Number(project.sidequest_id);
   let sidequestId: number | null = null;
   if (Number.isFinite(wantSidequest) && wantSidequest > 0) {
-    const { data: unlock } = await supabase
+    const { data: unlock } = await db
       .from("sidequest_unlocks")
       .select("sidequest_id, sidequests!inner(active, name, min_hours)")
       .eq("user_id", session.userId)
@@ -843,7 +881,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
     ownerSlackId,
   });
   if (flagDetail) {
-    const { error: flagError } = await supabase.from("mod_actions").insert({
+    const { error: flagError } = await db.from("mod_actions").insert({
       user_id: session.userId,
       action: "double_dip_flag",
       detail: flagDetail,
@@ -852,7 +890,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
     if (flagError) console.error("[projects] double dip log failed", flagError);
   }
 
-  const { data, error: updateError } = await supabase
+  const { data, error: updateError } = await db
     .from("projects")
     .update({
       status: "shipped",
@@ -901,7 +939,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
   // Collaborators get their own Airtable row per approval, same rule as the
   // owner's airtable_record_id above: an update ship starts fresh rows.
   if (isUpdate) {
-    const { error: collabResetError } = await supabase
+    const { error: collabResetError } = await db
       .from("project_collaborators")
       .update({ airtable_record_id: null })
       .eq("project_id", id);
@@ -924,7 +962,7 @@ router.post("/api/projects/:id/ship", async (req, res) => {
   if (!project.first_shipped_at && ownerSlackId) void enrollSlackPlayerInReviewChannel(ownerSlackId);
   if (project.status === "needs_changes" && project.notify_reviewer_slack_id)
     void dmReviewerOfResubmit(project.notify_reviewer_slack_id as string, data);
-  res.json({ ok: true, project: toPlayerProject(data) });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 // Withdraw a project from the review queue back to a draft so the owner can
@@ -936,15 +974,14 @@ router.post("/api/projects/:id/ship", async (req, res) => {
 // ban proposal: status reset to "shipped" (reshippable) while the stale
 // first_pass_verdict stuck around, confusing the next reviewer instead of
 // escalating to them. Found via project #176, 2026-08-25.
-router.post("/api/projects/:id/unship", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/unship", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("id, name, status")
     .eq("id", id)
@@ -954,7 +991,7 @@ router.post("/api/projects/:id/unship", async (req, res) => {
   if (project.status !== "shipped")
     return res.status(400).json({ ok: false, error: "not_in_review" });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .update({
       status: "draft",
@@ -972,7 +1009,7 @@ router.post("/api/projects/:id/unship", async (req, res) => {
     console.error("[projects] unship failed", error);
     return res.status(500).json({ ok: false });
   }
-  res.json({ ok: true, project: toPlayerProject(data) });
+  res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 
 // Settle an approved Trial ship: the prize, or the pixels the payout math held
@@ -980,9 +1017,8 @@ router.post("/api/projects/:id/unship", async (req, res) => {
 // deliberately credits nothing until this lands (see reviewProject in the
 // dashboard). Conditioning the update on trial_reward_choice still being
 // 'pending' is what stops a double-click paying both sides.
-router.post("/api/projects/:id/trial-reward", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, params: params({ id: v.id }), body: z.object({ choice: optStr(16) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -991,7 +1027,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   if (choice !== "item" && choice !== "pixels")
     return res.status(400).json({ ok: false, error: "bad_choice" });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("id, name, status, approved_hours, sidequest_id, trial_reward_choice, trial_held_px, trial_prize_px")
     .eq("id", id)
@@ -1004,7 +1040,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   // A Trial can be deleted out from under an approved ship (it has happened,
   // see [[trial-npc-link-drift]]). That must not strand the player's pixels, so
   // only the prize branch actually needs the row.
-  const { data: trial } = await supabase
+  const { data: trial } = await db
     .from("sidequests")
     .select("id, name, reward, prize_shop_item_id")
     .eq("id", project.sidequest_id as number)
@@ -1015,7 +1051,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
 
   // Claim the choice first. If someone else's request already took it, this
   // matches no rows and we stop before paying anything out.
-  const { data: claimed } = await supabase
+  const { data: claimed } = await db
     .from("projects")
     .update({ trial_reward_choice: choice })
     .eq("id", id)
@@ -1033,7 +1069,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   const beyondPx = Math.max(heldPx - prizePx, 0);
 
   if (choice === "pixels") {
-    const { error } = await supabase.rpc("credit_project_pixels", {
+    const { error } = await db.rpc("credit_project_pixels", {
       p_user_id: session.userId,
       p_project_id: id,
       p_amount: heldPx,
@@ -1042,7 +1078,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
     });
     if (error) {
       console.error("[projects] trial pixels payout failed", error);
-      await supabase.from("projects").update({ trial_reward_choice: "pending" }).eq("id", id);
+      await db.from("projects").update({ trial_reward_choice: "pending" }).eq("id", id);
       return res.status(500).json({ ok: false });
     }
     void addNotification(
@@ -1064,7 +1100,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
   let itemId: number | null = null;
   let itemName = (trial.reward as string) || (trial.name as string);
   if (trial.prize_shop_item_id) {
-    const { data: prizeItem } = await supabase
+    const { data: prizeItem } = await db
       .from("shop_items")
       .select("id, name")
       .eq("id", trial.prize_shop_item_id)
@@ -1074,7 +1110,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
       itemName = prizeItem.name as string;
     }
   }
-  const { data: order, error: orderError } = await supabase
+  const { data: order, error: orderError } = await db
     .from("shop_orders")
     .insert({
       user_id: session.userId,
@@ -1088,13 +1124,13 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
     .single();
   if (orderError || !order) {
     console.error("[projects] trial prize order failed", orderError);
-    await supabase.from("projects").update({ trial_reward_choice: "pending" }).eq("id", id);
+    await db.from("projects").update({ trial_reward_choice: "pending" }).eq("id", id);
     return res.status(500).json({ ok: false });
   }
-  await supabase.from("projects").update({ trial_prize_order_id: order.id }).eq("id", id);
+  await db.from("projects").update({ trial_prize_order_id: order.id }).eq("id", id);
   // Keeping the prize still pays out the pixels for hours past the minimum.
   if (beyondPx > 0) {
-    const { error: pxError } = await supabase.rpc("credit_project_pixels", {
+    const { error: pxError } = await db.rpc("credit_project_pixels", {
       p_user_id: session.userId,
       p_project_id: id,
       p_amount: beyondPx,
@@ -1117,7 +1153,7 @@ router.post("/api/projects/:id/trial-reward", async (req, res) => {
 // only , journal and timeline reads/writes are gated on this; edit/ship/
 // unship/delete stay owner-only via their own direct .eq("user_id", ...)).
 async function canAccessProject(userId: string, projectId: number): Promise<boolean> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("projects")
     .select("id")
     .eq("id", projectId)
@@ -1129,7 +1165,7 @@ async function canAccessProject(userId: string, projectId: number): Promise<bool
   }
   if (data !== null) return true;
 
-  const { data: collab } = await supabase
+  const { data: collab } = await db
     .from("project_collaborators")
     .select("id")
     .eq("project_id", projectId)
@@ -1142,8 +1178,7 @@ async function canAccessProject(userId: string, projectId: number): Promise<bool
 // List journal entries for a project the caller owns or collaborates on,
 // newest first.
 router.get("/api/projects/:id/journal", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1151,7 +1186,7 @@ router.get("/api/projects/:id/journal", async (req, res) => {
   if (!(await canAccessProject(session.userId, id)))
     return res.status(404).json({ ok: false });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_journals")
     .select("*")
     .eq("project_id", id)
@@ -1169,8 +1204,7 @@ router.get("/api/projects/:id/journal", async (req, res) => {
 // account) + their own journal hours, not the owner's , a collaborator's own
 // Hackatime link would otherwise never show up as tracked time anywhere.
 router.get("/api/projects/:id/hours", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1178,7 +1212,7 @@ router.get("/api/projects/:id/hours", async (req, res) => {
   if (!(await canAccessProject(session.userId, id)))
     return res.status(404).json({ ok: false });
 
-  const { data: project } = await supabase
+  const { data: project } = await db
     .from("projects")
     .select("user_id, hackatime_projects, hours_extended_since, status, shipped_at")
     .eq("id", id)
@@ -1195,10 +1229,10 @@ router.get("/api/projects/:id/hours", async (req, res) => {
   let linked: string[];
   let hackatimeSlackId: string | null;
   let hackatimeToken: string | null;
-  let journalQuery = supabase.from("project_journals").select("hours").eq("project_id", id);
+  let journalQuery = db.from("project_journals").select("hours").eq("project_id", id);
 
   if (isOwner) {
-    const { data: owner } = await supabase
+    const { data: owner } = await db
       .from("users")
       .select("hackatime_token, slack_id")
       .eq("id", project.user_id as string)
@@ -1208,14 +1242,14 @@ router.get("/api/projects/:id/hours", async (req, res) => {
     hackatimeToken = (owner as { hackatime_token?: string } | null)?.hackatime_token ?? null;
   } else {
     const [{ data: collab }, { data: viewer }] = await Promise.all([
-      supabase
+      db
         .from("project_collaborators")
         .select("hackatime_projects")
         .eq("project_id", id)
         .eq("user_id", session.userId)
         .eq("status", "accepted")
         .maybeSingle(),
-      supabase.from("users").select("hackatime_token, slack_id").eq("id", session.userId).single(),
+      db.from("users").select("hackatime_token, slack_id").eq("id", session.userId).single(),
     ]);
     linked = (collab?.hackatime_projects as string[]) ?? [];
     hackatimeSlackId = (viewer as { slack_id?: string } | null)?.slack_id ?? null;
@@ -1255,8 +1289,7 @@ router.get("/api/projects/:id/hours", async (req, res) => {
 // review verdict with its player-facing note. Internal audit notes are never
 // exposed here.
 router.get("/api/projects/:id/timeline", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1265,14 +1298,14 @@ router.get("/api/projects/:id/timeline", async (req, res) => {
     return res.status(404).json({ ok: false });
 
   const [{ data: proj }, { data: audits }] = await Promise.all([
-    supabase
+    db
       .from("projects")
       .select(
         "created_at, shipped_at, status, first_pass_verdict, banned_at, robert_project_id, robert_submitted_at, robert_reviewed_at",
       )
       .eq("id", id)
       .single(),
-    supabase
+    db
       .from("review_audits")
       .select("verdict, note, claimed_hours, approved_hours, created_at")
       .eq("project_id", id)
@@ -1330,7 +1363,7 @@ router.get("/api/projects/:id/timeline", async (req, res) => {
 // moment a project is in review (same set as IN_REVIEW in operations/domain.ts)
 // and open back up on needs_changes/approved/draft.
 async function journalLockedForReview(projectId: number): Promise<boolean> {
-  const { data } = await supabase
+  const { data } = await db
     .from("projects")
     .select("status")
     .eq("id", projectId)
@@ -1352,9 +1385,8 @@ function countJournalImages(content: string): number {
 }
 
 // Add a journal entry (markdown content + optional hours) to an own project.
-router.post("/api/projects/:id/journal", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/projects/:id/journal", validate({ query: v.noQuery, params: params({ id: v.id }), body: journalBody }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1367,6 +1399,10 @@ router.post("/api/projects/:id/journal", async (req, res) => {
   const content = String(req.body?.content ?? "").trim().slice(0, 5000);
   if (!content)
     return res.status(400).json({ ok: false, error: "content_required" });
+  // Journal images load for every viewer, so they must be Hack Club CDN
+  // uploads like every other player image (http/imageUrls.ts).
+  if (!markdownImagesAllowed(content))
+    return res.status(400).json({ ok: false, error: "invalid_image_url" });
   const title = String(req.body?.title ?? "").trim().slice(0, 120);
   let hours = Number(req.body?.hours ?? 0);
   if (!Number.isFinite(hours) || hours < 0) hours = 0;
@@ -1386,7 +1422,7 @@ router.post("/api/projects/:id/journal", async (req, res) => {
       .status(400)
       .json({ ok: false, error: "journal_images_required", need: imagesNeed, have: imagesHave, hours });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_journals")
     .insert({ project_id: id, user_id: session.userId, content, hours, title })
     .select()
@@ -1399,9 +1435,8 @@ router.post("/api/projects/:id/journal", async (req, res) => {
 });
 
 // Edit one of the user's own journal entries (owner-only, same as delete).
-router.patch("/api/projects/:id/journal/:entryId", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.patch("/api/projects/:id/journal/:entryId", validate({ query: v.noQuery, params: params({ id: v.id, entryId: v.id }), body: journalBody }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1414,6 +1449,10 @@ router.patch("/api/projects/:id/journal/:entryId", async (req, res) => {
   const content = String(req.body?.content ?? "").trim().slice(0, 5000);
   if (!content)
     return res.status(400).json({ ok: false, error: "content_required" });
+  // Journal images load for every viewer, so they must be Hack Club CDN
+  // uploads like every other player image (http/imageUrls.ts).
+  if (!markdownImagesAllowed(content))
+    return res.status(400).json({ ok: false, error: "invalid_image_url" });
   const title = String(req.body?.title ?? "").trim().slice(0, 120);
   let hours = Number(req.body?.hours ?? 0);
   if (!Number.isFinite(hours) || hours < 0) hours = 0;
@@ -1431,7 +1470,7 @@ router.patch("/api/projects/:id/journal/:entryId", async (req, res) => {
       .status(400)
       .json({ ok: false, error: "journal_images_required", need: imagesNeed, have: imagesHave, hours });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("project_journals")
     .update({ content, hours, title, edited_at: new Date().toISOString() })
     .eq("id", entryId)
@@ -1448,9 +1487,8 @@ router.patch("/api/projects/:id/journal/:entryId", async (req, res) => {
 });
 
 // Delete one of the user's own journal entries.
-router.delete("/api/projects/:id/journal/:entryId", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/projects/:id/journal/:entryId", validate({ query: v.noQuery, params: params({ id: v.id, entryId: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
@@ -1460,7 +1498,7 @@ router.delete("/api/projects/:id/journal/:entryId", async (req, res) => {
   if (await journalLockedForReview(id))
     return res.status(409).json({ ok: false, error: "project_in_review" });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("project_journals")
     .delete()
     .eq("id", entryId)
@@ -1474,15 +1512,14 @@ router.delete("/api/projects/:id/journal/:entryId", async (req, res) => {
 });
 
 // Delete one of the user's own projects.
-router.delete("/api/projects/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/projects/:id", validate({ query: v.noQuery, params: params({ id: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("projects")
     .delete()
     .eq("id", id)

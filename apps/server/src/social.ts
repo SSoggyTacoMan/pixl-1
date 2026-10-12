@@ -1,4 +1,4 @@
-import { supabase } from "./db/client.js";
+import { db } from "./db/client.js";
 import { orValue } from "./db/pgCompat.js";
 
 export interface FriendRow {
@@ -21,7 +21,7 @@ export async function rowBetween(
   a: string,
   b: string,
 ): Promise<FriendRow | null> {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("friends")
     .select("*")
     .or(

@@ -124,12 +124,72 @@ export function hasBannedLanguage(text: string): boolean {
  */
 export function sanitizeAIOutput(text: string): string {
   if (hasBannedLanguage(text)) {
-    console.warn("[outputFilter] blocked reply containing banned language:", text.slice(0, 80));
+    // Length only: the blocked text is exactly the kind of thing that must
+    // not be copied into logs.
+    console.warn("[outputFilter] blocked reply containing banned language, length:", text.length);
     return "";
   }
-  return text
-    .replace(/<!(channel|here|everyone)>/gi, "@$1")
-    .replace(/<@([A-Z0-9]+)(\|[^>]*)?>/g, (match, uid) => (uid === botIdentity.userId || ALLOWED_USER_MENTIONS.has(uid) ? match : `&lt;@${uid}&gt;`))
-    .replace(/<#([A-Z0-9]+)(\|[^>]*)?>/g, (match, cid) => (ALLOWED_CHANNEL_MENTIONS.has(cid) ? match : `&lt;#${cid}&gt;`))
-    .replace(/<(https?:\/\/[^|>]+)(\|[^>]*)?>/gi, (_match, url) => `&lt;${url}&gt;`);
+  return (
+    text
+      // Every <!...> special token: <!here>, <!here|here>, <!channel|x>,
+      // <!everyone>, <!subteam^S123|@team>, <!date^...|fallback>. None of
+      // them is ever legitimate in model output, so all become plain text.
+      .replace(/<!([^>|]*)(?:\|([^>]*))?>/g, (_m, name: string, label?: string) => {
+        const shown = (label || name.split("^")[0] || "").replace(/^@+/, "");
+        return shown ? `@${shown}` : "";
+      })
+      .replace(/<@([A-Z0-9]+)(\|[^>]*)?>/g, (match, uid) => (uid === botIdentity.userId || ALLOWED_USER_MENTIONS.has(uid) ? match : `&lt;@${uid}&gt;`))
+      .replace(/<#([A-Z0-9]+)(\|[^>]*)?>/g, (match, cid) => (ALLOWED_CHANNEL_MENTIONS.has(cid) ? match : `&lt;#${cid}&gt;`))
+      // Every <scheme:...> link form (http, https, mailto, slack, tel, ...),
+      // labelled or not. A label can disguise where a link goes, so the
+      // bracket syntax never survives; the URL itself is handled below.
+      .replace(/<([a-z][a-z0-9+.-]*:[^|>]*)(?:\|[^>]*)?>/gi, (_m, url: string) => url)
+      // Bare URLs Slack would auto-link: anything off the allowlist is
+      // defanged so it renders as plain, unclickable text.
+      .replace(BARE_URL, (url) => (isAllowedUrl(url) ? url : defangUrl(url)))
+      // Any leftover "<" that could still open Slack syntax. The only "<"
+      // allowed through is an allowlisted mention kept by the steps above
+      // (every other mention was already turned into "&lt;...").
+      .replace(/<(?![@#][A-Z0-9]+(?:\|[^>]*)?>)/g, "&lt;")
+  );
+}
+
+// Matches scheme URLs (any scheme with "://" plus mailto:/tel:/slack: style
+// ones) and bare www. hosts. Bare domains without either ("evil.com") are
+// not matched, so ordinary prose with a dot in it stays untouched.
+const BARE_URL = /\b(?:[a-z][a-z0-9+.-]*:\/\/|mailto:|tel:|sms:|slack:|www\.)[^\s<>|]+/gi;
+
+function hostOf(url: string): string | null {
+  try {
+    const withScheme = /^www\./i.test(url) ? `https://${url}` : url;
+    const u = new URL(withScheme);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    return u.hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/** pixl.hackclub.com, hackclub.com and its subdomains, and the Pixl repo. */
+export function isAllowedUrl(url: string): boolean {
+  const host = hostOf(url);
+  if (!host) return false;
+  if (host === "hackclub.com" || host.endsWith(".hackclub.com")) return true;
+  if (host === "github.com") {
+    try {
+      const path = new URL(url).pathname.toLowerCase();
+      return path === "/hackclub/pixl" || path.startsWith("/hackclub/pixl/");
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** "https://evil.com/x" -> "evil[.]com/x": readable, not clickable. */
+export function defangUrl(url: string): string {
+  return url
+    .replace(/^[a-z][a-z0-9+.-]*:(\/\/)?/i, "")
+    .replace(/\./g, "[.]")
+    .replace(/@/g, "[at]");
 }

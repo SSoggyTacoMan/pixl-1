@@ -1,9 +1,19 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import crypto from "crypto";
-import { supabase, type UserRow } from "../db/client.js";
+import { z } from "zod";
+import { db, type UserRow } from "../db/client.js";
 import type { PgError } from "../db/pgCompat.js";
-import { issueSessionToken, verifySessionToken } from "../auth/session.js";
-import { activeBan } from "../moderation.js";
+import { issueSessionToken, type SessionClient } from "../auth/session.js";
+import { forgetCachedRevocation, revokeUserSessions } from "../auth/revocation.js";
+import {
+  checkLoginRedirect,
+  checkRedirect,
+  CLIENT_STATE_RE,
+  createLoginCodeStore,
+  loginClientForRedirect,
+  type LoginGrant,
+} from "../auth/loginCodes.js";
+import { lookupActiveBan } from "../moderation.js";
 import { fetchSlackAvatar, fetchSlackDisplayName } from "../slackAvatar.js";
 import { enrollSlackPlayerInPixl } from "../pixlSlack.js";
 import { config } from "../config.generated.js";
@@ -16,6 +26,11 @@ import {
   type HcaStateRow,
 } from "../hcaEligibility.js";
 import { nameProblem } from "./profile.js";
+import { audit, auditRequest, auditRequestThrottled, requestActor } from "../audit.js";
+import { requireSession } from "../http/requireSession.js";
+import { validate, v } from "../http/validate.js";
+import { matchServiceKey, serviceKeyHeader } from "../http/serviceKeys.js";
+import { endUserSession } from "../ws/gameServer.js";
 
 const router = Router();
 
@@ -32,93 +47,9 @@ function isOauthIdentityRace(error: PgError | null | undefined): boolean {
 async function saveSlackAvatar(userId: string, slackId: string): Promise<void> {
   const url = await fetchSlackAvatar(slackId);
   if (!url) return;
-  const { error } = await supabase.from("users").update({ avatar_url: url }).eq("id", userId);
+  const { error } = await db.from("users").update({ avatar_url: url }).eq("id", userId);
   if (error) console.error("Failed to save slack avatar", error.message);
 }
-
-router.get("/auth/demo", async (req, res) => {
-  if (process.env.ALLOW_DEMO_LOGIN !== "true") {
-    return res.status(403).json({ error: "Demo login disabled" });
-  }
-
-  const name = (req.query.name as string)?.trim();
-  if (!name) {
-    return res.status(400).json({ error: "Missing ?name= query param" });
-  }
-
-  const demoOauthId = `demo_${name.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
-
-  const { data: existingUsers, error: lookupError } = await supabase
-    .from("users")
-    .select("*")
-    .eq("oauth_provider", "demo")
-    .eq("oauth_id", demoOauthId)
-    .limit(1);
-
-  if (lookupError) {
-    console.error("Supabase lookup failed", lookupError);
-    return res.status(500).json({ error: "Database error" });
-  }
-
-  let userId: string;
-  let displayName: string;
-
-  if (existingUsers && existingUsers.length > 0) {
-    const existing = existingUsers[0] as UserRow;
-    userId = existing.id;
-    displayName = existing.display_name;
-  } else {
-    const { data: created, error: insertError } = await supabase
-      .from("users")
-      .insert({
-        oauth_provider: "demo",
-        oauth_id: demoOauthId,
-        display_name: name,
-        real_name: name,
-        avatar_url: null,
-      })
-      .select()
-      .single();
-
-    if (insertError || !created) {
-      // Same race as /auth/hackclub/callback , see
-      // drizzle/0177_users_oauth_unique.sql.
-      if (isOauthIdentityRace(insertError)) {
-        const { data: racedUser, error: racedLookupError } = await supabase
-          .from("users")
-          .select("*")
-          .eq("oauth_provider", "demo")
-          .eq("oauth_id", demoOauthId)
-          .single();
-        if (racedLookupError || !racedUser) {
-          console.error("Post-race user lookup failed", racedLookupError);
-          return res.status(500).json({ error: "Database error" });
-        }
-        const row = racedUser as UserRow;
-        userId = row.id;
-        displayName = row.display_name;
-      } else {
-        console.error("Supabase insert failed", insertError);
-        return res.status(500).json({ error: "Database error" });
-      }
-    } else {
-      const row = created as UserRow;
-      userId = row.id;
-      displayName = row.display_name;
-
-      const { error: stateError } = await supabase
-        .from("player_state")
-        .insert({ user_id: userId });
-
-      if (stateError) {
-        console.error("Failed to seed player_state", stateError);
-      }
-    }
-  }
-
-  const sessionToken = issueSessionToken({ userId, displayName });
-  res.json({ token: sessionToken, name: displayName });
-});
 
 const HCA_BASE_URL = "https://auth.hackclub.com";
 const CLIENT_ID = process.env.HCA_CLIENT_ID!;
@@ -139,31 +70,28 @@ const HCA_ADDRESS_SCOPES =
 // a legal_first_name/legal_last_name, only ever set through HCA's own
 // identity-verification flow, under its own "legal_name" scope. Deliberately
 // its own tiny one-off request, not folded into HCA_LOGIN_SCOPES, so this is
-// only ever asked for when explicitly needed (see /auth/hackclub/legal-name
-// below), not on every normal login.
+// only ever asked for when explicitly needed (see the legal-name flow below),
+// not on every normal login.
 const HCA_LEGAL_NAME_SCOPES = "openid legal_name";
 
-// Maps OAuth `state` -> when it stops being valid, plus the web game's URL to
-// redirect back to after login (only set when the login was started from a web
-// export). Abandoned logins are never claimed, so they're swept on a timer.
+// Maps our OAuth `state` (sent to HCA) -> the pending round trip. Abandoned
+// logins are never claimed, so they're swept on a timer.
 //
-// purpose distinguishes a normal login (creates/signs in a user, issues a
-// session) from a "verify address" round trip started from shop checkout
-// (re-authorizes with HCA to refresh the address on an *already* logged-in
-// user, no new session). userId is only set for the latter.
+// purpose distinguishes a normal login (creates/signs in a user, mints a
+// login code) from the re-auth flows started by an already signed-in player
+// through POST /auth/flow/:name (no new session; userId is set for those).
+// redirect is always an allowlisted URL (checkRedirect), clientState is the
+// client's own opaque `state`, echoed back on a login redirect.
+type FlowPurpose = "verify_address" | "resync_hca" | "verify_legal_name";
 interface PendingLogin {
   expiresAt: number;
-  webRedirect?: string;
-  purpose?: "verify_address" | "resync_hca" | "verify_legal_name";
+  redirect: string;
+  clientState?: string;
+  purpose?: FlowPurpose;
   userId?: string;
-  // F-8: apps/web-shell/app/api/login/route.ts's login-nonce cookie value,
-  // opaque to us - round-tripped back onto the final redirect as `ln=` so
-  // proxy.ts can confirm the browser landing on ?token= is the same one
-  // that started this login, not an arbitrary visitor following a link
-  // someone else's valid token was tacked onto.
-  loginNonce?: string;
 }
 const PENDING_LOGIN_TTL_MS = 10 * 60_000;
+const MAX_PENDING_LOGINS = 20_000;
 const pendingLogins = new Map<string, PendingLogin>();
 
 setInterval(() => {
@@ -173,51 +101,30 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
-// The session JWT is handed to whatever web_redirect points at, so an
-// unrestricted value is an account takeover: a link with someone else's host
-// logs the attacker into the victim's account. Only origins we serve the game
-// from are allowed.
-//
-// Keep this list to hosts that are live RIGHT NOW. A retired domain left in
-// here is a standing liability: if it ever lapses and someone else registers
-// it, this hands them real session tokens. The old pixl.rsvp trio was dropped
-// on 2026-08-17 for exactly that reason, the game moved to *.hackclub.com and
-// all three had gone 404.
-const ALLOWED_REDIRECT_HOSTS = new Set(
-  [
-    new URL(config.urls.site).hostname,
-    new URL(config.urls.play).hostname,
-    ...(process.env.WEB_REDIRECT_HOSTS ?? "")
-      .split(",")
-      .map((h) => h.trim())
-      .filter(Boolean),
-  ].map((h) => h.toLowerCase()),
-);
-
-// Opt-in, not NODE_ENV based: prod doesn't set NODE_ENV, so keying off it would
-// leave localhost redirects allowed on the live server.
-const ALLOW_LOCAL_REDIRECT = process.env.ALLOW_LOCAL_REDIRECT === "true";
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
-// Returns the redirect stripped down to origin + path + query (host/protocol
-// validated below; the query string is inert data the game round-trips to
-// itself, e.g. the verify-address flow uses it to remember which item was
-// mid-checkout), or null if it isn't one of ours.
-function safeWebRedirect(raw: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
+function startPending(pending: Omit<PendingLogin, "expiresAt">): string {
+  while (pendingLogins.size >= MAX_PENDING_LOGINS) {
+    const oldest = pendingLogins.keys().next().value;
+    if (oldest === undefined) break;
+    pendingLogins.delete(oldest);
   }
-  const host = url.hostname.toLowerCase();
-  const isLocal = ALLOW_LOCAL_REDIRECT && LOCAL_HOSTS.has(host);
-  if (!isLocal) {
-    if (url.protocol !== "https:") return null;
-    if (!ALLOWED_REDIRECT_HOSTS.has(host)) return null;
-  }
-  return `${url.origin}${url.pathname}${url.search}`;
+  const state = crypto.randomBytes(16).toString("hex");
+  pendingLogins.set(state, { ...pending, expiresAt: Date.now() + PENDING_LOGIN_TTL_MS });
+  return state;
 }
+
+function hcaAuthorizeUrl(scope: string, state: string): string {
+  const url = new URL(`${HCA_BASE_URL}/oauth/authorize`);
+  url.searchParams.set("client_id", CLIENT_ID);
+  url.searchParams.set("redirect_uri", REDIRECT_URI);
+  url.searchParams.set("response_type", "code");
+  // Must stay a subset of the scopes the HCA app is registered for, HCA
+  // rejects the whole authorize request otherwise.
+  url.searchParams.set("scope", scope);
+  url.searchParams.set("state", state);
+  return url.toString();
+}
+
+export const loginCodes = createLoginCodeStore();
 
 interface HackClubTokenResponse {
   access_token: string;
@@ -272,7 +179,7 @@ function extractBirthday(identity: HackClubMeResponse["identity"]): string | nul
   if (!raw) return null;
   const date = new Date(raw);
   if (Number.isNaN(date.getTime()) || date > new Date() || date.getFullYear() < 1900) {
-    console.warn("HCA birthday didn't parse as a date:", raw);
+    console.warn("HCA birthday didn't parse as a date");
     return null;
   }
   return raw.slice(0, 10);
@@ -309,19 +216,24 @@ function extractAddress(identity: HackClubMeResponse["identity"]): HcaAddressPat
   };
 }
 
-function loginErrorPage(heading: string, detail: string, retry: string, linkText = "Try logging in again"): string {
-  return `<html><body style="font-family:sans-serif;text-align:center;margin-top:4rem;"><h2>${heading}</h2><p>${detail}</p><p><a href="${retry}">${linkText}</a></p></body></html>`;
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+function loginErrorPage(heading: string, detail: string, retry: string, linkText = "Try logging in again"): string {
+  return `<html><body style="font-family:sans-serif;text-align:center;margin-top:4rem;"><h2>${heading}</h2><p>${detail}</p><p><a href="${escapeHtml(retry)}">${linkText}</a></p></body></html>`;
+}
+
+// A retry starts the same login over: same allowlisted redirect, same client
+// state (still bound to the same browser's cookie / nonce).
 function retryLoginUrl(pending: PendingLogin): string {
-  const params = new URLSearchParams();
-  if (pending.webRedirect) params.set("web_redirect", pending.webRedirect);
-  if (pending.loginNonce) params.set("nonce", pending.loginNonce);
-  return "/auth/hackclub" + (params.size ? `?${params}` : "");
+  if (!pending.clientState) return pending.redirect;
+  const params = new URLSearchParams({ redirect: pending.redirect, state: pending.clientState });
+  return `/auth/hackclub?${params}`;
 }
 
 async function persistHcaState(userId: string, patch: HcaStateRow): Promise<boolean> {
-  const { error } = await supabase.from("users").update(patch).eq("id", userId);
+  const { error } = await db.from("users").update(patch).eq("id", userId);
   if (error) {
     console.error("Failed to persist HCA state", userId, error.message);
     return false;
@@ -339,522 +251,646 @@ function unsavedStatePage(retry: string, linkText?: string): string {
   );
 }
 
-router.get("/auth/hackclub", (req, res) => {
-  const requestedRedirect = req.query.web_redirect as string | undefined;
-  let webRedirect: string | null = null;
-  if (requestedRedirect) {
-    webRedirect = safeWebRedirect(requestedRedirect);
-    if (!webRedirect) {
-      console.warn("Rejected web_redirect", requestedRedirect);
-      return res.status(400).send("Invalid redirect target");
-    }
-  }
-
-  // Opaque - only apps/web-shell's proxy.ts ever compares this value against
-  // anything, we just carry it through the round trip. Capped defensively
-  // since it lands in an in-memory map keyed off `state`, not `nonce`.
-  const nonce = typeof req.query.nonce === "string" ? req.query.nonce.slice(0, 200) : undefined;
-
-  const state = crypto.randomBytes(16).toString("hex");
-  pendingLogins.set(state, {
-    expiresAt: Date.now() + PENDING_LOGIN_TTL_MS,
-    webRedirect: webRedirect ?? undefined,
-    loginNonce: nonce,
+function loginFailed(req: Request, reason: string, extra: { actorId?: string; slackId?: string | null } = {}): void {
+  auditRequestThrottled(req, {
+    action: "auth.login_failed",
+    target: "hackclub",
+    result: "denied",
+    ...(extra.actorId ? { actorType: "player" as const, actorId: extra.actorId } : {}),
+    ...(extra.slackId ? { slackId: extra.slackId } : {}),
+    meta: { reason },
   });
+}
 
-  const url = new URL(`${HCA_BASE_URL}/oauth/authorize`);
-  url.searchParams.set("client_id", CLIENT_ID);
-  url.searchParams.set("redirect_uri", REDIRECT_URI);
-  url.searchParams.set("response_type", "code");
-  // Must stay a subset of the scopes the HCA app is registered for, HCA
-  // rejects the whole authorize request otherwise. "email"/"name"/
-  // "verification_status" were never registered names.
-  url.searchParams.set("scope", HCA_LOGIN_SCOPES);
-  url.searchParams.set("state", state);
-
-  res.redirect(url.toString());
-});
-
-// Re-authorizes with HCA to pull a fresh phone+address for an
-// already-logged-in player, without touching their session , used for the
-// "verify address" button on shop checkout (a stale address on file
-// shouldn't silently ship wrong) and now also the first time a player starts
-// an order at all, since general login no longer asks HCA for this.
-// Deliberately not auto-triggered; the player has to click it / start a buy.
-router.get("/auth/hackclub/verify-address", (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
-  if (!session) return res.status(401).send("Not logged in");
-
-  const requestedRedirect = req.query.web_redirect as string | undefined;
-  let webRedirect: string | null = null;
-  if (requestedRedirect) {
-    webRedirect = safeWebRedirect(requestedRedirect);
-    if (!webRedirect) {
-      console.warn("Rejected web_redirect", requestedRedirect);
-      return res.status(400).send("Invalid redirect target");
+// Step 1 of the code-exchange login. `redirect` must be exactly one of
+// LOGIN_REDIRECTS (the Pixl Dashboard's callback or the game's root); `state` is echoed back
+// untouched on the final redirect.
+router.get(
+  "/auth/hackclub",
+  validate({
+    query: z.object({ redirect: z.string().max(2000), state: z.string().regex(CLIENT_STATE_RE) }),
+  }),
+  (req, res) => {
+    const redirect = checkLoginRedirect(req.query.redirect);
+    if (!redirect) {
+      loginFailed(req, "bad_redirect");
+      return res.status(400).json({ ok: false, error: "invalid_redirect" });
     }
-  }
+    const state = startPending({ redirect, clientState: String(req.query.state) });
+    res.redirect(hcaAuthorizeUrl(HCA_LOGIN_SCOPES, state));
+  },
+);
 
-  const state = crypto.randomBytes(16).toString("hex");
-  pendingLogins.set(state, {
-    expiresAt: Date.now() + PENDING_LOGIN_TTL_MS,
-    webRedirect: webRedirect ?? undefined,
-    purpose: "verify_address",
-    userId: session.userId,
-  });
-
-  const url = new URL(`${HCA_BASE_URL}/oauth/authorize`);
-  url.searchParams.set("client_id", CLIENT_ID);
-  url.searchParams.set("redirect_uri", REDIRECT_URI);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", HCA_ADDRESS_SCOPES);
-  url.searchParams.set("state", state);
-
-  res.redirect(url.toString());
-});
-
-router.get("/auth/hackclub/resync", (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
-  if (!session) return res.status(401).send("Not logged in");
-
-  const requestedRedirect = req.query.web_redirect as string | undefined;
-  let webRedirect: string | null = null;
-  if (requestedRedirect) {
-    webRedirect = safeWebRedirect(requestedRedirect);
-    if (!webRedirect) {
-      console.warn("Rejected web_redirect", requestedRedirect);
-      return res.status(400).send("Invalid redirect target");
-    }
-  }
-
-  const state = crypto.randomBytes(16).toString("hex");
-  pendingLogins.set(state, {
-    expiresAt: Date.now() + PENDING_LOGIN_TTL_MS,
-    webRedirect: webRedirect ?? undefined,
-    purpose: "resync_hca",
-    userId: session.userId,
-  });
-
-  const url = new URL(`${HCA_BASE_URL}/oauth/authorize`);
-  url.searchParams.set("client_id", CLIENT_ID);
-  url.searchParams.set("redirect_uri", REDIRECT_URI);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", HCA_LOGIN_SCOPES);
-  url.searchParams.set("state", state);
-
-  res.redirect(url.toString());
-});
-
-// One-off: pulls this player's HCA-verified legal name (legal_first_name/
-// legal_last_name), for the rare case their self-editable first_name/
-// last_name obviously isn't their real name. Same shape as /address and
-// /resync above (needs an already-logged-in player's own token, since it's a
-// re-auth of an existing account, not a fresh login), deliberately not
-// exposed anywhere in the game UI - a player is only ever sent this link
-// directly when asked to confirm their name.
-router.get("/auth/hackclub/legal-name", (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
-  if (!session) return res.status(401).send("Not logged in");
-
-  const state = crypto.randomBytes(16).toString("hex");
-  pendingLogins.set(state, {
-    expiresAt: Date.now() + PENDING_LOGIN_TTL_MS,
-    purpose: "verify_legal_name",
-    userId: session.userId,
-  });
-
-  const url = new URL(`${HCA_BASE_URL}/oauth/authorize`);
-  url.searchParams.set("client_id", CLIENT_ID);
-  url.searchParams.set("redirect_uri", REDIRECT_URI);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", HCA_LEGAL_NAME_SCOPES);
-  url.searchParams.set("state", state);
-
-  res.redirect(url.toString());
-});
-
-router.get("/auth/hackclub/callback", async (req, res) => {
-  const code = req.query.code as string | undefined;
-  const state = req.query.state as string | undefined;
-
-  const pending = state ? pendingLogins.get(state) : undefined;
-  if (state) pendingLogins.delete(state);
-  if (!code || !pending) {
-    return res.status(400).send("Invalid OAuth state");
-  }
-  if (pending.expiresAt <= Date.now()) {
-    return res.status(400).send("Login took too long, please try again");
-  }
-
-  const webRedirect = pending.webRedirect;
-
-  const tokenRes = await fetch(`${HCA_BASE_URL}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      redirect_uri: REDIRECT_URI,
-      code,
-      grant_type: "authorization_code",
-    }),
-  });
-
-  if (!tokenRes.ok) {
-    const body = await tokenRes.text();
-    console.error("HCA token exchange failed", tokenRes.status, body);
-    // HCA throttles the token endpoint ("slow your roll!") if you log in and
-    // out a few times in a row. The code is spent either way, so the only way
-    // through is a fresh login once their window clears.
-    const throttled = tokenRes.status === 429 || body.includes("slow your roll");
-    const retry = retryLoginUrl(pending);
-    return res
-      .status(throttled ? 429 : 502)
-      .send(
-        loginErrorPage(
-          throttled ? "Hack Club Auth is rate limiting us" : "Login failed",
-          throttled
-            ? "Too many logins in a row. Give it a minute, then try again."
-            : "Hack Club Auth wouldn't hand over your session.",
-          retry,
-        ),
-      );
-  }
-
-  const tokens = (await tokenRes.json()) as HackClubTokenResponse;
-
-  const meRes = await fetch(`${HCA_BASE_URL}/api/v1/me`, {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-  });
-
-  if (!meRes.ok) {
-    console.error("HCA /me fetch failed", await meRes.text());
-    return res.status(502).send("Failed to fetch user identity");
-  }
-
-  const me = (await meRes.json()) as HackClubMeResponse;
-  const identity = me.identity;
-
-  if (pending.purpose === "resync_hca") {
-    const back = webRedirect ?? config.urls.play;
-    const unsaved = () =>
-      res.status(503).set("Retry-After", "5").send(unsavedStatePage(back, "Back to Pixl"));
-    if (!pending.userId) return res.status(400).send("Invalid OAuth state");
-    const { data: row, error: rowError } = await supabase
-      .from("users")
-      .select("id, oauth_provider, oauth_id, hca_verification_status, hca_ysws_eligible")
-      .eq("id", pending.userId)
-      .maybeSingle();
-    if (rowError || !row) {
-      console.error("HCA resync user lookup failed", rowError?.message);
-      return unsaved();
-    }
-    // bound identity
-    if (row.oauth_provider !== "hackclub" || row.oauth_id !== identity.id) {
-      return res
-        .status(403)
-        .send(
-          loginErrorPage(
-            "That's a different Hack Club account",
-            "Sign in to Hack Club Auth with the same account you used to join Pixl, then re-check.",
-            back,
-            "Back to Pixl",
-          ),
-        );
-    }
-    const fresh = hcaStatePatch(identity);
-    if (fresh.hca_verification_status === undefined) {
-      console.warn("[auth] HCA identity has no verification_status", row.id);
-    } else if (hcaStateChanged(row as HcaStateRow, fresh) && !(await persistHcaState(row.id as string, fresh))) {
-      return unsaved();
-    }
-    const dest = new URL(back);
-    dest.searchParams.set("hca_synced", hcaSyncOutcome(fresh.hca_verification_status === undefined ? (row as HcaStateRow) : fresh));
-    return res.redirect(dest.toString());
-  }
-
-  if (pending.purpose === "verify_legal_name") {
-    if (!pending.userId) return res.status(400).send("Invalid OAuth state");
-    const { data: row, error: rowError } = await supabase
-      .from("users")
-      .select("id, oauth_provider, oauth_id")
-      .eq("id", pending.userId)
-      .maybeSingle();
-    if (rowError || !row) {
-      console.error("HCA legal-name user lookup failed", rowError?.message);
-      return res.status(502).send("Something went wrong, try that link again");
-    }
-    // Same identity-binding check as resync_hca above , this writes a name
-    // onto an account, so it must be the same HCA identity that account is
-    // actually tied to, not whichever HCA account happened to be signed into
-    // the browser that clicked the link.
-    if (row.oauth_provider !== "hackclub" || row.oauth_id !== identity.id) {
-      return res
-        .status(403)
-        .send(
-          loginErrorPage(
-            "That's a different Hack Club account",
-            "Sign in to Hack Club Auth with the same account you used to join Pixl, then try that link again.",
-            config.urls.play,
-            "Back to Pixl",
-          ),
-        );
-    }
-    if (identity.legal_first_name || identity.legal_last_name) {
-      const { error: legalErr } = await supabase
-        .from("users")
-        .update({
-          legal_first_name: identity.legal_first_name ?? null,
-          legal_last_name: identity.legal_last_name ?? null,
-        })
-        .eq("id", pending.userId);
-      if (legalErr) console.error("Failed to save legal name from HCA", legalErr.message);
-    }
-    return res.send(
-      "<!doctype html><meta charset=\"utf-8\"><title>Pixl</title>" +
-        "<body style=\"font-family: sans-serif; padding: 2rem; text-align: center;\">" +
-        "<p>Thanks , that's all we needed. You can close this tab.</p></body>",
-    );
-  }
-
-  if (pending.purpose === "verify_address") {
-    const addr = extractAddress(identity);
-    if (addr && pending.userId) {
-      const { error: addrErr } = await supabase
-        .from("users")
-        .update({
-          address_line1: encryptPII(addr.address_line1),
-          address_line2: encryptPII(addr.address_line2),
-          address_city: encryptPII(addr.address_city),
-          address_state: encryptPII(addr.address_state),
-          address_country: encryptPII(addr.address_country),
-          address_postal: encryptPII(addr.address_postal),
-        })
-        .eq("id", pending.userId);
-      if (addrErr) console.error("Failed to refresh address from HCA", addrErr.message);
-    }
-    const target = webRedirect ?? config.urls.play;
-    const dest = new URL(target);
-    dest.searchParams.set("addr_verified", addr ? "1" : "0");
-    return res.redirect(dest.toString());
-  }
-
-  // Which HCA scope actually carries name/email isn't documented, so say so
-  // loudly if a login comes back without them rather than silently falling
-  // through to a user_xxxxxxxx placeholder.
-  if (!identity.first_name && !identity.primary_email) {
-    console.warn(
-      "HCA identity missing name and email, granted scopes:",
-      me.scopes,
-      "fields:",
-      Object.keys(identity),
-    );
-  }
-  // The verified real name, straight from HCA and nothing else - this is
-  // what real_name/first_name/last_name get set to below, since those feed
-  // the review pipeline, the dashboard's "who is this" and the Airtable
-  // submission. Never fall back to a player's own Slack display name here:
-  // that's self-editable (exactly the "fake/game name" a player could set),
-  // so it's only ever used for the cosmetic in-game display_name below, never
-  // for the name anything treats as verified.
-  const fullName = [identity.first_name, identity.last_name]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
-  // HCA doesn't always have a name on file (younger/incomplete accounts) ,
-  // fall back to Slack's own directory before resorting to a generated
-  // placeholder, since every player is a real Slack workspace member. This
-  // only ever seeds the in-game display name, never real_name.
-  let displayNameSource = fullName;
-  if (!displayNameSource && identity.slack_id) {
-    const slackName = await fetchSlackDisplayName(identity.slack_id);
-    if (slackName) displayNameSource = slackName;
-  }
-  const fallbackName = `user_${identity.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8)}`;
-  const candidateName = displayNameSource || identity.primary_email || fallbackName;
-  // A rename later rejects a nasty/malformed name via nameProblem() , the
-  // initial name from HCA/Slack must pass the same check or it never would.
-  const displayNameFromHca = nameProblem(candidateName) ? fallbackName : candidateName;
-
-  const { data: existingUsers, error: lookupError } = await supabase
-    .from("users")
-    .select("*")
-    .eq("oauth_provider", "hackclub")
-    .eq("oauth_id", identity.id)
-    .limit(1);
-
-  if (lookupError) {
-    console.error("Supabase lookup failed", lookupError);
-    return res.status(500).send("Database error");
-  }
-
-  let userId: string;
-  let displayName: string;
-  let isNewUser = false;
-
-  const hcaBirthday = extractBirthday(identity);
-  const hcaAddress = extractAddress(identity);
-
-  if (existingUsers && existingUsers.length > 0) {
-    const existing = existingUsers[0] as UserRow;
-    userId = existing.id;
-    displayName = existing.display_name;
-    const fresh = hcaStatePatch(identity);
-    if (fresh.hca_verification_status === undefined) {
-      console.warn("[auth] HCA identity has no verification_status", userId);
-    } else if (hcaStateChanged(existing as HcaStateRow, fresh) && !(await persistHcaState(userId, fresh))) {
-      return res.status(503).set("Retry-After", "5").send(unsavedStatePage(retryLoginUrl(pending)));
-    }
-    const patch: Record<string, string> = {};
-    if (identity.slack_id) patch.slack_id = identity.slack_id;
-    if (identity.primary_email) patch.email = identity.primary_email;
-    // Keep the real name in sync every login , it's the authoritative identity the
-    // dashboard shows, and the player's display_name can drift from it.
-    if (fullName) patch.real_name = fullName;
-    if (identity.first_name) patch.first_name = identity.first_name;
-    if (identity.last_name) patch.last_name = identity.last_name;
-    // Birthday/address now come from HCA (the /account self-report form is
-    // gone) , keep them in sync every login the same way name/email are.
-    if (hcaBirthday) patch.birthday = encryptPII(hcaBirthday);
-    if (hcaAddress) {
-      patch.address_line1 = encryptPII(hcaAddress.address_line1);
-      patch.address_line2 = encryptPII(hcaAddress.address_line2);
-      patch.address_city = encryptPII(hcaAddress.address_city);
-      patch.address_state = encryptPII(hcaAddress.address_state);
-      patch.address_country = encryptPII(hcaAddress.address_country);
-      patch.address_postal = encryptPII(hcaAddress.address_postal);
-    }
-    if (Object.keys(patch).length > 0) {
-      void supabase
-        .from("users")
-        .update(patch)
-        .eq("id", userId)
-        .then(({ error: e }) => {
-          if (e) console.error("Failed to backfill slack_id/email", e);
+// Step 3: trade a login code for a session token. Allowed from the Pixl
+// Dashboard's backend (x-pixl-service-key = SERVICE_KEY_PIXL_DASHBOARD) or
+// from the game's own origin with no key. Anything else is refused.
+// The caller is checked before the body is validated, so an unauthorized
+// caller always gets 401 and never learns anything about the expected shape.
+router.post(
+  "/auth/exchange",
+  (req, res, next) => {
+    const given = serviceKeyHeader(req);
+    if (given) {
+      const service = matchServiceKey(given);
+      if (service !== "pixl-dashboard") {
+        auditRequestThrottled(req, {
+          action: "auth.service_key_rejected",
+          ...(service ? { actorType: "service" as const, actorId: service } : {}),
+          target: "POST /auth/exchange",
+          result: "denied",
+          meta: { reason: service ? "not_permitted" : "unknown_key" },
         });
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      }
+      req.service = service;
+    } else if (req.headers.origin !== config.urls.play) {
+      auditRequestThrottled(req, {
+        action: "auth.exchange",
+        target: "POST /auth/exchange",
+        result: "denied",
+        meta: { reason: "caller_not_allowed" },
+      });
+      return res.status(401).json({ ok: false, error: "unauthorized" });
     }
-    if (identity.slack_id && !(existing as { avatar_url?: string | null }).avatar_url)
-      void saveSlackAvatar(userId, identity.slack_id);
-  } else {
-    if (isSignupRejected(identity)) {
+    next();
+  },
+  validate({ query: v.noQuery, body: z.object({ code: z.string().min(16).max(128) }) }),
+  (req, res) => {
+    // The token's client kind comes from the grant, which was bound to the
+    // login redirect when the code was minted, never from the body. The
+    // caller must be that same kind: the Pixl Dashboard's service key for a
+    // "web" grant, the game's origin for a "game" one. A mismatch spends the
+    // code (redeem already deleted it) and is refused.
+    const caller: SessionClient = req.service === "pixl-dashboard" ? "web" : "game";
+    const grant = loginCodes.redeem(String(req.body.code));
+    if (!grant) {
+      auditRequestThrottled(req, {
+        action: "auth.exchange",
+        target: "POST /auth/exchange",
+        result: "denied",
+        meta: { reason: "invalid_code", via: req.service ?? "game", client: caller },
+      });
+      return res.status(400).json({ ok: false, error: "invalid_code" });
+    }
+    if (grant.client !== caller) {
+      auditRequestThrottled(req, {
+        actorType: "player",
+        actorId: grant.userId,
+        action: "auth.exchange",
+        target: "POST /auth/exchange",
+        result: "denied",
+        meta: { reason: "client_mismatch", via: req.service ?? "game", client: caller, grantClient: grant.client },
+      });
+      return res.status(400).json({ ok: false, error: "invalid_code" });
+    }
+    const client: SessionClient = grant.client;
+
+    const token = issueSessionToken({
+      userId: grant.userId,
+      displayName: grant.displayName,
+      client,
+      ...(grant.slackId ? { slackId: grant.slackId } : {}),
+    });
+    const actor = requestActor(req);
+    audit({
+      ...actor,
+      actorType: "player",
+      actorId: grant.userId,
+      slackId: grant.slackId,
+      action: "auth.exchange",
+      target: `user:${grant.userId}`,
+      result: "ok",
+      meta: { via: req.service ?? "game", client, isNew: grant.isNew },
+    });
+    res.json({
+      ok: true,
+      token,
+      user: { id: grant.userId, displayName: grant.displayName, slackId: grant.slackId },
+      isNew: grant.isNew,
+      needsLegalName: grant.needsLegalName,
+    });
+  },
+);
+
+// Revokes the caller's sessions for the caller's own client only (see
+// auth/revocation.ts): logging out of the Pixl Dashboard leaves the game
+// signed in and vice versa. Only a game logout closes the game socket.
+router.post(
+  "/auth/logout",
+  requireSession(),
+  validate({ query: v.noQuery, body: v.empty }),
+  async (req, res) => {
+    const session = req.session!;
+    const client = session.client;
+    const revokedAtMs = Date.now();
+    const result = await revokeUserSessions(session.userId, revokedAtMs, client);
+    if (result !== "revoked") {
+      auditRequest(req, {
+        action: "auth.logout",
+        target: `user:${session.userId}`,
+        result: "error",
+        meta: { reason: result, client },
+      });
+      return res.status(result === "not_found" ? 404 : 503).json({ ok: false, error: "logout_failed" });
+    }
+    forgetCachedRevocation(session.userId);
+    if (client === "game") endUserSession(session.userId, revokedAtMs);
+    auditRequest(req, { action: "auth.logout", target: `user:${session.userId}`, result: "ok", meta: { client } });
+    res.json({ ok: true });
+  },
+);
+
+// Re-auth round trips for an already signed-in player. The client POSTs with
+// its Bearer token and gets back the URL to send the browser to; the round
+// trip ends on its (allowlisted) `redirect`. No session token is ever put in
+// a URL.
+//  - verify-address: pull a fresh phone+address from HCA (shop checkout,
+//    also the first time a player starts an order at all, since general
+//    login no longer asks HCA for it). Returns with ?addr_verified=1|0.
+//  - resync: re-check HCA verification/eligibility for this account without
+//    a re-login. Returns with ?hca_synced=<outcome>.
+//  - legal-name: pull the HCA-verified legal name, for the rare case a
+//    player's self-editable first_name/last_name obviously isn't their real
+//    name. Returns with ?legal_name=saved|missing.
+const FLOWS: Record<string, { purpose: FlowPurpose; scope: string }> = {
+  "verify-address": { purpose: "verify_address", scope: HCA_ADDRESS_SCOPES },
+  resync: { purpose: "resync_hca", scope: HCA_LOGIN_SCOPES },
+  "legal-name": { purpose: "verify_legal_name", scope: HCA_LEGAL_NAME_SCOPES },
+};
+
+router.post(
+  "/auth/flow/:name",
+  requireSession(),
+  validate({
+    params: z.object({ name: z.enum(["verify-address", "resync", "legal-name"]) }),
+    query: v.noQuery,
+    body: z.object({ redirect: z.string().max(2000) }),
+  }),
+  (req, res) => {
+    const session = req.session!;
+    const flow = FLOWS[String(req.params.name)];
+    const redirect = checkRedirect(req.body.redirect);
+    if (!redirect) return res.status(400).json({ ok: false, error: "invalid_redirect" });
+    const state = startPending({ redirect, purpose: flow.purpose, userId: session.userId });
+    auditRequest(req, { action: `auth.flow.${String(req.params.name)}`, target: `user:${session.userId}`, result: "ok" });
+    res.json({ ok: true, url: hcaAuthorizeUrl(flow.scope, state) });
+  },
+);
+
+function withParam(base: string, key: string, value: string): string {
+  const dest = new URL(base);
+  dest.searchParams.set(key, value);
+  return dest.toString();
+}
+
+function needsLegalNameFor(row: { legal_first_name?: unknown; legal_last_name?: unknown }, fullName: string): boolean {
+  const hasLegal = Boolean(row.legal_first_name) || Boolean(row.legal_last_name);
+  return !hasLegal && fullName.trim() === "";
+}
+
+router.get(
+  "/auth/hackclub/callback",
+  validate({ query: z.object({ code: z.string().max(2000).optional(), state: z.string().max(200).optional() }) }),
+  async (req: Request, res: Response) => {
+    const code = req.query.code as string | undefined;
+    const state = req.query.state as string | undefined;
+
+    const pending = state ? pendingLogins.get(state) : undefined;
+    if (state) pendingLogins.delete(state);
+    if (!code || !pending) {
+      loginFailed(req, "invalid_state");
+      return res.status(400).send("Invalid OAuth state");
+    }
+    if (pending.expiresAt <= Date.now()) {
+      loginFailed(req, "expired_state");
+      return res.status(400).send("Login took too long, please try again");
+    }
+
+    const tokenRes = await fetch(`${HCA_BASE_URL}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        redirect_uri: REDIRECT_URI,
+        code,
+        grant_type: "authorization_code",
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      const body = await tokenRes.text();
+      console.error("HCA token exchange failed", tokenRes.status, body.slice(0, 500));
+      // HCA throttles the token endpoint ("slow your roll!") if you log in and
+      // out a few times in a row. The code is spent either way, so the only way
+      // through is a fresh login once their window clears.
+      const throttled = tokenRes.status === 429 || body.includes("slow your roll");
+      loginFailed(req, throttled ? "hca_throttled" : "hca_token_failed");
+      const retry = retryLoginUrl(pending);
       return res
-        .status(403)
+        .status(throttled ? 429 : 502)
         .send(
           loginErrorPage(
-            "This Hack Club account isn't eligible for Pixl.",
-            "Hack Club Auth marks this identity as ineligible for YSWS programs, so a new Pixl account can't be created. If you think this is a mistake, reach out to the Pixl team.",
-            "/auth/hackclub",
+            throttled ? "Hack Club Auth is rate limiting us" : "Login failed",
+            throttled
+              ? "Too many logins in a row. Give it a minute, then try again."
+              : "Hack Club Auth wouldn't hand over your session.",
+            retry,
           ),
         );
     }
 
-    const { data: created, error: insertError } = await supabase
-      .from("users")
-      .insert({
-        oauth_provider: "hackclub",
-        oauth_id: identity.id,
-        ...hcaStatePatch(identity),
-        display_name: displayNameFromHca,
-        real_name: fullName,
-        first_name: identity.first_name ?? "",
-        last_name: identity.last_name ?? "",
-        avatar_url: null,
-        slack_id: identity.slack_id ?? null,
-        email: identity.primary_email ?? null,
-        birthday: hcaBirthday ? encryptPII(hcaBirthday) : null,
-        // The address columns are NOT NULL DEFAULT '' , writing null when HCA
-        // has no address on file fails the insert and blocks the signup.
-        // encryptPII returns "" for a missing value, which is what we want.
-        address_line1: encryptPII(hcaAddress?.address_line1),
-        address_line2: encryptPII(hcaAddress?.address_line2),
-        address_city: encryptPII(hcaAddress?.address_city),
-        address_state: encryptPII(hcaAddress?.address_state),
-        address_country: encryptPII(hcaAddress?.address_country),
-        address_postal: encryptPII(hcaAddress?.address_postal),
-      })
-      .select()
-      .single();
+    const tokens = (await tokenRes.json()) as HackClubTokenResponse;
 
-    if (insertError || !created) {
-      // unique_violation on users(oauth_provider, oauth_id) (see
-      // drizzle/0177_users_oauth_unique.sql) , two concurrent logins for the
-      // same HCA identity both missed the select above and raced to insert;
-      // the DB constraint is the actual guard. The loser just re-fetches the
-      // row the winner created and logs into that account instead of erroring.
-      if (isOauthIdentityRace(insertError)) {
-        const { data: racedUser, error: racedLookupError } = await supabase
+    const meRes = await fetch(`${HCA_BASE_URL}/api/v1/me`, {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+
+    if (!meRes.ok) {
+      console.error("HCA /me fetch failed", meRes.status);
+      loginFailed(req, "hca_me_failed");
+      return res.status(502).send("Failed to fetch user identity");
+    }
+
+    const me = (await meRes.json()) as HackClubMeResponse;
+    const identity = me.identity;
+
+    if (pending.purpose === "resync_hca") {
+      const back = pending.redirect;
+      const unsaved = () =>
+        res.status(503).set("Retry-After", "5").send(unsavedStatePage(back, "Back to Pixl"));
+      if (!pending.userId) return res.status(400).send("Invalid OAuth state");
+      const { data: row, error: rowError } = await db
+        .from("users")
+        .select("id, oauth_provider, oauth_id, hca_verification_status, hca_ysws_eligible")
+        .eq("id", pending.userId)
+        .maybeSingle();
+      if (rowError || !row) {
+        console.error("HCA resync user lookup failed", rowError?.message);
+        return unsaved();
+      }
+      // bound identity
+      if (row.oauth_provider !== "hackclub" || row.oauth_id !== identity.id) {
+        audit({ ...requestActor(req), actorType: "player", actorId: pending.userId, action: "auth.flow.resync", target: `user:${pending.userId}`, result: "denied", meta: { reason: "identity_mismatch" } });
+        return res
+          .status(403)
+          .send(
+            loginErrorPage(
+              "That's a different Hack Club account",
+              "Sign in to Hack Club Auth with the same account you used to join Pixl, then re-check.",
+              back,
+              "Back to Pixl",
+            ),
+          );
+      }
+      const fresh = hcaStatePatch(identity);
+      if (fresh.hca_verification_status === undefined) {
+        console.warn("[auth] HCA identity has no verification_status", row.id);
+      } else if (hcaStateChanged(row as HcaStateRow, fresh) && !(await persistHcaState(row.id as string, fresh))) {
+        return unsaved();
+      }
+      return res.redirect(
+        withParam(back, "hca_synced", hcaSyncOutcome(fresh.hca_verification_status === undefined ? (row as HcaStateRow) : fresh)),
+      );
+    }
+
+    if (pending.purpose === "verify_legal_name") {
+      if (!pending.userId) return res.status(400).send("Invalid OAuth state");
+      const { data: row, error: rowError } = await db
+        .from("users")
+        .select("id, oauth_provider, oauth_id")
+        .eq("id", pending.userId)
+        .maybeSingle();
+      if (rowError || !row) {
+        console.error("HCA legal-name user lookup failed", rowError?.message);
+        return res.status(502).send("Something went wrong, try that link again");
+      }
+      // Same identity-binding check as resync_hca above , this writes a name
+      // onto an account, so it must be the same HCA identity that account is
+      // actually tied to, not whichever HCA account happened to be signed into
+      // the browser that clicked the link.
+      if (row.oauth_provider !== "hackclub" || row.oauth_id !== identity.id) {
+        audit({ ...requestActor(req), actorType: "player", actorId: pending.userId, action: "auth.flow.legal-name", target: `user:${pending.userId}`, result: "denied", meta: { reason: "identity_mismatch" } });
+        return res
+          .status(403)
+          .send(
+            loginErrorPage(
+              "That's a different Hack Club account",
+              "Sign in to Hack Club Auth with the same account you used to join Pixl, then try that link again.",
+              pending.redirect,
+              "Back to Pixl",
+            ),
+          );
+      }
+      let saved = false;
+      if (identity.legal_first_name || identity.legal_last_name) {
+        const { error: legalErr } = await db
           .from("users")
-          .select("*")
-          .eq("oauth_provider", "hackclub")
-          .eq("oauth_id", identity.id)
-          .single();
-        if (racedLookupError || !racedUser) {
-          console.error("Post-race user lookup failed", racedLookupError);
+          .update({
+            legal_first_name: identity.legal_first_name ?? null,
+            legal_last_name: identity.legal_last_name ?? null,
+          })
+          .eq("id", pending.userId);
+        if (legalErr) console.error("Failed to save legal name from HCA", legalErr.message);
+        else saved = true;
+      }
+      return res.redirect(withParam(pending.redirect, "legal_name", saved ? "saved" : "missing"));
+    }
+
+    if (pending.purpose === "verify_address") {
+      if (!pending.userId) return res.status(400).send("Invalid OAuth state");
+      const { data: row, error: rowError } = await db
+        .from("users")
+        .select("id, oauth_provider, oauth_id")
+        .eq("id", pending.userId)
+        .maybeSingle();
+      if (rowError || !row) {
+        console.error("HCA verify-address user lookup failed", rowError?.message);
+        return res.status(502).send("Something went wrong, try that link again");
+      }
+      // Same identity binding as resync_hca / verify_legal_name: the address
+      // HCA returns belongs to whoever consented, so it may only land on the
+      // account tied to that exact HCA identity. Without this, A could start
+      // the flow, send the authorize link to B, and B's address would be
+      // written onto A's row.
+      if (row.oauth_provider !== "hackclub" || row.oauth_id !== identity.id) {
+        audit({ ...requestActor(req), actorType: "player", actorId: pending.userId, action: "auth.flow.identity_mismatch", target: `user:${pending.userId}`, result: "denied", meta: { flow: "verify-address" } });
+        return res
+          .status(403)
+          .send(
+            loginErrorPage(
+              "That's a different Hack Club account",
+              "Sign in to Hack Club Auth with the same account you used to join Pixl, then try that link again.",
+              pending.redirect,
+              "Back to Pixl",
+            ),
+          );
+      }
+      const addr = extractAddress(identity);
+      if (addr) {
+        const { error: addrErr } = await db
+          .from("users")
+          .update({
+            address_line1: encryptPII(addr.address_line1),
+            address_line2: encryptPII(addr.address_line2),
+            address_city: encryptPII(addr.address_city),
+            address_state: encryptPII(addr.address_state),
+            address_country: encryptPII(addr.address_country),
+            address_postal: encryptPII(addr.address_postal),
+          })
+          .eq("id", pending.userId);
+        if (addrErr) console.error("Failed to refresh address from HCA", addrErr.message);
+      }
+      return res.redirect(withParam(pending.redirect, "addr_verified", addr ? "1" : "0"));
+    }
+
+    // Which HCA scope actually carries name/email isn't documented, so say so
+    // loudly if a login comes back without them rather than silently falling
+    // through to a user_xxxxxxxx placeholder.
+    if (!identity.first_name && !identity.primary_email) {
+      console.warn(
+        "HCA identity missing name and email, granted scopes:",
+        me.scopes,
+        "fields:",
+        Object.keys(identity),
+      );
+    }
+    // The verified real name, straight from HCA and nothing else - this is
+    // what real_name/first_name/last_name get set to below, since those feed
+    // the review pipeline, the dashboard's "who is this" and the Airtable
+    // submission. Never fall back to a player's own Slack display name here:
+    // that's self-editable (exactly the "fake/game name" a player could set),
+    // so it's only ever used for the cosmetic in-game display_name below, never
+    // for the name anything treats as verified.
+    const fullName = [identity.first_name, identity.last_name]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    // HCA doesn't always have a name on file (younger/incomplete accounts) ,
+    // fall back to Slack's own directory before resorting to a generated
+    // placeholder, since every player is a real Slack workspace member. This
+    // only ever seeds the in-game display name, never real_name.
+    let displayNameSource = fullName;
+    if (!displayNameSource && identity.slack_id) {
+      const slackName = await fetchSlackDisplayName(identity.slack_id);
+      if (slackName) displayNameSource = slackName;
+    }
+    const fallbackName = `user_${identity.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8)}`;
+    const candidateName = displayNameSource || identity.primary_email || fallbackName;
+    // A rename later rejects a nasty/malformed name via nameProblem() , the
+    // initial name from HCA/Slack must pass the same check or it never would.
+    const displayNameFromHca = nameProblem(candidateName) ? fallbackName : candidateName;
+
+    const { data: existingUsers, error: lookupError } = await db
+      .from("users")
+      .select("*")
+      .eq("oauth_provider", "hackclub")
+      .eq("oauth_id", identity.id)
+      .limit(1);
+
+    if (lookupError) {
+      console.error("User lookup failed", lookupError);
+      loginFailed(req, "db_error");
+      return res.status(500).send("Database error");
+    }
+
+    let userId: string;
+    let displayName: string;
+    let isNewUser = false;
+    let needsLegalName = false;
+
+    const hcaBirthday = extractBirthday(identity);
+    const hcaAddress = extractAddress(identity);
+
+    if (existingUsers && existingUsers.length > 0) {
+      const existing = existingUsers[0] as UserRow & { legal_first_name?: unknown; legal_last_name?: unknown };
+      userId = existing.id;
+      displayName = existing.display_name;
+      needsLegalName = needsLegalNameFor(existing, fullName || existing.real_name || "");
+      const fresh = hcaStatePatch(identity);
+      if (fresh.hca_verification_status === undefined) {
+        console.warn("[auth] HCA identity has no verification_status", userId);
+      } else if (hcaStateChanged(existing as HcaStateRow, fresh) && !(await persistHcaState(userId, fresh))) {
+        loginFailed(req, "hca_state_unsaved", { actorId: userId });
+        return res.status(503).set("Retry-After", "5").send(unsavedStatePage(retryLoginUrl(pending)));
+      }
+      const patch: Record<string, string> = {};
+      if (identity.slack_id) patch.slack_id = identity.slack_id;
+      if (identity.primary_email) patch.email = identity.primary_email;
+      // Keep the real name in sync every login , it's the authoritative identity the
+      // dashboard shows, and the player's display_name can drift from it.
+      if (fullName) patch.real_name = fullName;
+      if (identity.first_name) patch.first_name = identity.first_name;
+      if (identity.last_name) patch.last_name = identity.last_name;
+      // Birthday/address now come from HCA (the /account self-report form is
+      // gone) , keep them in sync every login the same way name/email are.
+      if (hcaBirthday) patch.birthday = encryptPII(hcaBirthday);
+      if (hcaAddress) {
+        patch.address_line1 = encryptPII(hcaAddress.address_line1);
+        patch.address_line2 = encryptPII(hcaAddress.address_line2);
+        patch.address_city = encryptPII(hcaAddress.address_city);
+        patch.address_state = encryptPII(hcaAddress.address_state);
+        patch.address_country = encryptPII(hcaAddress.address_country);
+        patch.address_postal = encryptPII(hcaAddress.address_postal);
+      }
+      if (Object.keys(patch).length > 0) {
+        void db
+          .from("users")
+          .update(patch)
+          .eq("id", userId)
+          .then(({ error: e }) => {
+            if (e) console.error("Failed to backfill slack_id/email", e);
+          });
+      }
+      if (identity.slack_id && !(existing as { avatar_url?: string | null }).avatar_url)
+        void saveSlackAvatar(userId, identity.slack_id);
+    } else {
+      if (isSignupRejected(identity)) {
+        loginFailed(req, "signup_ineligible", { slackId: identity.slack_id ?? null });
+        return res
+          .status(403)
+          .send(
+            loginErrorPage(
+              "This Hack Club account isn't eligible for Pixl.",
+              "Hack Club Auth marks this identity as ineligible for YSWS programs, so a new Pixl account can't be created. If you think this is a mistake, reach out to the Pixl team.",
+              retryLoginUrl(pending),
+            ),
+          );
+      }
+
+      const { data: created, error: insertError } = await db
+        .from("users")
+        .insert({
+          oauth_provider: "hackclub",
+          oauth_id: identity.id,
+          ...hcaStatePatch(identity),
+          display_name: displayNameFromHca,
+          real_name: fullName,
+          first_name: identity.first_name ?? "",
+          last_name: identity.last_name ?? "",
+          avatar_url: null,
+          slack_id: identity.slack_id ?? null,
+          email: identity.primary_email ?? null,
+          birthday: hcaBirthday ? encryptPII(hcaBirthday) : null,
+          // The address columns are NOT NULL DEFAULT '' , writing null when HCA
+          // has no address on file fails the insert and blocks the signup.
+          // encryptPII returns "" for a missing value, which is what we want.
+          address_line1: encryptPII(hcaAddress?.address_line1),
+          address_line2: encryptPII(hcaAddress?.address_line2),
+          address_city: encryptPII(hcaAddress?.address_city),
+          address_state: encryptPII(hcaAddress?.address_state),
+          address_country: encryptPII(hcaAddress?.address_country),
+          address_postal: encryptPII(hcaAddress?.address_postal),
+        })
+        .select()
+        .single();
+
+      if (insertError || !created) {
+        // unique_violation on users(oauth_provider, oauth_id) (see
+        // drizzle/0177_users_oauth_unique.sql) , two concurrent logins for the
+        // same HCA identity both missed the select above and raced to insert;
+        // the DB constraint is the actual guard. The loser just re-fetches the
+        // row the winner created and logs into that account instead of erroring.
+        if (isOauthIdentityRace(insertError)) {
+          const { data: racedUser, error: racedLookupError } = await db
+            .from("users")
+            .select("*")
+            .eq("oauth_provider", "hackclub")
+            .eq("oauth_id", identity.id)
+            .single();
+          if (racedLookupError || !racedUser) {
+            console.error("Post-race user lookup failed", racedLookupError);
+            loginFailed(req, "db_error");
+            return res.status(500).send("Database error");
+          }
+          const row = racedUser as UserRow & { legal_first_name?: unknown; legal_last_name?: unknown };
+          userId = row.id;
+          displayName = row.display_name;
+          needsLegalName = needsLegalNameFor(row, fullName || row.real_name || "");
+        } else {
+          console.error("User insert failed", insertError);
+          loginFailed(req, "db_error");
           return res.status(500).send("Database error");
         }
-        const row = racedUser as UserRow;
+      } else {
+        isNewUser = true;
+        const row = created as UserRow;
         userId = row.id;
         displayName = row.display_name;
-      } else {
-        console.error("Supabase insert failed", insertError);
-        return res.status(500).send("Database error");
-      }
-    } else {
-      isNewUser = true;
-      const row = created as UserRow;
-      userId = row.id;
-      displayName = row.display_name;
-      if (identity.slack_id) void saveSlackAvatar(userId, identity.slack_id);
+        needsLegalName = needsLegalNameFor({}, fullName);
+        if (identity.slack_id) void saveSlackAvatar(userId, identity.slack_id);
 
-      const { error: stateError } = await supabase
-        .from("player_state")
-        .insert({ user_id: userId });
+        const { error: stateError } = await db
+          .from("player_state")
+          .insert({ user_id: userId });
 
-      if (stateError) {
-        console.error("Failed to seed player_state", stateError);
+        if (stateError) {
+          console.error("Failed to seed player_state", stateError);
+        }
       }
     }
-  }
 
-  const ban = await activeBan(userId);
-  if (ban) {
-    const heading = ban.expires_at
-      ? `You've been temporarily banned from Pixl until ${new Date(ban.expires_at).toUTCString()}.`
-      : "You've been permanently banned from Pixl.";
-    const reason = ban.reason
-      ? `<p>Reason: ${ban.reason.replace(/</g, "&lt;")}</p>`
-      : "";
-    return res
-      .status(403)
-      .send(
-        `<html><body style="font-family:sans-serif;text-align:center;margin-top:4rem;"><h2>${heading}</h2>${reason}<p>If you believe this is a mistake, reach out to the Pixl team.</p></body></html>`,
-      );
-  }
+    // Fail closed: if the bans table can't be read, no login code is issued.
+    const banLookup = await lookupActiveBan(userId);
+    if (!banLookup.ok) {
+      loginFailed(req, "ban_check_failed", { actorId: userId, slackId: identity.slack_id ?? null });
+      return res
+        .status(503)
+        .set("Retry-After", "5")
+        .send(loginErrorPage("Pixl couldn't finish logging you in", "Something went wrong on our side. Try again in a moment.", retryLoginUrl(pending)));
+    }
+    const ban = banLookup.ban;
+    if (ban) {
+      loginFailed(req, "banned", { actorId: userId, slackId: identity.slack_id ?? null });
+      const heading = ban.expires_at
+        ? `You've been temporarily banned from Pixl until ${new Date(ban.expires_at).toUTCString()}.`
+        : "You've been permanently banned from Pixl.";
+      const reason = ban.reason
+        ? `<p>Reason: ${escapeHtml(ban.reason)}</p>`
+        : "";
+      return res
+        .status(403)
+        .send(
+          `<html><body style="font-family:sans-serif;text-align:center;margin-top:4rem;"><h2>${heading}</h2>${reason}<p>If you believe this is a mistake, reach out to the Pixl team.</p></body></html>`,
+        );
+    }
 
-  // Only a brand-new signup should get auto-invited , an existing player
-  // logging back in is already (or deliberately isn't) in the channel.
-  if (isNewUser && identity.slack_id) void enrollSlackPlayerInPixl(identity.slack_id);
+    // Only a brand-new signup should get auto-invited , an existing player
+    // logging back in is already (or deliberately isn't) in the channel.
+    if (isNewUser && identity.slack_id) void enrollSlackPlayerInPixl(identity.slack_id);
 
-  const sessionToken = issueSessionToken({ userId, displayName });
+    // The login was started with one of LOGIN_REDIRECTS, so this always
+    // resolves; refuse rather than guess if it somehow doesn't.
+    const loginClient = loginClientForRedirect(pending.redirect);
+    if (!loginClient) {
+      loginFailed(req, "bad_redirect", { actorId: userId });
+      return res.status(400).json({ ok: false, error: "invalid_redirect" });
+    }
+    const grant: LoginGrant = {
+      userId,
+      displayName,
+      slackId: identity.slack_id ?? null,
+      isNew: isNewUser,
+      needsLegalName,
+      client: loginClient,
+    };
+    const loginCode = loginCodes.issue(grant);
+    audit({
+      ...requestActor(req),
+      actorType: "player",
+      actorId: userId,
+      slackId: grant.slackId,
+      action: "auth.login",
+      target: `user:${userId}`,
+      result: "ok",
+      meta: { isNew: isNewUser, redirectOrigin: new URL(pending.redirect).origin },
+    });
 
-  const target = webRedirect ? safeWebRedirect(webRedirect) : null;
-  if (webRedirect && !target) {
-    return res.status(400).send("Invalid redirect target");
-  }
-
-  const localCallback = new URL(target ?? "http://localhost:7777/callback");
-  localCallback.searchParams.set("token", sessionToken);
-  localCallback.searchParams.set("name", displayName);
-  if (isNewUser) localCallback.searchParams.set("new", "1");
-  // F-8: only present when this login started from apps/web-shell's
-  // /api/login (see PendingLogin.loginNonce) - proxy.ts needs it back to
-  // confirm the browser here is the same one that started the login.
-  if (pending.loginNonce) localCallback.searchParams.set("ln", pending.loginNonce);
-
-  res.redirect(localCallback.toString());
-});
+    const dest = new URL(pending.redirect);
+    dest.searchParams.set("code", loginCode);
+    if (pending.clientState) dest.searchParams.set("state", pending.clientState);
+    res.redirect(dest.toString());
+  },
+);
 
 export default router;

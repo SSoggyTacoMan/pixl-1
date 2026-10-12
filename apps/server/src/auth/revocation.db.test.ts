@@ -31,10 +31,10 @@ if (!adminUrl) {
   const setEnv: string[] = [];
   const servers: Server[] = [];
 
-  function issueAt(userId: string, ms: number): string {
+  function issueAt(userId: string, ms: number, client: "game" | "web" = "web"): string {
     setSystemTime(new Date(ms));
     try {
-      return issueSessionToken({ userId, displayName: "t" });
+      return issueSessionToken({ client, userId, displayName: "t" });
     } finally {
       setSystemTime();
     }
@@ -56,7 +56,7 @@ if (!adminUrl) {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const call = async (token: string) => {
-      const res = await fetch(`${base}/api/thing?token=${token}`);
+      const res = await fetch(`${base}/api/thing`, { headers: { Authorization: `Bearer ${token}` } });
       return { status: res.status, body: (await res.json()) as { error?: string } };
     };
     return { cache, call };
@@ -142,7 +142,7 @@ if (!adminUrl) {
       const later = Date.now();
       await rev.revokeUserSessions(user, later);
       await rev.revokeUserSessions(user, later - 60_000);
-      expect(await rev.lookupSessionRevokedAt(user)).toEqual({ ok: true, revokedAtMs: later });
+      expect(await rev.lookupSessionRevokedAt(user, "web")).toEqual({ ok: true, revokedAtMs: later });
     });
 
     test("an unknown user id reports not_found instead of silently succeeding", async () => {
@@ -175,16 +175,53 @@ if (!adminUrl) {
       expect((await replica.call(token)).status).toBe(401);
     });
 
-    test("a database that predates the migration keeps working and reports revocation as unavailable", async () => {
+    test("a database that predates the migration refuses the request and reports revocation as unavailable", async () => {
       const user = await createUser();
       const token = issueAt(user, Date.now() - 30_000);
       await db`alter table users drop column sessions_revoked_at`;
       try {
         const replica = await startReplica({ now: 0 });
-        expect((await replica.call(token)).status).toBe(200);
+        expect((await replica.call(token)).status).toBe(503);
         expect(await rev.revokeUserSessions(user)).toBe("not_migrated");
       } finally {
         await db`alter table users add column sessions_revoked_at timestamptz`;
+      }
+    });
+
+    test("a logout revokes only that client; a moderation revoke kills both", async () => {
+      const user = await createUser();
+      const replica = await startReplica({ now: 0 });
+      const game = issueAt(user, Date.now() - 30_000, "game");
+      const web = issueAt(user, Date.now() - 30_000, "web");
+
+      expect(await rev.revokeUserSessions(user, Date.now(), "web")).toBe("revoked");
+      replica.cache.forget(user);
+      expect((await replica.call(web)).status).toBe(401);
+      expect((await replica.call(game)).status).toBe(200);
+
+      const user2 = await createUser();
+      const game2 = issueAt(user2, Date.now() - 30_000, "game");
+      const web2 = issueAt(user2, Date.now() - 30_000, "web");
+      expect(await rev.revokeUserSessions(user2, Date.now(), "game")).toBe("revoked");
+      expect((await replica.call(game2)).status).toBe(401);
+      expect((await replica.call(web2)).status).toBe(200);
+
+      expect(await rev.revokeUserSessions(user2, Date.now(), "all")).toBe("revoked");
+      replica.cache.forget(user2);
+      expect((await replica.call(web2)).status).toBe(401);
+    });
+
+    test("before 0216 the all-clients cutoff is still honored and a per-client logout is not_migrated", async () => {
+      const user = await createUser();
+      const game = issueAt(user, Date.now() - 30_000, "game");
+      await db`alter table users drop column game_sessions_revoked_at, drop column web_sessions_revoked_at`;
+      try {
+        expect(await rev.revokeUserSessions(user, Date.now(), "game")).toBe("not_migrated");
+        expect(await rev.revokeUserSessions(user)).toBe("revoked");
+        const replica = await startReplica({ now: 0 });
+        expect((await replica.call(game)).status).toBe(401);
+      } finally {
+        await db`alter table users add column game_sessions_revoked_at timestamptz, add column web_sessions_revoked_at timestamptz`;
       }
     });
   });

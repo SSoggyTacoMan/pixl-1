@@ -34,10 +34,10 @@ if (!adminUrl) {
   async function createUser(opts: { country: string; region?: string; regionAuto?: boolean; pixels?: number }) {
     const [row] = await db<{ id: string }[]>`
       insert into users (oauth_provider, oauth_id, display_name, pixels, region, region_auto,
-        address_line1, address_city, address_country, address_postal)
+        address_line1, address_city, address_country, address_postal, phone)
       values ('test', ${randomBytes(6).toString("hex")}, 'tester', ${opts.pixels ?? 100000},
         ${opts.region ?? "US"}, ${opts.regionAuto ?? true},
-        '1 Test St', 'Testville', ${encrypt(opts.country)}, '12345')
+        '1 Test St', 'Testville', ${encrypt(opts.country)}, '12345', ${encrypt("+15555550123")})
       returning id`;
     return row.id;
   }
@@ -51,9 +51,9 @@ if (!adminUrl) {
   }
 
   async function buy(userId: string, itemId: number) {
-    const res = await fetch(`${base}/api/shop/buy/${itemId}?token=${issueToken(userId)}`, {
+    const res = await fetch(`${base}/api/shop/buy/${itemId}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", Authorization: `Bearer ${issueToken(userId)}` },
       body: JSON.stringify({ option: "" }),
     });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
@@ -100,7 +100,7 @@ if (!adminUrl) {
     await pgCompat.connectForTests(testUrl.toString());
     const [{ name }] = await pgCompat.sql.unsafe("select current_database() as name");
     if (name !== dbName) throw new Error(`refusing to run against ${name}`);
-    issueToken = (userId) => issueSessionToken({ userId, displayName: "tester" });
+    issueToken = (userId) => issueSessionToken({ client: "web", userId, displayName: "tester" });
     encrypt = encryptPII;
 
     itemIds.europe = await createItem("Eu Widget", "EUROPE");
@@ -110,6 +110,7 @@ if (!adminUrl) {
 
     const app = express();
     app.use(express.json());
+    app.use((await import("../http/gate.js")).authGate());
     app.use(shopRouter);
     server = createServer(app);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

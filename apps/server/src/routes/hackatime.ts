@@ -1,9 +1,12 @@
 import { Router } from "express";
-import { createHmac, timingSafeEqual } from "crypto";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
-import { fetchHackatimeStats, fetchProjectActivitySummary, HACKATIME_CUTOFF } from "../hackatime/api.js";
+import { randomBytes } from "crypto";
+import { z } from "zod";
+import { db } from "../db/client.js";
+import { fetchHackatimeSlackId, fetchHackatimeStats, fetchProjectActivitySummary, HACKATIME_CUTOFF } from "../hackatime/api.js";
 import { config } from "../config.generated.js";
+import { checkRedirect } from "../auth/loginCodes.js";
+import { validate, v } from "../http/validate.js";
+import { audit, auditRequest, requestActor } from "../audit.js";
 
 // OAuth app config - set these as env vars on the server (never in the repo).
 const BASE = (process.env.HACKATIME_BASE ?? "https://hackatime.hackclub.com").replace(/\/$/, "");
@@ -17,36 +20,40 @@ function configured(): boolean {
   return CLIENT_ID.length > 0 && CLIENT_SECRET.length > 0;
 }
 
-// Stateless signed `state` so we can verify the OAuth round-trip without a
-// session store: it carries the user id and an expiry, HMAC'd with the secret.
-function signState(userId: string): string {
-  const payload = Buffer.from(
-    JSON.stringify({ a: userId, e: Date.now() + 10 * 60 * 1000 }),
-  ).toString("base64url");
-  const mac = createHmac("sha256", CLIENT_SECRET).update(payload).digest("base64url");
-  return `${payload}.${mac}`;
+// Pending Hackatime OAuth round trips, keyed by a random single-use `state`
+// (never anything derived from the session token). The callback consumes
+// the entry, so a state can't be replayed, and sends the browser back to the
+// allowlisted redirect the client asked for.
+interface PendingConnect {
+  userId: string;
+  redirect: string;
+  expiresAt: number;
+}
+const CONNECT_TTL_MS = 10 * 60 * 1000;
+const MAX_PENDING_CONNECTS = 20_000;
+const pendingConnects = new Map<string, PendingConnect>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [state, p] of pendingConnects) if (p.expiresAt <= now) pendingConnects.delete(state);
+}, 60_000).unref();
+
+export function startConnect(userId: string, redirect: string, now = Date.now()): string {
+  while (pendingConnects.size >= MAX_PENDING_CONNECTS) {
+    const oldest = pendingConnects.keys().next().value;
+    if (oldest === undefined) break;
+    pendingConnects.delete(oldest);
+  }
+  const state = randomBytes(32).toString("base64url");
+  pendingConnects.set(state, { userId, redirect, expiresAt: now + CONNECT_TTL_MS });
+  return state;
 }
 
-function verifyState(state: string): string | null {
-  const dot = state.lastIndexOf(".");
-  if (dot < 0) return null;
-  const payload = state.slice(0, dot);
-  const expected = createHmac("sha256", CLIENT_SECRET).update(payload).digest();
-  let given: Buffer;
-  try {
-    given = Buffer.from(state.slice(dot + 1), "base64url");
-  } catch {
-    return null;
-  }
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
-  try {
-    const obj = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (typeof obj.a !== "string" || typeof obj.e !== "number") return null;
-    if (Date.now() > obj.e) return null;
-    return obj.a;
-  } catch {
-    return null;
-  }
+export function consumeConnect(state: string, now = Date.now()): PendingConnect | null {
+  const p = pendingConnects.get(state);
+  if (!p) return null;
+  pendingConnects.delete(state);
+  return p.expiresAt > now ? p : null;
 }
 
 function page(message: string): string {
@@ -58,83 +65,185 @@ function page(message: string): string {
   );
 }
 
+function back(redirect: string, outcome: "connected" | "failed"): string {
+  const dest = new URL(redirect);
+  dest.searchParams.set("hackatime", outcome);
+  return dest.toString();
+}
+
 const router = Router();
 
-// Kick off the OAuth flow. Godot opens this URL in the browser; we bounce the
-// user to HackTime's consent screen carrying a signed state.
-router.get("/hackatime/connect", (req, res) => {
-  if (!configured()) {
-    return res
-      .status(503)
-      .send(page("HackTime OAuth is not configured on the server."));
-  }
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
-  if (!session) return res.status(401).send(page("Please log in first."));
+// Start the OAuth flow. Bearer-authenticated; returns the Hackatime consent
+// URL for the client to navigate to. The round trip ends on `redirect`
+// (an allowlisted https URL on the Pixl Dashboard or the game) with
+// ?hackatime=connected|failed.
+router.post(
+  "/api/hackatime/connect",
+  validate({ query: v.noQuery, body: z.object({ redirect: z.string().max(2000) }) }),
+  (req, res) => {
+    if (!configured()) return res.status(503).json({ ok: false, error: "hackatime_not_configured" });
+    const session = req.session;
+    if (!session) return res.status(401).json({ ok: false });
+    const redirect = checkRedirect(req.body.redirect);
+    if (!redirect) return res.status(400).json({ ok: false, error: "invalid_redirect" });
 
-  const state = signState(session.userId);
-  const url =
-    `${BASE}/oauth/authorize?response_type=code` +
-    `&client_id=${encodeURIComponent(CLIENT_ID)}` +
-    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-    `&scope=${encodeURIComponent(SCOPES)}` +
-    `&state=${encodeURIComponent(state)}`;
-  res.redirect(url);
-});
+    const state = startConnect(session.userId, redirect);
+    const url =
+      `${BASE}/oauth/authorize?response_type=code` +
+      `&client_id=${encodeURIComponent(CLIENT_ID)}` +
+      `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+      `&scope=${encodeURIComponent(SCOPES)}` +
+      `&state=${encodeURIComponent(state)}`;
+    res.json({ ok: true, url });
+  },
+);
 
 // HackTime redirects back here with a code; exchange it for an access token and
 // store it on the user.
-router.get("/hackatime/callback", async (req, res) => {
-  const code = typeof req.query.code === "string" ? req.query.code : "";
-  const state = typeof req.query.state === "string" ? req.query.state : "";
-  const userId = state ? verifyState(state) : null;
-  if (!code || !userId) return res.status(400).send(page("Connection failed: invalid request."));
-
-  try {
-    const tokenRes = await fetch(`${BASE}/oauth/token`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
-      },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        redirect_uri: REDIRECT_URI,
-      }),
-    });
-    if (!tokenRes.ok) return res.status(502).send(page("HackTime rejected the login."));
-
-    const data = (await tokenRes.json()) as { access_token?: string };
-    if (!data.access_token) return res.status(502).send(page("HackTime returned no token."));
-
-    const { data: updated, error } = await supabase
-      .from("users")
-      .update({ hackatime_token: data.access_token })
-      .eq("id", userId)
-      .select("id");
-    if (error || !updated || updated.length === 0) {
-      console.error("[hackatime] failed to save token", { userId, error, matched: updated?.length ?? 0 });
-      return res.status(500).send(page("Could not save your connection, no matching account. Try reopening the page from the game."));
+router.get(
+  "/hackatime/callback",
+  validate({ query: z.object({ code: z.string().max(2000).optional(), state: z.string().max(200).optional() }) }),
+  async (req, res) => {
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const pending = state ? consumeConnect(state) : null;
+    if (!code || !pending) {
+      auditRequest(req, { action: "hackatime.connect", target: "hackatime", result: "denied", meta: { reason: "invalid_state" } });
+      return res.status(400).send(page("Connection failed: invalid request."));
     }
+    const { userId, redirect } = pending;
+    const done = (result: "ok" | "error", reason?: string) =>
+      audit({
+        ...requestActor(req),
+        actorType: "player",
+        actorId: userId,
+        action: "hackatime.connect",
+        target: `user:${userId}`,
+        result,
+        ...(reason ? { meta: { reason } } : {}),
+      });
 
-    console.log("[hackatime] token saved for", userId);
-    res.send(page("✅ HackTime connected! You can close this tab and return to the game."));
-  } catch (e) {
-    console.error("[hackatime] callback failed", e);
-    res.status(500).send(page("Something went wrong connecting HackTime."));
+    try {
+      const tokenRes = await fetch(`${BASE}/oauth/token`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+        },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: CLIENT_ID,
+          client_secret: CLIENT_SECRET,
+          redirect_uri: REDIRECT_URI,
+        }),
+      });
+      if (!tokenRes.ok) {
+        done("error", "token_rejected");
+        return res.redirect(back(redirect, "failed"));
+      }
+
+      const data = (await tokenRes.json()) as { access_token?: string };
+      if (!data.access_token) {
+        done("error", "no_token");
+        return res.redirect(back(redirect, "failed"));
+      }
+
+      // Bind the token to the Pixl account that started the flow: it must be
+      // the same person's Hackatime (matched on Slack ID), not whoever
+      // happened to open the consent link. Otherwise the token is dropped.
+      const { data: owner, error: ownerError } = await db
+        .from("users")
+        .select("slack_id")
+        .eq("id", userId)
+        .maybeSingle();
+      if (ownerError) {
+        done("error", "owner_lookup_failed");
+        return res.redirect(back(redirect, "failed"));
+      }
+      const expectedSlackId = (owner as { slack_id?: string | null } | null)?.slack_id ?? null;
+      const tokenSlackId = await fetchHackatimeSlackId(data.access_token);
+      if (!expectedSlackId || !tokenSlackId || tokenSlackId !== expectedSlackId) {
+        audit({
+          ...requestActor(req),
+          actorType: "player",
+          actorId: userId,
+          action: "hackatime.identity_mismatch",
+          target: `user:${userId}`,
+          result: "denied",
+          meta: { reason: tokenSlackId ? "different_account" : "identity_unknown" },
+        });
+        return res.redirect(back(redirect, "failed"));
+      }
+
+      const { data: updated, error } = await db
+        .from("users")
+        .update({ hackatime_token: data.access_token })
+        .eq("id", userId)
+        .select("id");
+      if (error || !updated || updated.length === 0) {
+        console.error("[hackatime] failed to save token", { userId, error: error?.message, matched: updated?.length ?? 0 });
+        done("error", "save_failed");
+        return res.redirect(back(redirect, "failed"));
+      }
+
+      forgetStats(userId);
+      console.log("[hackatime] token saved for", userId);
+      done("ok");
+      res.redirect(back(redirect, "connected"));
+    } catch (e) {
+      console.error("[hackatime] callback failed", (e as Error).message);
+      done("error", "exception");
+      res.redirect(back(redirect, "failed"));
+    }
+  },
+);
+
+// Each stats call fans out to Hackatime (one projects call plus one spans
+// call per checked project), so the result is cached per user and `since`
+// for a minute and at most STATS_FANOUT_CAP projects are checked.
+export const STATS_FANOUT_CAP = 20;
+const STATS_CACHE_TTL_MS = 60_000;
+const STATS_CACHE_MAX = 5_000;
+const statsCache = new Map<string, { at: number; stats: unknown }>();
+
+export function statsCacheGet(key: string, now = Date.now()): unknown {
+  const hit = statsCache.get(key);
+  if (!hit) return undefined;
+  if (now - hit.at >= STATS_CACHE_TTL_MS) {
+    statsCache.delete(key);
+    return undefined;
   }
-});
+  return hit.stats;
+}
+
+export function statsCacheSet(key: string, stats: unknown, now = Date.now()): void {
+  if (statsCache.size >= STATS_CACHE_MAX) {
+    for (const [k, v] of statsCache) if (now - v.at >= STATS_CACHE_TTL_MS) statsCache.delete(k);
+    while (statsCache.size >= STATS_CACHE_MAX) {
+      const oldest = statsCache.keys().next().value;
+      if (oldest === undefined) break;
+      statsCache.delete(oldest);
+    }
+  }
+  statsCache.set(key, { at: now, stats });
+}
+
+// A fresh connect must show up straight away, not after the cache expires.
+function forgetStats(userId: string): void {
+  for (const k of statsCache.keys()) if (k.startsWith(`${userId}:`)) statsCache.delete(k);
+}
 
 // Current connection state + per-project time for the logged-in user.
 router.get("/api/hackatime/stats", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
+  const sinceParam = Number(req.query.since);
+  const cacheKey = `${session.userId}:${Number.isFinite(sinceParam) ? Math.floor(sinceParam) : ""}`;
+  const cached = statsCacheGet(cacheKey);
+  if (cached !== undefined) return res.json({ ok: true, stats: cached });
 
-  const { data } = await supabase
+  const { data } = await db
     .from("users")
     .select("hackatime_token, slack_id")
     .eq("id", session.userId)
@@ -154,10 +263,10 @@ router.get("/api/hackatime/stats", async (req, res) => {
       : HACKATIME_CUTOFF;
   // Flag projects with any activity before the event cutoff so the picker can
   // warn "only time after the cutoff counts" before the player links one. Capped
-  // to the top 40 by tracked time so a prolific account doesn't fan out into
+  // to the top STATS_FANOUT_CAP by tracked time so a prolific account doesn't fan out into
   // dozens of Hackatime API calls.
   if (stats.connected && slackId) {
-    const toCheck = [...stats.projects].sort((a, b) => b.seconds - a.seconds).slice(0, 40);
+    const toCheck = [...stats.projects].sort((a, b) => b.seconds - a.seconds).slice(0, STATS_FANOUT_CAP);
     const summaries = await Promise.all(
       toCheck.map((p) => fetchProjectActivitySummary(slackId, htToken, p.name, since)),
     );
@@ -172,6 +281,8 @@ router.get("/api/hackatime/stats", async (req, res) => {
       };
     });
   }
+  // Only cache a real answer; a failed fetch is retried on the next call.
+  if (stats.connected) statsCacheSet(cacheKey, stats);
   res.json({ ok: true, stats });
 });
 

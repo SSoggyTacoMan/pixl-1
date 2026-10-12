@@ -1,9 +1,11 @@
 import { Router } from "express";
-import { verifySessionToken } from "../auth/session.js";
-import { supabase } from "../db/client.js";
+import { db } from "../db/client.js";
 import { withLock } from "../db/advisoryLock.js";
 import { containsBlocked } from "../moderation.js";
+import { allowedImageUrl } from "../http/imageUrls.js";
 import { addNotification } from "./notifications.js";
+import { z } from "zod";
+import { validate, v, optStr, optBool, optNum, params } from "../http/validate.js";
 
 const router = Router();
 
@@ -18,8 +20,8 @@ async function voteInfo(ideaIds: number[], viewerId: string) {
   const myDown = new Set<number>();
   if (ideaIds.length > 0) {
     const [{ data: ups }, { data: downs }] = await Promise.all([
-      supabase.from("idea_upvotes").select("idea_id, voter_id").in("idea_id", ideaIds),
-      supabase.from("idea_downvotes").select("idea_id, voter_id").in("idea_id", ideaIds),
+      db.from("idea_upvotes").select("idea_id, voter_id").in("idea_id", ideaIds),
+      db.from("idea_downvotes").select("idea_id, voter_id").in("idea_id", ideaIds),
     ]);
     for (const u of ups ?? []) {
       const id = u.idea_id as number;
@@ -37,13 +39,12 @@ async function voteInfo(ideaIds: number[], viewerId: string) {
 
 // Browse ideas, newest or top first, with an optional title search.
 router.get("/api/ideas", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const sort = req.query.sort === "top" ? "top" : "new";
-  let query = supabase
+  let query = db
     .from("ideas")
     .select("*")
     .is("banned_at", null)
@@ -59,7 +60,7 @@ router.get("/api/ideas", async (req, res) => {
   const uids = [...new Set((ideas ?? []).map((i) => i.user_id as string))];
   const names = new Map<string, string>();
   if (uids.length > 0) {
-    const { data: users } = await supabase.from("users").select("id, display_name").in("id", uids);
+    const { data: users } = await db.from("users").select("id, display_name").in("id", uids);
     for (const u of users ?? []) names.set(u.id as string, u.display_name as string);
   }
 
@@ -82,9 +83,8 @@ router.get("/api/ideas", async (req, res) => {
 });
 
 // Post an idea. Instant - no review queue, this is just a prompt board.
-router.post("/api/ideas", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/ideas", validate({ query: v.noQuery, body: z.object({ title: optStr(1000), body: optStr(20000), isCollab: optBool, rolesNeeded: z.array(z.string().max(64)).max(50).nullable().optional(), hoursEstimate: optNum, imageUrl: optStr(2000) }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const title = String(req.body?.title ?? "").trim().slice(0, 120);
@@ -101,9 +101,12 @@ router.post("/api/ideas", async (req, res) => {
   const hoursEstimate = isCollab && Number.isFinite(hoursRaw) && hoursRaw > 0
     ? Math.min(hoursRaw, 1000)
     : null;
-  const imageUrl = String(req.body?.imageUrl ?? "").trim().slice(0, 500) || null;
+  // Hack Club CDN only, like every other player image (http/imageUrls.ts).
+  const rawImage = String(req.body?.imageUrl ?? "").trim();
+  const imageUrl = rawImage ? allowedImageUrl(rawImage) : null;
+  if (rawImage && !imageUrl) return res.status(400).json({ ok: false, error: "invalid_image_url" });
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("ideas")
     .insert({
       user_id: session.userId,
@@ -124,15 +127,14 @@ router.post("/api/ideas", async (req, res) => {
 });
 
 // Delete one of the user's own ideas.
-router.delete("/api/ideas/:id", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.delete("/api/ideas/:id", validate({ query: v.noQuery, params: params({ id: v.id }) }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  const { error } = await supabase
+  const { error } = await db
     .from("ideas")
     .delete()
     .eq("id", id)
@@ -146,15 +148,14 @@ router.delete("/api/ideas/:id", async (req, res) => {
 
 // Permanent upvote on an idea. One per voter, never taken back, can't vote
 // your own idea, same rules as project upvotes.
-router.post("/api/ideas/:id/upvote", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/ideas/:id/upvote", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
 
-  const { data: idea } = await supabase
+  const { data: idea } = await db
     .from("ideas")
     .select("id, user_id")
     .eq("id", id)
@@ -185,15 +186,14 @@ router.post("/api/ideas/:id/upvote", async (req, res) => {
 });
 
 // Permanent downvote on an idea, same rules as upvote, opposite direction.
-router.post("/api/ideas/:id/downvote", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/ideas/:id/downvote", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
 
-  const { data: idea } = await supabase
+  const { data: idea } = await db
     .from("ideas")
     .select("id, user_id")
     .eq("id", id)
@@ -223,15 +223,14 @@ router.post("/api/ideas/:id/downvote", async (req, res) => {
   }
 });
 
-router.post("/api/ideas/:id/apply", async (req, res) => {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  const session = token ? verifySessionToken(token) : null;
+router.post("/api/ideas/:id/apply", validate({ query: v.noQuery, params: params({ id: v.id }), body: v.empty }), async (req, res) => {
+  const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "bad_id" });
 
-  const { data: idea } = await supabase
+  const { data: idea } = await db
     .from("ideas")
     .select("id, user_id, title, is_collab")
     .eq("id", id)

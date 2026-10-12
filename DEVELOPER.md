@@ -26,7 +26,6 @@ A <a href="https://hackclub.com/">Hack Club</a> YSWS - ship a real project, get 
   <a href="#the-web-shell">Web Shell</a> |
   <a href="#the-admin-dashboard">Dashboard</a> |
   <a href="#pixorpheus">Pixorpheus</a> |
-  <a href="#pixo-dm">Pixo DM</a> |
   <a href="#getting-started">Getting Started</a>
 </p>
 
@@ -47,7 +46,6 @@ A <a href="https://hackclub.com/">Hack Club</a> YSWS - ship a real project, get 
 - [The Web Shell](#the-web-shell)
 - [The Admin Dashboard](#the-admin-dashboard)
 - [Pixorpheus](#pixorpheus)
-- [Pixo DM](#pixo-dm)
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Install](#install)
@@ -86,7 +84,7 @@ Prizes are swappable for equivalent value. Shipping something entirely of your o
 
 ## Repository Structure
 
-Bun + Turborepo monorepo. Every app talks to the same [Supabase](https://supabase.com/) (Postgres) project directly rather than through a shared internal API, plus Hack Club Auth / Slack OAuth for identity. Deployed on [Orchard](https://orchard.my) (Kubernetes), not Vercel, despite some apps still shipping a `vercel.json` from an earlier deploy target.
+Bun + Turborepo monorepo. Every app talks to the same Postgres database (on Orchard) directly rather than through a shared internal API, plus Hack Club Auth / Slack OAuth for identity. Deployed on [Orchard](https://orchard.my) (Kubernetes).
 
 ```
 pixl/
@@ -96,8 +94,7 @@ pixl/
 │   ├── landing/          Next.js marketing site + apex proxy (pixl.hackclub.com)
 │   ├── web-shell/        Next.js player-facing web pages (React migration of apps/game/web)
 │   ├── dashboard/        Next.js admin/review dashboard
-│   ├── pixorpheus/       Slack bot - tickets, AI chat, moderation
-│   └── pixo-dm/          Standalone relay for dashboard -> Slack player DMs
+│   └── pixorpheus/       Slack bot - tickets, AI chat, moderation, player DMs
 ├── packages/
 │   ├── config/            Shared program facts (launch date, economy rates, URLs)
 │   ├── theme/              Shared LEDGER color palette (dark/light, web + Godot)
@@ -109,17 +106,16 @@ pixl/
 
 | App | Stack | Description |
 |---|---|---|
-| [`server`](apps/server) | Bun, Express, `ws`, Drizzle ORM, Supabase | Game server - auth, player state, real-time multiplayer, projects, shop, economy |
+| [`server`](apps/server) | Bun, Express, `ws`, Drizzle ORM, Postgres | Game server - auth, player state, real-time multiplayer, projects, shop, economy |
 | [`game`](apps/game) | Godot 4 (GDScript) | The 2D multiplayer world players see and play in |
 | [`landing`](apps/landing) | Next.js 16, React 19, Tailwind 4 | Marketing site and apex proxy at [pixl.hackclub.com](https://pixl.hackclub.com), localized in English, French, Spanish, Portuguese |
 | [`web-shell`](apps/web-shell) | Next.js 16, React 19 | Player-facing pages being migrated off `apps/game/web`'s static HTML - docs, and a growing shell (`/dashboard`, `/form/*`) |
 | [`dashboard`](apps/dashboard) | Next.js 16, React 19, Tailwind 4, shadcn/radix | Admin dashboard - project review, moderation, tickets, shop, stats |
 | [`pixorpheus`](apps/pixorpheus) | Bun, Slack Bolt v4, Express | Slack bot - help tickets, AI chat, moderation DMs, slash commands ([full docs](https://github.com/gabouin/pixorpheus)) |
-| [`pixo-dm`](apps/pixo-dm) | Node.js (CommonJS), Express | Small Railway service that relays dashboard-initiated player DMs through Slack as Pixo |
 
 ### Packages
 
-Shared code, each generating committed copies for the apps that can't import a workspace package directly (Vercel/per-app builds don't see outside their own app root):
+Shared code, each generating committed copies for the apps that can't import a workspace package directly (Orchard's per-app Docker builds don't see outside their own app root):
 
 | Package | Purpose |
 |---|---|
@@ -142,8 +138,8 @@ Key client-side systems (`apps/game/scripts/`):
 |---|---|---|
 | Multiplayer world | `multiplayer_world.gd`, `network_manager.gd`, `remote_player.gd` | Keeps every connected player's position/state in sync over WebSocket |
 | Character & skins | `character_editor.gd`, `skin_util.gd` | Draw-your-own 16x16 pixel avatar |
-| Villages & lobbies | `village.gd`, `lobby_menu.gd`, `house_interior.gd`, `door_trigger.gd`, `house_trigger.gd`, `stair_trigger.gd` | Shared open world plus private "village" instances players can retreat to |
-| NPCs & dialogue | `npc.gd`, `dialogue.gd`, `markdown_util.gd` | Sidequest-giving NPCs and their (Markdown-capable) dialogue |
+| Villages & lobbies | `village.gd`, `lobby_menu.gd`, `house_interior.gd`, `door_trigger.gd`, `stair_trigger.gd` | Shared open world plus private "village" instances players can retreat to |
+| NPCs & dialogue | `npc.gd`, `dialogue.gd` | Sidequest-giving NPCs and their dialogue |
 | HUDs | `chat_hud.gd`, `friends_hud.gd`, `emote_hud.gd`, `minimap_hud.gd`, `inbox_hud.gd`, `profile_hud.gd`, `player_hud.gd`, `guide_hud.gd` | In-game chat, friends list, emotes, minimap, inbox/notifications, profile card, first-run guide |
 | Web bridge | `web_pages.gd` | Opens browser-hosted pages (shop, vault, explore, quests, timeline, projects, report, docs, hackatime) from inside the game, passing the player's session token |
 | Animals & world dressing | `animal.gd`, `water.gd`, `shadow.gd`, `music.gd` | Ambient world life, water shaders, dynamic shadows, music |
@@ -178,7 +174,7 @@ The Shop carousel mirrors the real in-game shop 1:1 - item name, description, im
 
 <img alt="Server icon" src=".github/readme-assets/icon-server.png" width="72" align="left">
 
-`apps/server` is the authoritative backend: a **Bun** process running **Express** for HTTP routes and raw **WebSocket** (`ws`) for real-time game state, with **Drizzle ORM** over a **Supabase** (Postgres) database.
+`apps/server` is the authoritative backend: a **Bun** process running **Express** for HTTP routes and raw **WebSocket** (`ws`) for real-time game state, with **Drizzle ORM** over a **Postgres** database on Orchard.
 
 <br clear="left">
 
@@ -267,7 +263,7 @@ Not every player-facing page has moved yet - anything not listed above still liv
 | `notify` | Send a notification/DM to a player |
 | `stats` | Program-wide stats |
 
-Player-facing DMs sent from the dashboard (e.g. review results) are routed through [Pixo DM](#pixo-dm) rather than a direct Slack token, with a Resend email fallback for players without a linked Slack account.
+Player-facing DMs sent from the dashboard (e.g. review results) are routed through [Pixorpheus](#pixorpheus)'s `POST /api/external/dm` rather than a direct Slack token, with a Resend email fallback for players without a linked Slack account.
 
 ---
 
@@ -283,20 +279,13 @@ It's maintained as its own repository with a more detailed README (slash command
 
 ---
 
-## Pixo DM
-
-`apps/pixo-dm` is a small standalone Express service (`index.js`, CommonJS, plain `node`, not Bun-native) that exposes `POST /api/external/dm`, called by the dashboard to deliver a player DM through Slack as Pixo. Authenticated with `EXTERNAL_API_KEY`. Runs on its own Railway deployment, separate from `apps/pixorpheus`, and enforces per-user/global/daily rate limits in-process to bound blast radius if the API key leaks.
-
----
-
 ## Getting Started
 
 ### Prerequisites
 
 - [Bun](https://bun.com) >= 1.3
-- [Node.js](https://nodejs.org) >= 20 (for `pixo-dm`, which is plain CommonJS, not Bun)
 - [Godot 4](https://godotengine.org/) (only if you're working on `apps/game`)
-- A [Supabase](https://supabase.com/) project (shared Postgres database)
+- A Postgres database (shared across apps, reached via `DATABASE_URL`)
 
 ### Install
 
@@ -306,12 +295,12 @@ bun install
 
 ### Environment Variables
 
-Each app has its own `.env` (see `.env.example` in `apps/server`, `apps/dashboard`, `apps/web-shell`, `apps/pixo-dm`). Bun auto-loads `.env` files. Common vars shared across apps:
+Each app has its own `.env` (see `.env.example` in `apps/server`, `apps/dashboard`, `apps/web-shell`). Bun auto-loads `.env` files. Common vars shared across apps:
 
-- `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` - same Supabase project everywhere
+- `DATABASE_URL` - the same Postgres database everywhere
 - `JWT_SECRET` - signs game server sessions; must match exactly between `server`, `dashboard`, and `web-shell`
 - Hack Club Auth (`HCA_CLIENT_ID` / `HCA_CLIENT_SECRET` / redirect URI) - identity provider for `server` and `dashboard`
-- Slack tokens - for `pixorpheus`, `pixo-dm`, and dashboard notifications
+- Slack tokens - for `pixorpheus` and dashboard notifications
 
 ### Run
 
@@ -322,7 +311,6 @@ bun run --cwd apps/landing dev         # landing site
 bun run --cwd apps/dashboard dev       # admin dashboard (port 4900)
 bun run --cwd apps/web-shell dev       # web shell (port 4901)
 bun run --cwd apps/pixorpheus start    # Slack bot
-bun run --cwd apps/pixo-dm start       # Pixo DM relay (plain node, not bun)
 
 # Turborepo shortcuts (root package.json)
 bun run dev          # all apps concurrently

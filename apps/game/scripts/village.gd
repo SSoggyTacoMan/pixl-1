@@ -34,7 +34,7 @@ func _reveal_trial_npcs() -> void:
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/sidequests?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/sidequests"
 	req.request_completed.connect(func(_result, code, _headers, data):
 		req.queue_free()
 		if code != 200 or data.size() == 0:
@@ -62,7 +62,7 @@ func _reveal_trial_npcs() -> void:
 					n.play_teleport_fx()
 		_spawn_dynamic_trial_npcs(quests, hand_authored)
 	)
-	if req.request(url) != OK:
+	if req.request(url, NetworkManager.auth_headers()) != OK:
 		req.queue_free()
 
 # Generic version of the hand-authored check-in pattern above: any Trial the

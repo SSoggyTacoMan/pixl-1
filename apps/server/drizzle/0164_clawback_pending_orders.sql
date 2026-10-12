@@ -19,7 +19,7 @@
 -- every pending order is exhausted and a shortfall remains, it still floors
 -- at 0 - there's nothing left to reasonably recover.
 --
--- Run in the Supabase SQL editor. Safe to re-run.
+-- Run with psql against the Orchard database. Safe to re-run.
 
 create or replace function claw_back_from_pending_orders(
   p_user_id uuid,

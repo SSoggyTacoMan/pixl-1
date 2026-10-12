@@ -1,10 +1,7 @@
 import { app } from "../slack/app.js";
 import { db } from "../db/client.js";
-import { normalizeTicket } from "./repo.js";
-import { ticketBlocks } from "./blocks.js";
 import {
   checkIsHelper,
-  checkIsInTicketChannel,
   resolveTicket,
   reopenTicket,
   ticketResultText,
@@ -45,16 +42,13 @@ app.action("mark_resolved", async ({ ack, body, client }) => {
     return;
   }
 
-  const isHelper = await checkIsHelper(resolver);
   const isAuthor = ticket.opened_by_slack_id === resolver;
-  const isInTicketChannel = await checkIsInTicketChannel(resolver, client);
-
-  if (!isHelper && !isAuthor && !isInTicketChannel) {
+  if (!isAuthor && !(await checkIsHelper(resolver))) {
     await client.chat.postEphemeral({
       channel: channelId,
       thread_ts: msgTs,
       user: resolver,
-      text: "Only the ticket author, a helper, or a support team member can mark this as resolved.",
+      text: "Only the ticket author or a helper can mark this as resolved.",
     });
     return;
   }
@@ -65,36 +59,6 @@ app.action("mark_resolved", async ({ ack, body, client }) => {
     await client.chat.postEphemeral({
       channel: channelId,
       thread_ts: msgTs,
-      user: resolver,
-      text: resultText,
-    });
-  }
-});
-
-app.action("resolve_from_ticket_channel", async ({ ack, body, client }) => {
-  await ack();
-  const b = body as any;
-  const msgTs = b.actions[0].value;
-  const resolver = b.user.id;
-  const channelId = b.channel.id;
-
-  const isInTicketChannel = await checkIsInTicketChannel(resolver, client);
-  const isHelper = await checkIsHelper(resolver);
-
-  if (!isHelper && !isInTicketChannel) {
-    await client.chat.postEphemeral({
-      channel: channelId,
-      user: resolver,
-      text: "Only support team members can resolve tickets from here.",
-    });
-    return;
-  }
-
-  const result = await resolveTicket(msgTs, resolver, client);
-  const resultText = ticketResultText(result);
-  if (resultText) {
-    await client.chat.postEphemeral({
-      channel: channelId,
       user: resolver,
       text: resultText,
     });
@@ -132,16 +96,13 @@ app.action("reopen_ticket", async ({ ack, body, client }) => {
     return;
   }
 
-  const isHelper = await checkIsHelper(reopener);
   const isAuthor = ticket.opened_by_slack_id === reopener;
-  const isInTicketChannel = await checkIsInTicketChannel(reopener, client);
-
-  if (!isHelper && !isAuthor && !isInTicketChannel) {
+  if (!isAuthor && !(await checkIsHelper(reopener))) {
     await client.chat.postEphemeral({
       channel: channelId,
       thread_ts: msgTs,
       user: reopener,
-      text: "Only the ticket author, a helper, or a support team member can reopen tickets.",
+      text: "Only the ticket author or a helper can reopen tickets.",
     });
     return;
   }
@@ -158,57 +119,8 @@ app.action("reopen_ticket", async ({ ack, body, client }) => {
   }
 });
 
-app.action("view_thread", async ({ ack }) => {
-  await ack();
-});
 app.action("view_faq", async ({ ack }) => {
   await ack();
-});
-
-app.action("claim_ticket", async ({ ack, body, client }) => {
-  await ack();
-  const b = body as any;
-  const msgTs = b.actions[0].value;
-  const claimerId = b.user.id;
-  const channelId = b.channel.id;
-
-  const isHelper = await checkIsHelper(claimerId);
-  const isInTicketChannel = await checkIsInTicketChannel(claimerId, client);
-
-  if (!isHelper && !isInTicketChannel) {
-    await client.chat.postEphemeral({
-      channel: channelId,
-      user: claimerId,
-      text: "Only support team members can claim tickets.",
-    });
-    return;
-  }
-
-  let ticketRow;
-  try {
-    const { data } = await db().from("tickets").select("*").eq("msg_ts", msgTs).maybeSingle();
-    ticketRow = normalizeTicket(data);
-  } catch (e) {
-    return;
-  }
-  if (!ticketRow || ticketRow.status === "closed") return;
-
-  const newClaimedBy = ticketRow.claimed_by_slack_id === claimerId ? null : claimerId;
-  await db().from("tickets").update({ claimed_by_slack_id: newClaimedBy }).eq("msg_ts", msgTs);
-
-  if (ticketRow.ticket_msg_ts) {
-    try {
-      await client.chat.update({
-        channel: process.env.SLACK_TICKET_CHANNEL!,
-        ts: ticketRow.ticket_msg_ts,
-        text: newClaimedBy ? `Claimed by <@${newClaimedBy}>` : "Ticket unclaimed",
-        blocks: ticketBlocks({
-          ...ticketRow,
-          claimed_by_slack_id: newClaimedBy,
-        }),
-      });
-    } catch (e) {}
-  }
 });
 
 app.action("skip_title", async ({ ack, body, client }) => {

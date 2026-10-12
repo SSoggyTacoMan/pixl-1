@@ -4,14 +4,11 @@ import { aiPost } from "../ai/client.js";
 import { checkAiRateLimit } from "../ai/rateLimit.js";
 import { app } from "../slack/app.js";
 import { normalizeTicket } from "./repo.js";
-import { ticketBlocks } from "./blocks.js";
 import {
   pendingTickets,
   titlePrompts,
   creatingTickets,
   processedHelpMsgs,
-  ticketChannelMembership,
-  MEMBERSHIP_TTL_MS,
   type PendingTicketEvent,
 } from "./state.js";
 
@@ -178,7 +175,7 @@ export async function createTicket(
       .single();
     ticketRow = normalizeTicket(r.data);
     if (!ticketRow) {
-      // Likely a unique violation if another call snuck in (supabase-js reports it
+      // Likely a unique violation if another call snuck in (the query builder reports it
       // via r.error instead of throwing), try SELECT again
       const retry = await db().from("tickets").select("*").eq("msg_ts", event.ts).limit(1).maybeSingle();
       ticketRow = normalizeTicket(retry.data);
@@ -188,24 +185,6 @@ export async function createTicket(
       creatingTickets.delete(event.ts);
       return;
     }
-  }
-
-  // If already posted to the ticket channel, only update title if provided
-  if (ticketRow.ticket_msg_ts) {
-    if (title) {
-      try {
-        const updates = { title };
-        const updated = await db().from("tickets").update(updates).eq("msg_ts", event.ts).select().single();
-        await client.chat.update({
-          channel: process.env.SLACK_TICKET_CHANNEL!,
-          ts: ticketRow.ticket_msg_ts,
-          text: `Ticket from <@${event.user}>: ${title}`,
-          blocks: ticketBlocks(normalizeTicket(updated.data) || ticketRow),
-        });
-      } catch (e) {}
-    }
-    creatingTickets.delete(event.ts);
-    return;
   }
 
   // Get permalink and update title/permalink on the row
@@ -225,18 +204,6 @@ export async function createTicket(
     const updated = await db().from("tickets").update(updates).eq("msg_ts", event.ts).select().single();
     if (updated.data) ticketRow = normalizeTicket(updated.data)!;
   } catch (e) {}
-
-  // Post to ticket channel
-  try {
-    const ticketMsg = await client.chat.postMessage({
-      channel: process.env.SLACK_TICKET_CHANNEL!,
-      text: `New ticket from <@${event.user}>${title ? `: ${title}` : ""}`,
-      blocks: ticketBlocks(ticketRow),
-    });
-    await db().from("tickets").update({ ticket_msg_ts: ticketMsg.ts }).eq("msg_ts", event.ts);
-  } catch (e: any) {
-    console.error("[createTicket] post error:", e.message);
-  }
 
   creatingTickets.delete(event.ts);
 }
@@ -400,31 +367,6 @@ export async function checkIsHelper(slackUserId: string): Promise<boolean> {
   return !!data;
 }
 
-export async function checkIsInTicketChannel(slackUserId: string, client: WebClient): Promise<boolean> {
-  const cached = ticketChannelMembership.get(slackUserId);
-  if (cached && Date.now() - cached.at < MEMBERSHIP_TTL_MS) return cached.ok;
-  try {
-    let cursor: string | undefined;
-    let ok = false;
-    do {
-      const result = await client.conversations.members({
-        channel: process.env.SLACK_TICKET_CHANNEL!,
-        limit: 200,
-        cursor,
-      });
-      if (result.members?.includes(slackUserId)) {
-        ok = true;
-        break;
-      }
-      cursor = result.response_metadata?.next_cursor;
-    } while (cursor);
-    ticketChannelMembership.set(slackUserId, { ok, at: Date.now() });
-    return ok;
-  } catch (e) {
-    return false;
-  }
-}
-
 export function ticketResultText(result: string): string | null {
   if (result === "already_closed") return "this ticket is already resolved";
   if (result === "already_open") return "this ticket is already open";
@@ -552,16 +494,6 @@ export async function resolveTicket(msgTs: string, resolverSlackId: string, clie
 
   const { data: rawTicketRow } = await db().from("tickets").select("*").eq("msg_ts", msgTs).maybeSingle();
   const ticketRow = normalizeTicket(rawTicketRow);
-  if (ticketRow?.ticket_msg_ts) {
-    try {
-      await client.chat.update({
-        channel: process.env.SLACK_TICKET_CHANNEL!,
-        ts: ticketRow.ticket_msg_ts,
-        text: `Ticket resolved by <@${resolverSlackId}>`,
-        blocks: ticketBlocks(ticketRow),
-      });
-    } catch (e) {}
-  }
 
   try {
     await client.reactions.add({
@@ -606,19 +538,6 @@ export async function reopenTicket(msgTs: string, reopenerSlackId: string, clien
     thread_ts: msgTs,
     text: `Ticket reopened by <@${reopenerSlackId}>.`,
   });
-
-  const { data: rawTicketRow } = await db().from("tickets").select("*").eq("msg_ts", msgTs).maybeSingle();
-  const ticketRow = normalizeTicket(rawTicketRow);
-  if (ticketRow?.ticket_msg_ts) {
-    try {
-      await client.chat.update({
-        channel: process.env.SLACK_TICKET_CHANNEL!,
-        ts: ticketRow.ticket_msg_ts,
-        text: `Ticket reopened by <@${reopenerSlackId}>`,
-        blocks: ticketBlocks(ticketRow),
-      });
-    } catch (e) {}
-  }
 
   try {
     await client.reactions.add({
@@ -677,18 +596,6 @@ export async function autoCloseOldTickets(): Promise<void> {
           .from("tickets")
           .update({ status: "closed", closed_at: new Date().toISOString() })
           .eq("msg_ts", ticket.msg_ts);
-
-        const updatedTicket = { ...ticket, status: "closed" as const };
-        if (ticket.ticket_msg_ts) {
-          try {
-            await app.client.chat.update({
-              channel: process.env.SLACK_TICKET_CHANNEL!,
-              ts: ticket.ticket_msg_ts,
-              text: "Ticket auto-closed after 5 days of inactivity",
-              blocks: ticketBlocks(updatedTicket),
-            });
-          } catch (e) {}
-        }
 
         try {
           await app.client.reactions.add({

@@ -6,7 +6,7 @@ Thanks for wanting to help build Pixl. This repo is a Bun/Turborepo monorepo wit
 
 1. Fork the repository and clone your fork
 2. `bun install` from the repo root
-3. Copy `.env.example` → `.env` in `apps/server` and `apps/dashboard` and fill in the values you have access to (see [README → Environment Variables](README.md#environment-variables)). If you don't have Supabase/Slack credentials, ask in the Pixl Slack channel - most contributions to `landing` or `game` don't need a full backend running
+3. Copy `.env.example` → `.env` in `apps/server` and `apps/dashboard` and fill in the values you have access to (see [README → Environment Variables](README.md#environment-variables)). If you don't have database/Slack credentials, ask in the Pixl Slack channel - most contributions to `landing` or `game` don't need a full backend running
 4. Run the app(s) you're working on: `bun run --cwd apps/<app> dev` (see [README → Run](README.md#run))
 
 ## Conventions

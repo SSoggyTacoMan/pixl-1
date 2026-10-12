@@ -34,8 +34,8 @@ app.command("/pixl-help", async ({ command, ack, respond }) => {
 */pixl-addhelper [@user]* - Add a helper (support team only)
 */pixl-removehelper [@user]* - Remove a helper (support team only)
 */pixl-helpers* - List all helpers
-*/pixl-remember [fact]* - Teach Pixorpheus something about this server (support team only)
-*/pixl-forget [number]* - Remove a memory entry (support team only)
+*/pixl-remember [fact]* - Teach Pixorpheus something about this server (admins only)
+*/pixl-forget [number]* - Remove a memory entry (admins only)
 */pixl-memories* - List stored program memories (support team only)
 _Mention @pixorpheus in any channel or DM the bot to chat with it. Ask it to "summarize this thread" to get a recap!_${promo}`,
   });

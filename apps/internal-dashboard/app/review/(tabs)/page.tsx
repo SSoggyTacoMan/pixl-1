@@ -1,0 +1,308 @@
+import Link from "next/link";
+import { requirePage, requireGuidelinesAck } from "@/lib/guard";
+import { canSeeBuilderPII } from "@/lib/reviewAccess";
+import {
+  listShippedProjects,
+  listSecondReviewProjects,
+  listSpotCheckProjects,
+  listReviewAudits,
+} from "@/lib/db";
+import { slackHandles } from "@/lib/slack";
+import { hackatimeUserIdsFor } from "@/lib/hackatime";
+import { listBlackoutQueueProjectIds } from "@/lib/operations";
+import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
+import { reviewerName } from "@/lib/liveMode";
+import { ReviewTable } from "@/app/_components/ReviewTable";
+import { LiveReview } from "@/app/_components/LiveReview";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+} from "@/components/ui/pagination";
+
+export const dynamic = "force-dynamic";
+
+const PER = 15;
+const SORTS = [
+  { key: "oldest", label: "Oldest" },
+  { key: "hours", label: "Hours" },
+  { key: "status", label: "Status" },
+];
+
+export default async function ReviewListPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; sort?: string; kind?: string; blackout?: string }>;
+}) {
+  const access = await requirePage("reviewer");
+  await requireGuidelinesAck(access);
+  const viewer = access.session.slackId;
+  const { page, sort, kind: rawKind, blackout } = await searchParams;
+  const onlyBlackout = blackout === "1";
+  // Hardware and software have separate review queues. A reviewer restricted
+  // to one queue (access.reviewQueues) can't view or query the other , clamp
+  // to their allowed queue regardless of what the URL asks for.
+  const requestedKind: "software" | "hardware" = rawKind === "hardware" ? "hardware" : "software";
+  const kind: "software" | "hardware" =
+    access.reviewQueues === "both" ? requestedKind : access.reviewQueues;
+  const kindQ = kind === "hardware" ? "&kind=hardware" : "";
+  // Live mode (lib/liveMode.ts) hides the "Awaiting Robert" section entirely -
+  // it's read-only and names the fraud pipeline, nothing to show on stream.
+  const live = await getLiveMode();
+
+  // None of these depend on each other's result, so they run together instead
+  // of as a chain of sequential round-trips.
+  const [finalRowsAll, spotCheckRowsAll, myRecent, rowsAll, blackoutIds] = await Promise.all([
+    access.canSecondPass && !live
+      ? listSecondReviewProjects(viewer, kind, { includeClaimed: true })
+      : Promise.resolve([]),
+    access.isOwner
+      ? listSpotCheckProjects(viewer, kind, { includeClaimed: true })
+      : Promise.resolve([]),
+    listReviewAudits(5, viewer, { realNames: canSeeBuilderPII(access) }),
+    listShippedProjects(viewer, kind, { includeClaimed: true }),
+    listBlackoutQueueProjectIds(),
+  ]);
+  const blackoutSet = new Set(blackoutIds);
+  const blackoutCount =
+    rowsAll.filter((p) => blackoutSet.has(Number(p.id))).length +
+    finalRowsAll.filter((p) => blackoutSet.has(Number(p.id))).length +
+    spotCheckRowsAll.filter((p) => blackoutSet.has(Number(p.id))).length;
+  const finalRows = onlyBlackout ? finalRowsAll.filter((p) => blackoutSet.has(Number(p.id))) : finalRowsAll;
+  const spotCheckRows = onlyBlackout
+    ? spotCheckRowsAll.filter((p) => blackoutSet.has(Number(p.id)))
+    : spotCheckRowsAll;
+  const rowsRaw = onlyBlackout ? rowsAll.filter((p) => blackoutSet.has(Number(p.id))) : rowsAll;
+  let rows = rowsRaw;
+  if (sort === "hours") rows = [...rows].sort((a, b) => b.hours - a.hours);
+  else if (sort === "status") rows = [...rows].sort((a, b) => a.status.localeCompare(b.status));
+
+  const total = rows.length;
+  const pages = Math.max(1, Math.ceil(total / PER));
+  const cur = Math.min(Math.max(parseInt(page ?? "1", 10) || 1, 1), pages);
+  const start = (cur - 1) * PER;
+  const slice = rows.slice(start, start + PER);
+  // While live (names not revealed), other reviewers' names never leave the
+  // server: their claim isn't resolved to a Slack handle and first_pass_by is
+  // masked before the rows reach ReviewTable's client props.
+  const hideReviewers = await getHideReviewers();
+  const claimId = (id: string | null | undefined) => (hideReviewers && id !== viewer ? null : id);
+  const masked = <T extends { first_pass_by?: string | null }>(list: T[]): T[] =>
+    hideReviewers
+      ? list.map((p) =>
+          p.first_pass_by && reviewerName(p.first_pass_by, viewer, true) === "Reviewer"
+            ? { ...p, first_pass_by: "Reviewer" }
+            : p,
+        )
+      : list;
+  // claimedBy is another reviewer's slack id, resolved through the same map
+  // the maker column uses so the "being reviewed" tag can name them.
+  const [finalHandles, spotCheckHandles, handles, finalHackatimeUserIds, spotCheckHackatimeUserIds] =
+    await Promise.all([
+      finalRows.length
+        ? slackHandles(finalRows.flatMap((p) => [p.users?.slack_id, claimId(p.claimedBy)]))
+        : Promise.resolve(new Map<string, string>()),
+      spotCheckRows.length
+        ? slackHandles(spotCheckRows.flatMap((p) => [p.users?.slack_id, claimId(p.claimedBy)]))
+        : Promise.resolve(new Map<string, string>()),
+      slackHandles(slice.flatMap((p) => [p.users?.slack_id, claimId(p.claimedBy)])),
+      hackatimeUserIdsFor(finalRows),
+      hackatimeUserIdsFor(spotCheckRows),
+    ]);
+  const sortKey = SORTS.some((s) => s.key === sort) ? sort : "oldest";
+  const blackoutQ = onlyBlackout ? "&blackout=1" : "";
+  const qp = (p: number) =>
+    `/review?page=${p}${sortKey !== "oldest" ? `&sort=${sortKey}` : ""}${kindQ}${blackoutQ}`;
+
+  return (
+    <div>
+      {access.reviewQueues === "both" && (
+        <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-card mb-4">
+          <Button
+            asChild
+            variant="ghost"
+            size="sm"
+            className={kind === "software" ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}
+          >
+            <Link href="/review">Software queue</Link>
+          </Button>
+          <Button
+            asChild
+            variant="ghost"
+            size="sm"
+            className={kind === "hardware" ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}
+          >
+            <Link href="/review?kind=hardware">Hardware queue</Link>
+          </Button>
+        </div>
+      )}
+
+      {finalRows.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+            <h2 className="text-sm font-semibold text-foreground">
+              Awaiting Robert
+              <Badge variant="violet" className="ml-2">
+                {finalRows.length}
+              </Badge>
+            </h2>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">
+            These passed a first review and are parked awaiting Robert&apos;s fraud review , read-only,
+            nothing to action. They move on to Spot check automatically once Robert&apos;s score lands.
+          </p>
+          <details>
+            <summary className="text-sm text-brand font-medium cursor-pointer select-none mb-3">
+              Show {finalRows.length} project{finalRows.length === 1 ? "" : "s"} awaiting Robert
+            </summary>
+            <ReviewTable
+              rows={masked(finalRows)}
+              handles={finalHandles}
+              hackatimeUserIds={finalHackatimeUserIds}
+              blackoutIds={blackoutIds}
+              emptyLabel="Nothing waiting on Robert right now."
+            />
+          </details>
+        </div>
+      )}
+
+      {spotCheckRows.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+            <h2 className="text-sm font-semibold text-foreground">
+              Awaiting your spot check
+              <Badge variant="warning" className="ml-2">
+                {spotCheckRows.length}
+              </Badge>
+            </h2>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">
+            Triaged "not fraud" by a second-pass reviewer. Your approval credits pixels and ships them.
+          </p>
+          <details>
+            <summary className="text-sm text-brand font-medium cursor-pointer select-none mb-3">
+              Show {spotCheckRows.length} project{spotCheckRows.length === 1 ? "" : "s"} awaiting spot check
+            </summary>
+            <ReviewTable
+              rows={masked(spotCheckRows)}
+              handles={spotCheckHandles}
+              hackatimeUserIds={spotCheckHackatimeUserIds}
+              blackoutIds={blackoutIds}
+              emptyLabel="Nothing waiting on a spot check."
+            />
+          </details>
+        </div>
+      )}
+
+      {(blackoutCount > 0 || onlyBlackout) && (
+        <div className="mb-4">
+          <Button
+            asChild
+            variant={onlyBlackout ? "default" : "outline"}
+            size="sm"
+            className={onlyBlackout ? "" : "border-amber-300 text-amber-700 dark:text-amber-300"}
+          >
+            <Link href={onlyBlackout ? `/review${kindQ ? `?${kindQ.slice(1)}` : ""}` : `/review?blackout=1${kindQ}`}>
+              Blackout queue ({blackoutCount}){onlyBlackout ? " · show all" : ""}
+            </Link>
+          </Button>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+        <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-card">
+          {SORTS.map((s) => (
+            <Button
+              key={s.key}
+              asChild
+              variant="ghost"
+              size="sm"
+              className={sortKey === s.key ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}
+            >
+              <Link href={`/review?sort=${s.key}${kindQ}${blackoutQ}`}>
+                {s.label}
+              </Link>
+            </Button>
+          ))}
+        </div>
+        <div className="flex items-center gap-3">
+          <LiveReview />
+          <div className="text-sm text-muted-foreground">
+            Showing <span className="font-semibold text-foreground/70">{total}</span> of {total}
+          </div>
+        </div>
+      </div>
+
+      <ReviewTable
+        rows={masked(slice)}
+        handles={handles}
+        blackoutIds={blackoutIds}
+        emptyLabel="Queue's clear. Nothing waiting for review."
+      />
+
+      {total > 0 && (
+        <div className="flex items-center justify-between gap-3 mt-4 text-sm">
+          <span className="text-muted-foreground">
+            Showing {start + 1}–{Math.min(start + PER, total)} of {total}
+          </span>
+          <Pagination className="mx-0 w-auto justify-end">
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationLink
+                  href={qp(cur - 1)}
+                  aria-label="Previous page"
+                  className={cur <= 1 ? "pointer-events-none opacity-40" : ""}
+                >
+                  ←
+                </PaginationLink>
+              </PaginationItem>
+              <PaginationItem>
+                <span className="px-2 text-muted-foreground tabular-nums">
+                  {cur} / {pages}
+                </span>
+              </PaginationItem>
+              <PaginationItem>
+                <PaginationLink
+                  href={qp(cur + 1)}
+                  aria-label="Next page"
+                  className={cur >= pages ? "pointer-events-none opacity-40" : ""}
+                >
+                  →
+                </PaginationLink>
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </div>
+      )}
+
+      {myRecent.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3">Recently reviewed by you</h3>
+          <Card className="divide-y divide-border py-0">
+            {myRecent.map((a) => (
+              <Link
+                key={a.id}
+                href={`/projects/${a.project_id}`}
+                className="p-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 hover:bg-muted/50"
+              >
+                <span className="font-medium text-sm">{a.project_name}</span>
+                <span className="text-xs text-muted-foreground">
+                  {a.verdict.replaceAll("_", " ")} · {a.player_name}
+                </span>
+                <span className="text-xs text-muted-foreground ml-auto shrink-0">
+                  {new Date(a.created_at).toLocaleString()}
+                </span>
+              </Link>
+            ))}
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}

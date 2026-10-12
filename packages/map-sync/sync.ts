@@ -5,7 +5,7 @@
  *
  * The dashboard's NPC spot-picker draws these PNGs and converts a click into a
  * world coordinate with bounds.json. It can't read them out of apps/game
- * directly: the dashboard builds from its own /apps/dashboard root, so anything
+ * directly: the dashboard builds from its own /apps/internal-dashboard root, so anything
  * outside that root doesn't exist at build time. Same reason packages/config and
  * packages/theme generate committed copies rather than being imported.
  *
@@ -18,7 +18,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 
 const ROOT = new URL("../../", import.meta.url).pathname;
 const SRC = `${ROOT}apps/game/assets/map/`;
-const DEST = `${ROOT}apps/dashboard/public/map/`;
+const DEST = `${ROOT}apps/internal-dashboard/public/map/`;
 
 const MAPS = ["open_world.png", "village.png", "factory_island.png", "pixel_cafe.png"];
 

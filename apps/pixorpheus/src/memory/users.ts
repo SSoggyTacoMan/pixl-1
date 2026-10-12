@@ -2,6 +2,7 @@ import type { WebClient } from "@slack/web-api";
 import { db } from "../db/client.js";
 import { aiPost } from "../ai/client.js";
 import { botIdentity } from "../slack/identity.js";
+import { isIdentityFact, safeFacts } from "./identityFilter.js";
 
 export const userMemory = new Map<string, string[]>();
 export const personalityMemory = new Map<string, string[]>();
@@ -16,6 +17,24 @@ export function parseFacts(raw: unknown): string[] {
     }
   }
   return [];
+}
+
+/**
+ * The stored facts about a user that are safe to show or feed to a model.
+ * Every reader goes through this (never userMemory.get directly), so legacy
+ * rows saved before the identity filter existed are dropped at read time.
+ * Legacy "name is X" facts are excluded too (isIdentityFact matches them);
+ * display names come only from the Slack profile, see getDisplayName.
+ */
+export function getSafeFacts(userId: string | null | undefined): string[] {
+  if (!userId) return [];
+  return safeFacts(parseFacts(userMemory.get(userId)));
+}
+
+/** Same as getSafeFacts, for personality traits. */
+export function getSafeTraits(userId: string | null | undefined): string[] {
+  if (!userId) return [];
+  return safeFacts(parseFacts(personalityMemory.get(userId)));
 }
 
 export async function loadMemory(): Promise<void> {
@@ -58,15 +77,28 @@ export async function saveUserMemory(userId: string, facts: string[]): Promise<v
   }
 }
 
+// Slack display names, cached in memory only. This used to be stored as a
+// "name is X" fact in user_memory and read back from there, but legacy rows
+// written by the old extractor can hold a "name is <real name>" fact too,
+// and reading the name back from memory would surface it. The display name
+// now always comes from the user's Slack profile (what they chose to show
+// the workspace), never from stored memory.
+const DISPLAY_NAME_TTL_MS = 6 * 3600_000;
+const displayNames = new Map<string, { name: string; at: number }>();
+
 export async function ensureUserName(userId: string, client: WebClient): Promise<void> {
-  const existing = parseFacts(userMemory.get(userId));
-  if (existing.some((f) => f.startsWith("name is"))) return;
+  const cached = displayNames.get(userId);
+  if (cached && Date.now() - cached.at < DISPLAY_NAME_TTL_MS) return;
   try {
     const info = await client.users.info({ user: userId });
-    const name = info.user?.profile?.display_name || info.user?.real_name;
-    if (!name) return;
-    const updated = [`name is ${name}`, ...existing];
-    await saveUserMemory(userId, updated.slice(-100));
+    // Display name only, never real_name: the display name is what the user
+    // chose to show the workspace, the real name is identity data.
+    const name = (info.user?.profile?.display_name || "").trim();
+    if (!name) {
+      displayNames.delete(userId);
+      return;
+    }
+    displayNames.set(userId, { name: name.slice(0, 80), at: Date.now() });
   } catch (e) {
     // best-effort
   }
@@ -74,13 +106,11 @@ export async function ensureUserName(userId: string, client: WebClient): Promise
 
 export function getDisplayName(userId: string | null | undefined): string | null {
   if (!userId) return null;
-  const facts = parseFacts(userMemory.get(userId));
-  const nameFact = facts.find((f) => f.startsWith("name is "));
-  return nameFact ? nameFact.replace("name is ", "") : null;
+  return displayNames.get(userId)?.name ?? null;
 }
 
 export function resolveUserMentions(text: string): string {
-  return text.replace(/<@([A-Z0-9]+)>/g, (match, uid) => {
+  return text.replace(/<@([A-Z0-9]+)(?:\|[^>]*)?>/g, (match, uid) => {
     if (uid === botIdentity.userId) return "@pixorpheus";
     const name = getDisplayName(uid);
     return name ? `@${name}` : match;
@@ -114,17 +144,16 @@ export async function extractMemory(userId: string, messages: string[]): Promise
       messages: [
         {
           role: "system",
-          content: `Extract up to 10 memorable facts about THE AUTHOR of these messages. Be specific and precise. Capture:
-- Identity: name, age, location, nationality, pronouns
-- Life: job, studies, school, projects they work on, things they shipped
+          content: `Extract up to 10 harmless preferences and interests of THE AUTHOR of these messages, things a friend would remember to make small talk. Capture ONLY:
+- Interests: hobbies, games, music, shows, tech stack, programming languages, favorite things
 - Opinions: things they love or hate, strong takes, pet peeves
-- Interests: hobbies, games, music, tech stack, favorite things
-- Context: inside references, ongoing situations they mention, goals
+- Projects: what they are building or shipped for Pixl
+NEVER output anything that identifies who they are or where to find them, even if they state it directly: no real name, no age, birthday or grade, no city, country, nationality, timezone or school, no pronouns, gender or sexuality, no family members or relationships, no religion or health, no email, phone, username or social account, no job or employer. If a message only contains that kind of detail, skip it.
 RULES:
 - Short phrases only, max 10 words each, one per line
-- Only concrete facts directly stated or strongly implied BY THE AUTHOR about THEMSELVES, never save facts about other people they mention
+- Only things stated BY THE AUTHOR about THEMSELVES, never facts about other people they mention
 - If someone says "alex loves pizza", that's about alex, not the author, SKIP it
-- If there is nothing worth saving about the author, output exactly: SKIP
+- If there is nothing worth saving, output exactly: SKIP
 - No bullets, no numbers, no explanations, no meta-commentary, no questions`,
         },
         { role: "user", content: combined },
@@ -138,9 +167,13 @@ RULES:
       .map((f) => f.replace(/^[-•*\d.]+\s*/, "").trim())
       .filter((f) => f.length > 3 && f.length < 80)
       .filter((f) => !f.endsWith("?"))
-      .filter((f) => !GARBAGE_PATTERNS.some((p) => p.test(f)));
+      .filter((f) => !GARBAGE_PATTERNS.some((p) => p.test(f)))
+      // The prompt says no identity details; this holds when it doesn't.
+      .filter((f) => !isIdentityFact(f));
     if (!newFacts.length) return;
-    const existing = parseFacts(userMemory.get(userId));
+    // Rewriting the row also drops any legacy identity facts stored before
+    // this filter existed, including old "name is X" display-name facts.
+    const existing = parseFacts(userMemory.get(userId)).filter((f) => !isIdentityFact(f));
     const deduped = newFacts.filter((nf) => {
       const nfWords = nf.toLowerCase().split(" ").slice(0, 3).join(" ");
       return !existing.some((ef) => ef.toLowerCase().split(" ").slice(0, 3).join(" ") === nfWords);
@@ -167,7 +200,7 @@ export async function extractPersonality(userId: string, messages: string[]): Pr
 - Energy level (high energy, chill, erratic, intense...)
 - Recurring behaviors (always uses "...", very short replies, overthinks, hypes people up...)
 - How they react (defensive, chill, gets excited easily, always skeptical...)
-Short phrases only, max 8 words each, one per line. Only note things that feel consistent and distinct. Output nothing if nothing stands out. No bullets, no numbers.`,
+Short phrases only, max 8 words each, one per line. Only note things that feel consistent and distinct. Output nothing if nothing stands out. No bullets, no numbers. Only HOW they talk, never who they are: no name, age, location, school, gender, sexuality, family, religion, health or contact details.`,
         },
         { role: "user", content: combined },
       ],
@@ -178,9 +211,10 @@ Short phrases only, max 8 words each, one per line. Only note things that feel c
     const newTraits = raw
       .split("\n")
       .map((t) => t.trim())
-      .filter((t) => t.length > 3 && t.length < 80);
+      .filter((t) => t.length > 3 && t.length < 80)
+      .filter((t) => !isIdentityFact(t));
     if (!newTraits.length) return;
-    const parsed = parseFacts(personalityMemory.get(userId));
+    const parsed = safeFacts(parseFacts(personalityMemory.get(userId)));
     const deduped = newTraits.filter((nt) => {
       const ntWords = nt.toLowerCase().split(" ").slice(0, 3).join(" ");
       return !parsed.some((et) => et.toLowerCase().split(" ").slice(0, 3).join(" ") === ntWords);

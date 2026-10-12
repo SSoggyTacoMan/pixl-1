@@ -90,7 +90,7 @@ async function storeAnswer(question: string, norm: string, answer: string): Prom
 /**
  * Answer a question from the docs, or return null if the docs don't cover it
  * (the signal to fall back to a human helper). Only ever called on messages
- * already posted in the #pixl-help ticket channel (see tickets/service.ts),
+ * already posted in the #pixl-help channel (see tickets/service.ts),
  * so an answer that tells the asker to go post in #pixl-help is nonsensical,
  * they're already there. The system prompt below rules that out statically
  * rather than interpolating the channel per-message, which would bust the

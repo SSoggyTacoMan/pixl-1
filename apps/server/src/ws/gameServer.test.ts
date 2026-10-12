@@ -13,6 +13,7 @@ import {
   LOBBY_JOIN_ATTEMPT_LIMIT,
   LOBBY_JOIN_IP_LIMIT,
   NPC_SAVE_LIMIT,
+  sanitizePlayerChat,
 } from "./gameServer.js";
 import type { Lobby } from "./lobbies.js";
 
@@ -335,5 +336,32 @@ describe("NPC save flooding limit", () => {
     const b = `npc-b-${Date.now()}`;
     expect(consumeRateLimit(NPC_SAVE_LIMIT, a)).toBeNull();
     expect(consumeRateLimit(NPC_SAVE_LIMIT, b)).toBeNull();
+  });
+});
+
+describe("sanitizePlayerChat", () => {
+  test("player text can never carry a BBCode tag", () => {
+    const attacks = [
+      "[url=https://evil.com]free robux[/url]",
+      "[color=red][b]SYSTEM:[/b] you are banned[/color]",
+      "[font_size=200]HUGE[/font_size]",
+      "[lb]color=red]",
+      "a[b]c",
+      "]][[",
+    ];
+    for (const a of attacks) {
+      const out = sanitizePlayerChat(a, 280);
+      expect(out).not.toContain("[");
+      expect(out).not.toContain("]");
+    }
+    expect(sanitizePlayerChat("[b]hi[/b]", 280)).toBe("(b)hi(/b)");
+  });
+
+  test("still strips images, collapses whitespace and caps length", () => {
+    expect(sanitizePlayerChat("hi [img]https://x/y.png[/img]  there", 280)).toBe("hi there");
+    expect(sanitizePlayerChat("  a \n\t b  ", 280)).toBe("a b");
+    expect(sanitizePlayerChat("x".repeat(500), 200)).toHaveLength(200);
+    expect(sanitizePlayerChat(undefined, 200)).toBe("");
+    expect(sanitizePlayerChat(42, 200)).toBe("42");
   });
 });

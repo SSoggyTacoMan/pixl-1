@@ -36,8 +36,8 @@ root.
   Orchard and kept only as a fossil from the Vercel era.
 - `packages/theme/palette.json` and `packages/config/pixl.json` are the
   single sources of truth for design tokens and program facts respectively.
-  Nothing imports them at runtime (Railway/Vercel/Orchard each build an
-  app from its own subdirectory); every consumer reads a generated,
+  Nothing imports them at runtime (Orchard builds each app from its own
+  subdirectory); every consumer reads a generated,
   git-committed copy produced by `theme:sync`/`config:sync`.
 - `packages/docs-engine` (`build.ts`) turns `docs/*.md` into static HTML +
   OG preview cards under `apps/game/web/docs/`, using `{{token}}`

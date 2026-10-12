@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { db } from "../db/pgCompat.js";
-import { PUBLIC_PROJECT_COLUMNS } from "./explore.js";
+import exploreRouter, { leaderboardDeps, MAX_SEARCH_LENGTH, PUBLIC_PROJECT_COLUMNS, searchText } from "./explore.js";
 
 // Same catalog projects.ts's toPlayerProject keeps off player-facing
 // responses - reviewer identity/notes, ban/hold, Robert/fraud, internal IDs,
@@ -103,5 +103,65 @@ describe("every public projects-table query in explore.ts uses the allowlist", (
       const cols = columns.split(",").map((c) => c.trim());
       for (const field of SENSITIVE_PROJECT_FIELDS) expect(cols).not.toContain(field);
     }
+  });
+});
+
+describe("explore bounds", () => {
+  test("search text is capped", () => {
+    expect(searchText("a".repeat(5000))).toHaveLength(MAX_SEARCH_LENGTH);
+    expect(searchText("  ada  ")).toBe("ada");
+    expect(searchText(["x"])).toBe("");
+  });
+
+  async function board(path: string) {
+    const { createServer } = await import("node:http");
+    const express = (await import("express")).default;
+    const { issueSessionToken } = await import("../auth/session.js");
+    const { bearer, testAuthGate } = await import("../http/testkit.js");
+    const queries: { text: string; params: unknown[] }[] = [];
+    const realQuery = leaderboardDeps.query;
+    const realFrom = db.from;
+    leaderboardDeps.query = async (text, params) => {
+      queries.push({ text, params });
+      return text.includes("limit $1")
+        ? [{ id: "u-top", total: 12, rewarded: 10, pixels: 50, n: 7 }]
+        : [{ id: "u-me", total: 2, rewarded: 0, pixels: 0, n: 1 }];
+    };
+    db.from = (() => {
+      const c: Record<string, unknown> = {};
+      for (const m of ["select", "in"]) c[m] = () => c;
+      c.then = (r: (v: unknown) => unknown) => Promise.resolve({ data: [{ id: "u-top", display_name: "Top" }], error: null }).then(r);
+      return c;
+    }) as unknown as typeof db.from;
+    const app = express();
+    app.use(testAuthGate());
+    app.use(exploreRouter);
+    const server = createServer(app);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const token = issueSessionToken({ client: "web", userId: "u-me", displayName: "Me" });
+      const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers: bearer(token) });
+      return { body: (await res.json()) as Record<string, unknown>, queries };
+    } finally {
+      leaderboardDeps.query = realQuery;
+      db.from = realFrom;
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  }
+
+  test("the referral board aggregates and limits in SQL", async () => {
+    const r = await board("/api/explore/leaderboard/referrals");
+    expect(r.queries.every((q) => /group by/i.test(q.text))).toBe(true);
+    expect(r.queries[0].params).toEqual([25]);
+    expect(r.body.players).toEqual([{ rank: 1, display_name: "Top", value: 12, rewarded: 10, pixels: 50 + 119, you: false }]);
+    expect(r.body.yourValue).toBe(2);
+  });
+
+  test("the upvote board aggregates and limits in SQL", async () => {
+    const r = await board("/api/explore/leaderboard/upvotes");
+    expect(r.queries.every((q) => /group by/i.test(q.text))).toBe(true);
+    expect(r.body.players).toEqual([{ rank: 1, display_name: "Top", value: 7, you: false }]);
+    expect(r.body.yourValue).toBe(1);
   });
 });

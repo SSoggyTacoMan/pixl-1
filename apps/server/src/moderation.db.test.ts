@@ -37,7 +37,7 @@ if (!adminUrl) {
   }
 
   async function buy(userId: string) {
-    const res = await fetch(`${base}/api/thing?token=${issueToken(userId)}`, { method: "POST" });
+    const res = await fetch(`${base}/api/thing`, { method: "POST", headers: { Authorization: `Bearer ${issueToken(userId)}` } });
     return res.status;
   }
 
@@ -59,7 +59,7 @@ if (!adminUrl) {
     await connect(goodUrl.toString());
     const [{ name }] = await pgCompat.sql.unsafe("select current_database() as name");
     if (name !== dbName) throw new Error(`refusing to run against ${name}`);
-    issueToken = (userId) => issueSessionToken({ userId, displayName: "t" });
+    issueToken = (userId) => issueSessionToken({ client: "web", userId, displayName: "t" });
 
     const app = express();
     app.use(enforceActiveBans());

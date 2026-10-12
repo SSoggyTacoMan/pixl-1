@@ -67,7 +67,8 @@ function factGrid(rows: string[][]): string {
 }
 
 export function render(src: string, tokens: Record<string, string>): Doc {
-  const { meta, rest } = parseFrontmatter(src);
+  // Windows checkouts (core.autocrlf) hand us CRLF; the parser expects LF.
+  const { meta, rest } = parseFrontmatter(src.replace(/\r\n?/g, "\n"));
   const withTokens = rest.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_match, key: string) => {
     if (!(key in tokens)) throw new Error(`unknown token {{${key}}}`);
     return tokens[key]!;

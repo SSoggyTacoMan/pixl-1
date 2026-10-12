@@ -22,7 +22,12 @@ const BUBBLE_MAX_WIDTH := 300.0
 var _bubble: RichTextLabel
 var _bubble_token: int = 0
 var _bubble_img_regex := RegEx.create_from_string("\\[img\\b[^\\]]*\\][\\s\\S]*?\\[/img\\]")
-var _bubble_tag_regex := RegEx.create_from_string("\\[/?[a-zA-Z][^\\]]*\\]")
+
+# Same escape as chat_hud.gd's _bb_escape(): chat bubbles only ever show
+# player-authored text, so every "[" is escaped and no player can render
+# bbcode tags ([url], [color], [font_size]...) over anyone's head.
+func _bb_escape(s: String) -> String:
+	return s.replace("[", "[lb]")
 
 func _ready() -> void:
 	_base_frames = $AnimatedSprite2D.sprite_frames
@@ -239,8 +244,9 @@ func show_chat_bubble(text: String) -> void:
 		bg.set_corner_radius_all(8)
 		_bubble.add_theme_stylebox_override("normal", bg)
 		add_child(_bubble)
-	var msg := _bubble_img_regex.sub(text, "", true)
-	var plain := _bubble_tag_regex.sub(msg, "", true).replace("[lb]", "[").replace("[rb]", "]")
+	# Width is measured on the unescaped text: nothing in it renders as a tag.
+	var plain := _bubble_img_regex.sub(text, "", true)
+	var msg := _bb_escape(plain)
 	var natural := BUBBLE_FONT.get_string_size(plain, HORIZONTAL_ALIGNMENT_LEFT, -1, 24).x + 24.0
 	if natural > BUBBLE_MAX_WIDTH:
 		_bubble.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

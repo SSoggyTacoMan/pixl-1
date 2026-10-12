@@ -404,7 +404,7 @@ func _upload_card_bytes(bytes: PackedByteArray, mime: String) -> void:
 	_card_note("Uploading…", true)
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + "/api/uploads?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + "/api/uploads"
 	req.request_completed.connect(func(_r, code, _h, data):
 		req.queue_free()
 		var json = JSON.parse_string(data.get_string_from_utf8()) if data.size() > 0 else null
@@ -417,7 +417,7 @@ func _upload_card_bytes(bytes: PackedByteArray, mime: String) -> void:
 			else:
 				_card_note("Couldn't save the photo - try again.", false))
 	)
-	req.request_raw(url, PackedStringArray(["Content-Type: " + mime]), HTTPClient.METHOD_POST, bytes)
+	req.request_raw(url, NetworkManager.auth_headers(["Content-Type: " + mime]), HTTPClient.METHOD_POST, bytes)
 
 func _on_pixfy_toggled(on: bool) -> void:
 	_card_api(HTTPClient.METHOD_POST, "/api/profile/card-pixelate", JSON.stringify({"pixelate": on}), func(code, json):
@@ -436,13 +436,13 @@ func _card_api(method: int, path: String, body: String, cb: Callable) -> void:
 		return
 	var req := HTTPRequest.new()
 	add_child(req)
-	var url := NetworkManager.SERVER_HTTP_URL + path + "?token=" + NetworkManager.session_token.uri_encode()
+	var url := NetworkManager.SERVER_HTTP_URL + path
 	req.request_completed.connect(func(_r, code, _h, data):
 		req.queue_free()
 		var json = JSON.parse_string(data.get_string_from_utf8()) if data.size() > 0 else null
 		cb.call(code, json)
 	)
-	req.request(url, PackedStringArray(["Content-Type: application/json"]), method, body)
+	req.request(url, NetworkManager.auth_headers(["Content-Type: application/json"]), method, body)
 
 func _close_settings() -> void:
 	_settings_root.visible = false
