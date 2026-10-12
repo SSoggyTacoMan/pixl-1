@@ -1,3 +1,5 @@
+import { pixorpheusUrl } from "@/lib/pixo";
+
 // Shop-change notifications for pixorpheus (the Slack bot).
 //
 // The original design was a Postgres trigger calling pg_net (migration 0103),
@@ -10,7 +12,6 @@
 // The payload deliberately keeps the exact shape a Supabase Database Webhook
 // would send, so pixorpheus' /webhooks/shop handler needs no changes.
 
-const PIXORPHEUS_URL = (process.env.PIXORPHEUS_URL ?? "https://pixo.pixl.rsvp").replace(/\/+$/, "");
 
 // pixorpheus answers 200 and processes asynchronously, so this is quick. It
 // must never block or fail a shop mutation, the write already succeeded by the
@@ -52,7 +53,7 @@ async function post(
     return;
   }
   try {
-    const res = await fetch(`${PIXORPHEUS_URL}/webhooks/shop`, {
+    const res = await fetch(`${pixorpheusUrl()}/webhooks/shop`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

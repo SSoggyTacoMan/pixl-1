@@ -1,8 +1,12 @@
 import { publicStats, publicGallery } from "@/lib/db";
 import { GrowthChart } from "@/app/_components/GrowthChart";
 import { Card, CardContent } from "@/components/ui/card";
+import { config } from "@/app/_generated/config";
 
 export const dynamic = "force-dynamic";
+
+const SITE_URL = config.urls.site;
+const SITE_HOST = new URL(SITE_URL).host;
 
 export const metadata = {
   title: "Pixl , live stats",
@@ -25,13 +29,13 @@ export default async function StatsPage() {
     <div className="min-h-screen">
       <div className="max-w-5xl mx-auto px-4 py-10 space-y-10">
         <div className="text-center">
-          <a href="https://pixl.rsvp" className="inline-block">
+          <a href={SITE_URL} className="inline-block">
             <span className="text-4xl font-bold tracking-tight text-brand">PIXL</span>
           </a>
           <h1 className="text-xl font-semibold mt-2">Live stats</h1>
           <p className="text-sm text-muted-foreground mt-1">
             Teenagers building games, getting paid in pixels.{" "}
-            <a href="https://pixl.rsvp" className="text-brand hover:underline">
+            <a href={SITE_URL} className="text-brand hover:underline">
               Join in →
             </a>
           </p>
@@ -65,7 +69,7 @@ export default async function StatsPage() {
               {gallery.map((p) => (
                 <a
                   key={p.id}
-                  href={p.demo_url || "https://pixl.rsvp"}
+                  href={p.demo_url || SITE_URL}
                   target="_blank"
                   rel="noreferrer"
                   className="block hover:-translate-y-0.5 transition-transform"
@@ -102,8 +106,8 @@ export default async function StatsPage() {
 
         <div className="text-center text-xs text-muted-foreground pb-6">
           Updated live ·{" "}
-          <a href="https://pixl.rsvp" className="hover:text-brand">
-            pixl.rsvp
+          <a href={SITE_URL} className="hover:text-brand">
+            {SITE_HOST}
           </a>
         </div>
       </div>

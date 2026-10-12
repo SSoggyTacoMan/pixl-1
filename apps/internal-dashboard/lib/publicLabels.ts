@@ -1,4 +1,4 @@
-// Labels for PUBLIC, unauthenticated pages (stats.pixl.rsvp / app/stats).
+// Labels for PUBLIC, unauthenticated pages (app/stats, served at /stats).
 // Pure (no DB) so it's unit-testable.
 //
 // Never use playerLabel() (lib/db.ts) on a public page: it prefers real_name,

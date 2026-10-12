@@ -3,6 +3,7 @@ import { orValue } from "./db/pgCompat.js";
 import { verifySessionToken } from "./auth/session.js";
 import { bearerToken } from "./http/bearer.js";
 import { auditRequestThrottled } from "./audit.js";
+import { externalDmUrl } from "./pixoUrl.js";
 
 // Normalized roots (see normalize below): lowercase, leetspeak folded, symbols
 // stripped. Substring match, so common evasions like f.u-c_k or sh1t still hit.
@@ -300,9 +301,9 @@ export function censorChat(text: string): string {
 const WARN_AFTER = 3;
 const BAN_AFTER = 7;
 
-// Defaults to Pixorpheus's own DM endpoint (a domain we run, unlike the
-// personal-domain fallback removed in 8d3d133), same URL the dashboard uses.
-const EXTERNAL_DM_URL = process.env.EXTERNAL_DM_URL || "https://pixo.pixl.rsvp/api/external/dm";
+// Defaults to Pixo's DM endpoint at its in-cluster address (see pixoUrl.ts),
+// same endpoint the dashboard uses.
+const EXTERNAL_DM_URL = externalDmUrl();
 
 // Slack DM as Pixo (same external API the dashboard uses). Fire-and-forget:
 // moderation must never fail because the DM did.

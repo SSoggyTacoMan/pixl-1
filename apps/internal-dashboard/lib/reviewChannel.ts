@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { dmOrEmail } from "@/lib/notify";
 import { dmUser } from "@/lib/slack";
+import { pixorpheusUrl } from "@/lib/pixo";
 
 // Review verdicts (approved / changes requested) are announced publicly in the
 // review channel by Pixo instead of being DMed. Bans still use DMs.
@@ -8,7 +9,6 @@ import { dmUser } from "@/lib/slack";
 // ever posts to the one fixed review channel.
 
 const GABIN_SLACK_ID = "U0A2SJ7B739";
-const PIXORPHEUS_URL = (process.env.PIXORPHEUS_URL ?? "https://pixo.pixl.rsvp").replace(/\/+$/, "");
 // The player-facing project page on the game site (served by apps/game).
 const PROJECT_PAGE_URL = "https://play.pixl.hackclub.com/project";
 const SLACK_ID_RE = /^[UW][A-Z0-9]{5,20}$/;
@@ -84,7 +84,7 @@ async function postToReviewChannel(message: string): Promise<boolean> {
   const key = process.env.EXTERNAL_API_KEY;
   if (!key) return false;
   try {
-    const res = await fetch(`${PIXORPHEUS_URL}/api/external/review-post`, {
+    const res = await fetch(`${pixorpheusUrl()}/api/external/review-post`, {
       method: "POST",
       headers: { "x-api-key": key, "Content-Type": "application/json" },
       body: JSON.stringify({ message }),

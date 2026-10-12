@@ -113,7 +113,7 @@ dumping the player into an empty projects page + a redundant tour.
 
 - **Pre-rendered video** - Godot web `VideoStreamPlayer` needs Theora `.ogv`; web
   playback is finicky and inflates the `web/` bundle (the build already ships at
-  `pixl.rsvp/play`). **Rejected as the default.**
+  `pixl.hackclub.com/play`). **Rejected as the default.**
 - **In-engine 3D/tilemap recreation of "Origin at its peak"** - needs grand-city art
   that doesn't exist; the game only has cozy-town/farwest/voxel tilesets + NPC sheets
   (`assets/`). **Rejected.**
@@ -405,7 +405,7 @@ player journey.**
 - The player surface stays the `apps/game/web` shell, but reframed as the **Builder
   Terminal**, entered **carrying context** (`?trial&from=game`), not "open my dashboard."
 - **Demote the redundant `pixl.js` lore tour** to a *fallback* for players who reach the
-  shell **without** the in-game arrival (e.g. someone opening `pixl.rsvp/projects`
+  shell **without** the in-game arrival (e.g. someone opening `pixl.hackclub.com/projects`
   directly). For the normal path (`from=game`), run the **contextual first-project
   walkthrough** instead, the player just *lived* the lore; don't re-tell it.
 - Split `ONBOARDING_STEPS` (`pixl.js:396`) into `LORE_STEPS` (fallback) +

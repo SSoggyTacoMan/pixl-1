@@ -1,3 +1,5 @@
+import { pixorpheusUrl } from "./pixoUrl.js";
+
 export interface PixorpheusSettings {
   readonly apiKey: string;
   readonly url: string;
@@ -50,7 +52,7 @@ export async function enrollSlackPlayerInPixl(slackId: string): Promise<PixlChan
     slackId,
     {
       apiKey: process.env.EXTERNAL_API_KEY ?? "",
-      url: process.env.PIXORPHEUS_URL ?? "",
+      url: pixorpheusUrl(),
     },
     fetch,
   );
@@ -63,7 +65,7 @@ export async function enrollSlackPlayerInReviewChannel(slackId: string): Promise
     slackId,
     {
       apiKey: process.env.EXTERNAL_API_KEY ?? "",
-      url: process.env.PIXORPHEUS_URL ?? "",
+      url: pixorpheusUrl(),
     },
     fetch,
     "/api/external/review-channel/join",

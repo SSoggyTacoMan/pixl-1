@@ -12,7 +12,7 @@ Pixl is a Bun/Turborepo monorepo (`bun` workspaces: `apps/*`, `packages/*`) for 
 | `apps/pixl-dashboard` | Next.js 16, React 19, Tailwind 4, shadcn/radix | `pixl.hackclub.com` | **Pixl Dashboard** - landing page (5 locales), signed-in player pages, docs, public forms and shared journals. |
 | `apps/internal-dashboard` | Next.js 16, React 19, Tailwind 4, shadcn/radix | `dash.pixl.hackclub.com` | **Pixl Internal Dashboard** - review queue, moderation, shop/fulfillment, tickets, stats. Still talks to Postgres directly (moving it behind the server is planned). |
 | `apps/game` | Godot 4 | `play.pixl.hackclub.com` | The 2D multiplayer client. Serves only the Godot web export. |
-| `apps/pixorpheus` | Bun, TypeScript, Slack Bolt v4 | `pixo.pixl.rsvp` | Pixo, the Slack bot - tickets, AI chat, moderation DMs, slash commands |
+| `apps/pixorpheus` | Bun, TypeScript, Slack Bolt v4 | `pixo.pixl.hackclub.com` | Pixo, the Slack bot - tickets, AI chat, moderation DMs, slash commands |
 | `apps/pixo-dm` | Node (CommonJS), Express | Railway | Relays dashboard-initiated player DMs through Slack as Pixo - plain `node index.js`; folding it into Pixo is planned |
 | `packages/config` | JSON + plain ESM | | **Single source of truth** for program facts - name, launch date, Hackatime cutoff, canonical URLs, economy rates. |
 | `packages/theme` | JSON + plain ESM | | **Single source of truth** for the LEDGER color palette. |

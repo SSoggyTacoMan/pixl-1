@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { isValidTicketTs } from "./requestGuards";
+import { externalTicketsUrl } from "./pixo";
 
 // Mirrors apps/pixorpheus/src/slack/escape.ts's escapeMrkdwn exactly - kept
 // as a separate copy since this app builds/deploys independently and
@@ -430,18 +431,18 @@ async function resolveViaPixorpheus(
   return { ok: false, error: msg || `Pixorpheus resolve failed (${res.status})` };
 }
 
-// Resolve a ticket straight from the dashboard. Prefers routing through
-// Pixorpheus (see resolveViaPixorpheus) when EXTERNAL_TICKETS_URL +
-// EXTERNAL_API_KEY are configured; otherwise falls back to closing the row
-// and running the Slack side-effects directly from here, same as before.
+// Resolve a ticket straight from the dashboard. Routes through Pixorpheus
+// (see resolveViaPixorpheus) whenever EXTERNAL_API_KEY is configured, at
+// EXTERNAL_TICKETS_URL or Pixo's in-cluster address by default (lib/pixo.ts);
+// otherwise falls back to closing the row and running the Slack side-effects
+// directly from here, same as before.
 export async function resolveTicketFromDash(
   ts: string,
   actor: { slackId: string; username: string },
 ): Promise<ResolveResult> {
   if (!isValidTicketTs(ts)) return { ok: false, error: "Invalid ticket id." };
-  const extUrl = process.env.EXTERNAL_TICKETS_URL;
   const extKey = process.env.EXTERNAL_API_KEY;
-  if (extUrl && extKey) return resolveViaPixorpheus(extUrl, extKey, ts, actor);
+  if (extKey) return resolveViaPixorpheus(externalTicketsUrl(), extKey, ts, actor);
 
   const { data: ticket, error: readError } = await db
     .from("tickets")

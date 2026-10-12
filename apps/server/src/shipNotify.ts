@@ -1,4 +1,5 @@
 import { DASH_URL } from "./reports.js";
+import { pixorpheusUrl } from "./pixoUrl.js";
 import { escapeMrkdwn, escapeMrkdwnWithin, safeHttpUrl, slackLinkUrl } from "./slackEscape.js";
 
 // Pings the team's ship-alerts channel with a rich preview whenever a project
@@ -136,8 +137,8 @@ export async function dmReviewerOfResubmit(
   project: { id: number; name: string },
 ): Promise<void> {
   const key = process.env.EXTERNAL_API_KEY;
-  const base = process.env.PIXORPHEUS_URL;
-  if (!key || !base || !/^[UW][A-Z0-9]{5,20}$/.test(reviewerSlackId)) return;
+  const base = pixorpheusUrl();
+  if (!key || !/^[UW][A-Z0-9]{5,20}$/.test(reviewerSlackId)) return;
   try {
     const r = await fetch(new URL("/api/external/dm", base), {
       method: "POST",

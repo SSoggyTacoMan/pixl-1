@@ -1,6 +1,6 @@
 # Pixl internal dashboard
 
-Moderation dashboard for [Pixl](https://pixl.rsvp): review players, projects and
+Moderation dashboard for [Pixl](https://pixl.hackclub.com): review players, projects and
 chat/name violations, warn people over Slack, and hand out timed or permanent
 bans that the game server enforces.
 

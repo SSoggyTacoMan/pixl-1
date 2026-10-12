@@ -83,7 +83,7 @@ export default async function NewsPage({
                 name="link_url"
                 type="url"
                 maxLength={500}
-                placeholder="https://pixl.rsvp/shop"
+                placeholder="https://pixl.hackclub.com/shop"
                 className="w-full text-sm"
               />
             </Label>
