@@ -6,7 +6,14 @@ import { unstable_rethrow } from "next/navigation";
 // redirects (to the next project, or back with ?error=) still navigates.
 //
 // `what` finishes "Couldn't ...", e.g. "submit this verdict".
-const STALE = /failed to find server action|older or newer deployment/i;
+// A tab left open across a deploy calls an action id the new build doesn't
+// have. The server logs "Failed to find Server Action"; the browser throws
+// 'Server Action "..." was not found on the server'. Both are matched.
+const STALE = /failed to find server action|was not found on the server|older or newer deployment/i;
+
+export function isStaleDeployError(e: unknown): boolean {
+  return STALE.test(e instanceof Error ? e.message : String(e ?? ""));
+}
 const NETWORK = /failed to fetch|networkerror|load failed|network request failed|fetch failed/i;
 // Next strips thrown messages from server actions in production builds.
 const REDACTED = /omitted in production|server components render/i;
