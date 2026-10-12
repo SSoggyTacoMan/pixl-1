@@ -11,8 +11,10 @@ export interface StaffSettings {
   theme: Theme;
   accent: Accent;
   compact: boolean;
-  /** Confetti and a sound after a review. Off unless someone turns it on. */
+  /** Confetti after a review. Off unless someone turns it on. */
   confetti: boolean;
+  /** The short sound after a review. On unless someone turns it off. */
+  sound: boolean;
   /** Width in px of the review page's right column (see ReviewSplit). */
   reviewPanelWidth: number;
 }
@@ -22,6 +24,7 @@ export const DEFAULT_STAFF_SETTINGS: StaffSettings = {
   accent: "red",
   compact: false,
   confetti: false,
+  sound: true,
   reviewPanelWidth: 460,
 };
 
@@ -42,6 +45,7 @@ export function parseStaffSettings(raw: unknown): StaffSettings {
     accent: ACCENTS.includes(r.accent as Accent) ? (r.accent as Accent) : DEFAULT_STAFF_SETTINGS.accent,
     compact: r.compact === true,
     confetti: r.confetti === true,
+    sound: r.sound !== false,
     reviewPanelWidth: clampReviewPanelWidth(r.reviewPanelWidth),
   };
 }

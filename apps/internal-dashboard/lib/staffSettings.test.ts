@@ -16,10 +16,17 @@ describe("parseStaffSettings", () => {
   test("keeps valid values and drops unknown ones", () => {
     expect(
       parseStaffSettings({ theme: "light", accent: "blue", compact: true, confetti: true, reviewPanelWidth: 620 }),
-    ).toEqual({ theme: "light", accent: "blue", compact: true, confetti: true, reviewPanelWidth: 620 });
+    ).toEqual({ theme: "light", accent: "blue", compact: true, confetti: true, sound: true, reviewPanelWidth: 620 });
     expect(parseStaffSettings({ theme: "neon", accent: "javascript:alert(1)", extra: 1 })).toEqual(
       DEFAULT_STAFF_SETTINGS,
     );
+  });
+
+  test("the review sound is on unless it is exactly false", () => {
+    expect(parseStaffSettings({}).sound).toBe(true);
+    expect(parseStaffSettings({ confetti: true }).sound).toBe(true);
+    expect(parseStaffSettings({ sound: "false" }).sound).toBe(true);
+    expect(parseStaffSettings({ sound: false }).sound).toBe(false);
   });
 
   test("review panel width is clamped to a sane range", () => {

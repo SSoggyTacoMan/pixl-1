@@ -86,7 +86,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body>
         <LiveModeProvider live={live} hideReviewers={hideReviewers} viewer={session.slackId}>
           <div className="admin-shell">
-            <ReviewCelebration confetti={settings.confetti} />
+            <ReviewCelebration confetti={settings.confetti} sound={settings.sound} />
             <Tooltips />
             <header className="hc-topbar sticky top-0 z-20">
               <div className="hc-topbar-inner mx-auto flex min-h-14 max-w-[1840px] flex-wrap items-center gap-x-6 gap-y-2 px-6 py-2">

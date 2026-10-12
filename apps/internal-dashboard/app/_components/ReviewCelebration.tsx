@@ -12,9 +12,9 @@ import { REVIEW_REWARD_COOKIE, parseReviewReward, rewardLabel } from "@/lib/revi
 //
 // No dependencies on purpose: the confetti is a small canvas loop and the
 // sound is synthesised with the Web Audio API, so there's no asset to host.
-// The confetti and sound only play when the reviewer has turned Confetti on in
-// the settings menu (the card always shows), and prefers-reduced-motion skips
-// the confetti either way.
+// The sound and the confetti each have a switch in the settings menu: the
+// sound is on by default, the confetti is off by default. The card always
+// shows, and prefers-reduced-motion skips the confetti either way.
 
 // The Hack Club palette (admin.css --hc-*). Canvas can't read CSS vars.
 const COLORS = ["#f1c40f", "#ec3750", "#5bc0de", "#a633d6", "#338eda", "#ff8c37", "#33d6a6"];
@@ -184,7 +184,7 @@ function launchConfetti(): void {
   requestAnimationFrame(frame);
 }
 
-export function ReviewCelebration({ confetti }: { confetti: boolean }) {
+export function ReviewCelebration({ confetti, sound }: { confetti: boolean; sound: boolean }) {
   const pathname = usePathname();
   const [reward, setReward] = useState<{ px: number; key: number } | null>(null);
   const timer = useRef<number | null>(null);
@@ -192,15 +192,13 @@ export function ReviewCelebration({ confetti }: { confetti: boolean }) {
   useEffect(() => {
     const px = readAndClearCookie();
     if (px === null) return;
-    if (confetti) {
-      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (!reduceMotion) launchConfetti();
-      playSound();
-    }
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (confetti && !reduceMotion) launchConfetti();
+    if (sound) playSound();
     setReward({ px, key: Date.now() });
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setReward(null), CARD_MS);
-    // Only a navigation should trigger this, not flipping the setting.
+    // Only a navigation should trigger this, not flipping a setting.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
