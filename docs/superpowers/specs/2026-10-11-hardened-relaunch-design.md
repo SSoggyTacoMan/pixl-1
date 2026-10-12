@@ -21,7 +21,7 @@ action must be guarded and logged.
 | Pixl Dashboard | `apps/pixl-dashboard` (was web-shell + landing + `apps/game/web`) | `pixl.hackclub.com` | server only |
 | Pixl Internal Dashboard | `apps/internal-dashboard` (was `apps/dashboard`) | `dash.pixl.hackclub.com` | DB + server (moving it fully behind the server is a later project) |
 | Server | `apps/server` | `server.pixl.hackclub.com` | DB |
-| Pixo | `apps/pixorpheus` | `pixo.pixl.hackclub.com` | DB, server, Slack |
+| Pixo | `apps/pixorpheus` | none (Slack Socket Mode, in-cluster HTTP only) | DB, server, Slack |
 | Game | `apps/game` | `play.pixl.hackclub.com` | server only |
 
 Deleted: `apps/landing`, `apps/web-shell` (merged into Pixl Dashboard), and all

@@ -347,7 +347,7 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 | Variable | Description |
 |---|---|
 | `SLACK_BOT_TOKEN` | Slack bot OAuth token (`xoxb-...`) |
-| `SLACK_SIGNING_SECRET` | Slack app signing secret |
+| `SLACK_APP_TOKEN` | App-level token (`xapp-...`, scope `connections:write`) for Socket Mode. **Required** - Pixo refuses to start without it |
 | `SLACK_HELP_CHANNEL` | Channel ID of the help channel where users post questions |
 | `SLACK_TICKET_CHANNEL` | Channel ID of the private ticket channel for the support team |
 | `SLACK_FAQ_URL` | URL to the FAQ (linked in the "Someone will be here soon!" message) |
@@ -365,13 +365,13 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 | `SHOP_WEBHOOK_SECRET` | Shared secret for the `/webhooks/shop` route, sent by Supabase as the `x-shop-webhook-secret` header. **Required** - without it the route returns 503 and processes nothing |
 | `SHOP_NOTIFY_CHANNEL` | Channel ID to post shop item change notifications to (defaults to `#shop-changes`) |
 | `EXTERNAL_API_KEY` | Shared key `apps/dashboard` and `apps/server` use for Pixorpheus external APIs |
-| `PORT` | Port for the Bolt HTTP receiver (default 3000) |
+| `PORT` | Port for the in-cluster HTTP server (`/api/external/*`, `/webhooks/*`, `/healthz`; default 3000). Slack traffic never uses it |
 
 ---
 
 ## Deployment
 
-Pixorpheus runs as a single **Bun** process (`bun run src/index.ts` / `bun run start`), no build step. It's deployed on **Orchard** (Kubernetes, the `pixl-pixorpheus` deployment in the `ysws-pixl` namespace), built from its own `apps/pixorpheus` Docker context and sharing its Postgres database with the rest of the monorepo. Other services reach it in-cluster at `http://pixl-pixorpheus.ysws-pixl.svc.cluster.local:3000`.
+Pixorpheus runs as a single **Bun** process (`bun run src/index.ts` / `bun run start`), no build step. It's deployed on **Orchard** (Kubernetes, the `pixl-pixorpheus` deployment in the `ysws-pixl` namespace), built from its own `apps/pixorpheus` Docker context and sharing its Postgres database with the rest of the monorepo. It has **no public hostname**: Slack events, interactivity, slash commands and shortcuts all arrive over **Socket Mode** (an outbound WebSocket Bolt opens with `SLACK_APP_TOKEN`), so the Slack app needs Socket Mode enabled and no Request URLs. The HTTP server on `PORT` only serves in-cluster callers - `apps/server` and `apps/internal-dashboard` reach it at `http://pixl-pixorpheus.ysws-pixl.svc.cluster.local:3000`.
 
 The Pixl server calls `POST /api/external/pixl-channel/join` with `x-api-key` and `{ "slackId": "U..." }` after a successful Hack Club login. The endpoint uses Pixorpheus's bot token to add the Slack member to `#pixl`; the caller's login remains valid if the bot is unavailable and retries next login.
 
@@ -387,4 +387,4 @@ The Slack app must have the following **event subscriptions** enabled:
 - `reaction_added`
 - `member_joined_channel`
 
-And the following **slash commands** registered pointing to the bot's URL.
+And the following **slash commands** registered (no Request URL needed, they arrive over Socket Mode).

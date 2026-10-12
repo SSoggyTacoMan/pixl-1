@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import express from "express";
-import { app, receiver } from "../slack/app.js";
+import { app, http } from "../slack/app.js";
 import { diffLines, region, render, requestIdFrom, RecentIds, type Bucket, type WebhookPayload } from "./format.js";
 
 const seenRequestIds = new RecentIds();
@@ -101,7 +101,7 @@ function handleShopChange(payload: WebhookPayload): void {
 // (x-pixl-request-id / x-request-id / idempotency-key / body.request_id) are
 // deduplicated; moving the sender (internal dashboard) to a timestamped HMAC
 // is the real fix and needs a coordinated change on both sides.
-receiver.app.post("/webhooks/shop", express.json({ limit: "1mb" }), (req, res) => {
+http.post("/webhooks/shop", express.json({ limit: "1mb" }), (req, res) => {
   const secret = process.env.SHOP_WEBHOOK_SECRET;
   if (!secret) {
     console.error("[shop-webhook] SHOP_WEBHOOK_SECRET is not set; refusing request");

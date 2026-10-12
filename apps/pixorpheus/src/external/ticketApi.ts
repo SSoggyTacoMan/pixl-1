@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
-import { app, receiver } from "../slack/app.js";
+import { app, http } from "../slack/app.js";
 import { ensurePixlChannelMembership, type SlackConversationClient } from "../slack/pixlMembership.js";
 import { isSlackTs, slackUserIdFromBody } from "./validate.js";
 import { PIXL_REVIEW_CHANNEL } from "../constants.js";
@@ -29,7 +29,7 @@ const pixlMembershipClient: SlackConversationClient = {
   },
 };
 
-receiver.app.post("/api/external/pixl-channel/join", express.json(), requireExternalApiKey, async (req, res) => {
+http.post("/api/external/pixl-channel/join", express.json(), requireExternalApiKey, async (req, res) => {
   const slackId = slackUserIdFromBody(req.body);
   if (!slackId) return res.status(400).json({ error: "Invalid Slack user ID" });
 
@@ -47,7 +47,7 @@ receiver.app.post("/api/external/pixl-channel/join", express.json(), requireExte
 
 // Same as /pixl-channel/join but for the public review channel, called when a
 // player ships their first project.
-receiver.app.post("/api/external/review-channel/join", express.json(), requireExternalApiKey, async (req, res) => {
+http.post("/api/external/review-channel/join", express.json(), requireExternalApiKey, async (req, res) => {
   const slackId = slackUserIdFromBody(req.body);
   if (!slackId) return res.status(400).json({ error: "Invalid Slack user ID" });
 
@@ -59,7 +59,7 @@ receiver.app.post("/api/external/review-channel/join", express.json(), requireEx
   return res.json({ ok: true, membership: result.kind });
 });
 
-receiver.app.post("/api/external/tickets/:ts/resolve", express.json(), requireExternalApiKey, async (req, res) => {
+http.post("/api/external/tickets/:ts/resolve", express.json(), requireExternalApiKey, async (req, res) => {
   const ts = req.params.ts;
   if (!isSlackTs(ts)) return res.status(400).json({ error: "Invalid ticket ts" });
   // Validated like every other external route: the resolver's id ends up in

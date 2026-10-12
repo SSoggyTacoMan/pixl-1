@@ -1,5 +1,5 @@
 import express from "express";
-import { app, receiver } from "../slack/app.js";
+import { app, http } from "../slack/app.js";
 import { DmRateLimiter, relayDm } from "./dmRelay.js";
 
 // Delivers every player-facing DM the internal dashboard (dmUser() in
@@ -16,7 +16,7 @@ const limiter = new DmRateLimiter({
 
 setInterval(() => limiter.sweep(), 60_000).unref();
 
-receiver.app.post("/api/external/dm", express.json(), async (req, res) => {
+http.post("/api/external/dm", express.json(), async (req, res) => {
   const result = await relayDm(
     {
       apiKey: process.env.EXTERNAL_API_KEY,

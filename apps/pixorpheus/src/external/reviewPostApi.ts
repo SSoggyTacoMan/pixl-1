@@ -2,7 +2,7 @@ import crypto from "crypto";
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { PIXL_REVIEW_CHANNEL } from "../constants.js";
-import { app, receiver } from "../slack/app.js";
+import { app, http } from "../slack/app.js";
 
 // Lets the Pixl HQ dashboard announce review verdicts (approved / changes
 // requested) publicly in the review channel as Pixo, instead of DMing the
@@ -22,7 +22,7 @@ function requireExternalApiKey(req: Request, res: Response, next: NextFunction) 
   next();
 }
 
-receiver.app.post("/api/external/review-post", express.json(), requireExternalApiKey, async (req, res) => {
+http.post("/api/external/review-post", express.json(), requireExternalApiKey, async (req, res) => {
   const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
   if (!message) return res.status(400).json({ error: "Missing message" });
   if (message.length > MAX_MESSAGE_LENGTH)

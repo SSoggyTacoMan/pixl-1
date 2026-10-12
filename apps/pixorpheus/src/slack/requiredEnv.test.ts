@@ -3,13 +3,17 @@ import { requireSlackEnv } from "./requiredEnv.js";
 import { audit, auditRow, setAuditWriter, type PixoAuditRow } from "../audit.js";
 
 describe("requireSlackEnv", () => {
-  test("throws when either secret is missing or blank", () => {
-    expect(() => requireSlackEnv({})).toThrow(/SLACK_SIGNING_SECRET, SLACK_BOT_TOKEN/);
-    expect(() => requireSlackEnv({ SLACK_SIGNING_SECRET: "s" })).toThrow(/SLACK_BOT_TOKEN/);
-    expect(() => requireSlackEnv({ SLACK_BOT_TOKEN: "xoxb-1", SLACK_SIGNING_SECRET: "  " })).toThrow(/SLACK_SIGNING_SECRET/);
+  test("throws when either token is missing or blank", () => {
+    expect(() => requireSlackEnv({})).toThrow(/SLACK_BOT_TOKEN, SLACK_APP_TOKEN/);
+    expect(() => requireSlackEnv({ SLACK_APP_TOKEN: "xapp-1" })).toThrow(/missing SLACK_BOT_TOKEN$/);
+    expect(() => requireSlackEnv({ SLACK_BOT_TOKEN: "xoxb-1" })).toThrow(/missing SLACK_APP_TOKEN$/);
+    expect(() => requireSlackEnv({ SLACK_BOT_TOKEN: "xoxb-1", SLACK_APP_TOKEN: "  " })).toThrow(/SLACK_APP_TOKEN/);
   });
-  test("returns both when present", () => {
-    expect(requireSlackEnv({ SLACK_SIGNING_SECRET: "s", SLACK_BOT_TOKEN: "xoxb-1" })).toEqual({ signingSecret: "s", token: "xoxb-1" });
+  test("the app token must be an app-level xapp- token", () => {
+    expect(() => requireSlackEnv({ SLACK_BOT_TOKEN: "xoxb-1", SLACK_APP_TOKEN: "xoxb-2" })).toThrow(/xapp-/);
+  });
+  test("a signing secret is no longer needed (Socket Mode)", () => {
+    expect(requireSlackEnv({ SLACK_BOT_TOKEN: " xoxb-1 ", SLACK_APP_TOKEN: "xapp-1" })).toEqual({ token: "xoxb-1", appToken: "xapp-1" });
   });
 });
 

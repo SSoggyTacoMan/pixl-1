@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import express from "express";
-import { app, receiver } from "../slack/app.js";
+import { app, http } from "../slack/app.js";
 import { escapeMrkdwn } from "../slack/escape.js";
 
 async function handleGitHubEvent(event: string, payload: any): Promise<void> {
@@ -33,7 +33,7 @@ async function handleGitHubEvent(event: string, payload: any): Promise<void> {
   }
 }
 
-receiver.app.post("/webhooks/github", express.raw({ type: "application/json" }), (req, res) => {
+http.post("/webhooks/github", express.raw({ type: "application/json" }), (req, res) => {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
   if (!secret) {
     console.error("[github-webhook] GITHUB_WEBHOOK_SECRET is not set; refusing request");

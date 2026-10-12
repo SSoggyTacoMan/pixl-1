@@ -12,7 +12,7 @@ Pixl is a Bun/Turborepo monorepo (`bun` workspaces: `apps/*`, `packages/*`) for 
 | `apps/pixl-dashboard` | Next.js 16, React 19, Tailwind 4, shadcn/radix | `pixl.hackclub.com` | **Pixl Dashboard** - landing page (5 locales), signed-in player pages, docs, public forms and shared journals. |
 | `apps/internal-dashboard` | Next.js 16, React 19, Tailwind 4, shadcn/radix | `dash.pixl.hackclub.com` | **Pixl Internal Dashboard** - review queue, moderation, shop/fulfillment, tickets, stats. Still talks to Postgres directly (moving it behind the server is planned). |
 | `apps/game` | Godot 4 | `play.pixl.hackclub.com` | The 2D multiplayer client. Serves only the Godot web export. |
-| `apps/pixorpheus` | Bun, TypeScript, Slack Bolt v4 | `pixo.pixl.hackclub.com` | Pixo, the Slack bot - tickets, AI chat, moderation DMs, slash commands |
+| `apps/pixorpheus` | Bun, TypeScript, Slack Bolt v4 | none (Slack Socket Mode; in-cluster HTTP only) | Pixo, the Slack bot - tickets, AI chat, moderation DMs, slash commands |
 | `packages/config` | JSON + plain ESM | | **Single source of truth** for program facts - name, launch date, Hackatime cutoff, canonical URLs, economy rates. |
 | `packages/theme` | JSON + plain ESM | | **Single source of truth** for the LEDGER color palette. |
 | `packages/docs-engine` | Bun/TypeScript | | Renders `docs/*.md` for Pixl Dashboard and builds OG preview cards. |
@@ -122,7 +122,7 @@ Pixl Dashboard renders `docs/*.md` through this package's `render()`/`buildToken
 - **Pixl Internal Dashboard** (`apps/internal-dashboard`, port 4900): roles in `lib/roles.ts`, guards in `lib/guard.ts` (`requirePage`, `guardedAction`, `guardedRoute`), audit writer `lib/audit.ts`. Calls the server with `SERVICE_KEY_INTERNAL_DASHBOARD`. Image uploads go through the server's `/api/admin/uploads`.
 
 ### `apps/pixorpheus` (Slack bot)
-- Bun-native TypeScript, no build step - a single Bolt v4 process organized by feature under `src/`. Ticket moderation lives in the internal dashboard, which resolves tickets through `src/external/ticketApi.ts`.
+- Bun-native TypeScript, no build step - a single Bolt v4 process organized by feature under `src/`. Slack connects over Socket Mode (`SLACK_APP_TOKEN`, required at startup), so Pixo has no public hostname; the Express app in `src/slack/app.ts` (`http`, port 3000) only serves in-cluster `/api/external/*`, `/webhooks/*` and `/healthz`. Ticket moderation lives in the internal dashboard, which resolves tickets through `src/external/ticketApi.ts`.
 - `models.json` lists the OpenRouter models available to AI features. See `apps/pixorpheus/README.md` for commands.
 - Every player DM the internal dashboard and server send goes through `POST /api/external/dm` (`src/external/dmApi.ts`, rules in `dmRelay.ts`): `EXTERNAL_API_KEY` (timing-safe, fails closed), Slack user ids only, no `<!...>` or `<scheme:...>` syntax, 3000-char cap, per-user/global/daily in-memory rate limits. Callers default to Pixo's in-cluster address `http://pixl-pixorpheus.ysws-pixl.svc.cluster.local:3000`.
 
