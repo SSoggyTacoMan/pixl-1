@@ -1375,3 +1375,21 @@ html:has(.admin-shell)::-webkit-scrollbar-corner,
   max-height: 320px;
   display: block;
 }
+
+/* Row actions inside tables are solid red, so they read as buttons at a glance.
+   Destructive ones keep their red outline and confirm styles stay green. */
+.hc-table .hc-btn-outline,
+.hc-table .hc-btn-ghost,
+.hc-table .hc-btn-cream {
+  background: var(--primary);
+  color: var(--hc-white);
+  border-color: transparent;
+}
+
+.hc-table .hc-btn-outline:hover:not(:disabled),
+.hc-table .hc-btn-ghost:hover:not(:disabled),
+.hc-table .hc-btn-cream:hover:not(:disabled) {
+  background: var(--primary);
+  color: var(--hc-white);
+  filter: brightness(1.1);
+}
