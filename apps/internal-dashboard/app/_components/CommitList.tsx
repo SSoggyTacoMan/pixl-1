@@ -84,6 +84,16 @@ function lineKind(line: string): string | undefined {
   return undefined;
 }
 
+// Every file can be opened and closed. Lockfiles and very long diffs start
+// closed so they don't bury the files worth reading.
+const LONG_DIFF_LINES = 400;
+const NOISE_FILE_RX = /(^|\/)(package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|composer\.lock|Gemfile\.lock|go\.sum)$|\.min\.(js|css)$|\.map$/;
+
+function startsCollapsed(file: CommitDiff["files"][number]): boolean {
+  if (NOISE_FILE_RX.test(file.path)) return true;
+  return (file.patch?.split("\n").length ?? 0) > LONG_DIFF_LINES;
+}
+
 function DiffView({ projectId, sha }: { projectId: number; sha: string }) {
   const [diff, setDiff] = useState<CommitDiff | null>(null);
 
@@ -104,15 +114,15 @@ function DiffView({ projectId, sha }: { projectId: number; sha: string }) {
   return (
     <div className="hc-diff">
       {diff.files.map((file) => (
-        <section key={file.path} className="hc-diff-file">
-          <header>
+        <details key={file.path} className="hc-diff-file" open={!startsCollapsed(file)}>
+          <summary>
             <Mono>{file.path}</Mono>
             {file.status !== "modified" && <Badge>{file.status}</Badge>}
             <span className="hc-mono ml-auto shrink-0 text-xs tabular-nums">
               <span className="text-[var(--hc-green)]">+{file.additions}</span>{" "}
               <span className="text-[var(--hc-red)]">-{file.deletions}</span>
             </span>
-          </header>
+          </summary>
           {file.patch ? (
             <pre>
               {file.patch.split("\n").map((line, i) => (
@@ -126,7 +136,7 @@ function DiffView({ projectId, sha }: { projectId: number; sha: string }) {
             <p className="hc-caption px-3 py-2 text-xs">Binary file, or too large for the host to show inline.</p>
           )}
           {file.truncated && <p className="hc-caption px-3 py-2 text-xs">Diff cut off here. Open the commit for the rest.</p>}
-        </section>
+        </details>
       ))}
       {diff.moreFiles > 0 && (
         <p className="hc-caption p-3 text-xs">And {diff.moreFiles} more files. Open the commit to see them all.</p>
