@@ -1,18 +1,13 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
 import { useState } from "react";
-import { PendingButton } from "@/app/_components/PendingButton";
 import { OptionsEditor } from "@/app/_components/OptionsEditor";
 import { ShopConfigEditor } from "@/app/_components/ShopConfigEditor";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { ActionButton, Badge, Button, Card, Checkbox, Field, Icon, Input, Muted, NativeSelect } from "@/app/_ui/ui";
 import { SHOP_REGIONS, SHOP_REGION_LABELS, type ShopRegion } from "@/lib/shopRegions";
 import { SHOP_CATEGORIES, SHOP_CATEGORY_LABELS } from "@/lib/shopCategories";
 import { config } from "@/app/_generated/config";
-
-const FILE_INPUT =
-  "block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80";
 
 export function AddShopItemForm({
   action,
@@ -30,7 +25,7 @@ export function AddShopItemForm({
   // Per-region price overrides, keyed by region. A region with no entry here
   // just uses the shared `price` field when the form submits.
   const [regionPrices, setRegionPrices] = useState<Partial<Record<ShopRegion, string>>>({});
-  // Price-changing options (config_options) - optional. The item's own
+  // Price-changing options (config_options), optional. The item's own
   // price/region overrides above double as each region's base price, so
   // there's no separate base-price field here, just the reference link.
   const [configEnabled, setConfigEnabled] = useState(false);
@@ -40,11 +35,9 @@ export function AddShopItemForm({
     setImage(f ? URL.createObjectURL(f) : null);
   }
 
-  // Typing a dollar amount fills the pixel price for you (pixelValueUsd is
-  // the same rate the game/shop use everywhere else), rounded UP to the
-  // nearest multiple of 5 - every shop price is a multiple of 5 by
-  // convention. The pixel field stays directly editable too, for
-  // fine-tuning or pasting a price someone already worked out in pixels.
+  // Typing a dollar amount fills the pixel price (same pixelValueUsd rate the
+  // game uses), rounded UP to the nearest multiple of 5, since every shop
+  // price is a multiple of 5 by convention. The pixel field stays editable.
   function onUsdChange(e: React.ChangeEvent<HTMLInputElement>) {
     const usd = e.target.value;
     setPriceUsd(usd);
@@ -60,12 +53,11 @@ export function AddShopItemForm({
   const allSelected = regions.length === SHOP_REGIONS.length;
 
   return (
-    <form action={action} className="grid lg:grid-cols-[1fr_15rem] gap-6">
+    <form action={action} className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_15rem]">
       <input type="hidden" name="regions" value={regions.join(",")} />
-      <div className="space-y-5 min-w-0">
-        <div className="grid sm:grid-cols-[1fr_8rem_8rem] gap-4">
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Name</span>
+      <div className="flex min-w-0 flex-col gap-5">
+        <div className="grid gap-4 sm:grid-cols-[1fr_8rem_8rem]">
+          <Field label="Name">
             <Input
               name="name"
               required
@@ -73,24 +65,12 @@ export function AddShopItemForm({
               placeholder="Holo Sticker"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full text-sm"
             />
-          </Label>
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Price ($)</span>
-            <Input
-              type="number"
-              min={0}
-              step="0.01"
-              placeholder="4.20"
-              value={priceUsd}
-              onChange={onUsdChange}
-              className="w-full text-sm"
-            />
-            <span className="block text-xs text-muted-foreground mt-1">Fills the px price →</span>
-          </Label>
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Price (px)</span>
+          </Field>
+          <Field label="Price ($)" hint="Fills the px price">
+            <Input type="number" min={0} step="0.01" placeholder="4.20" value={priceUsd} onChange={onUsdChange} />
+          </Field>
+          <Field label="Price (px)" hint="Default for every region">
             <Input
               name="price"
               type="number"
@@ -99,111 +79,98 @@ export function AddShopItemForm({
               placeholder="60"
               value={price}
               onChange={(e) => setPrice(e.target.value)}
-              className="w-full text-sm"
             />
-            <span className="block text-xs text-muted-foreground mt-1">Default for any region below with no override.</span>
-          </Label>
+          </Field>
         </div>
 
-        <div className="block">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="block text-sm font-medium">Regions</span>
-            <button
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <span className="hc-label">Regions</span>
+            <Button
               type="button"
+              variant="ghost"
+              size="sm"
               onClick={() => setRegions(allSelected ? [region] : [...SHOP_REGIONS])}
-              className="text-xs text-brand hover:underline"
             >
               {allSelected ? "Just this region" : "Select all regions"}
-            </button>
+            </Button>
           </div>
-          <div className="grid sm:grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-border p-3">
+          <div className="hc-panel grid gap-x-4 gap-y-2 sm:grid-cols-2">
             {SHOP_REGIONS.map((r) => {
               const checked = regions.includes(r);
               return (
                 <div key={r} className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 text-sm flex-1 min-w-0 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleRegion(r)}
-                      className="size-4 shrink-0"
-                    />
-                    <span className="truncate">{SHOP_REGION_LABELS[r]}</span>
-                  </label>
+                  <Checkbox
+                    label={SHOP_REGION_LABELS[r]}
+                    checked={checked}
+                    onChange={() => toggleRegion(r)}
+                    className="min-w-0 flex-1"
+                  />
                   {checked && (
                     <Input
                       type="number"
                       min={0}
                       placeholder={price || "px"}
                       value={regionPrices[r] ?? ""}
-                      onChange={(e) =>
-                        setRegionPrices((prev) => ({ ...prev, [r]: e.target.value }))
-                      }
+                      onChange={(e) => setRegionPrices((prev) => ({ ...prev, [r]: e.target.value }))}
                       name={regionPrices[r] ? `price_${r}` : undefined}
-                      className="w-20 h-7 text-xs shrink-0"
+                      className="h-7 w-20 shrink-0 text-xs"
                     />
                   )}
                 </div>
               );
             })}
           </div>
-          <span className="block text-xs text-muted-foreground mt-1">
+          <Muted className="text-xs">
             Pick the regions to add this to. Type a price next to a region to override the default for it.
-          </span>
+          </Muted>
         </div>
 
-        <Label className="block font-normal">
-          <span className="block text-sm font-medium mb-1.5">Category</span>
-          <select
-            name="category"
-            defaultValue="other"
-            className="w-full h-9 text-sm rounded-md border border-border bg-background px-3"
-          >
+        <Field label="Category">
+          <NativeSelect name="category" defaultValue="other">
             {SHOP_CATEGORIES.map((c) => (
               <option key={c} value={c}>
                 {SHOP_CATEGORY_LABELS[c]}
               </option>
             ))}
-          </select>
-        </Label>
+          </NativeSelect>
+        </Field>
 
-        <Label className="block font-normal">
-          <span className="block text-sm font-medium mb-1.5">Description</span>
+        <Field label="Description">
           <Input
             name="description"
             maxLength={300}
             placeholder="Holographic, shimmery. Looks great on a laptop."
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="w-full text-sm"
           />
-        </Label>
+        </Field>
 
-        <div className="block">
-          <span className="block text-sm font-medium mb-1.5">Options</span>
-          <OptionsEditor name="options" />
-          <span className="block text-xs text-muted-foreground mt-1">
-            Optional , groups like Color or Storage, each with comma-separated choices.
+        <div className="flex flex-col gap-1.5">
+          <span className="hc-label">
+            Options
+            <span className="hc-label-hint">Optional. Groups like Color or Storage, each with comma-separated choices.</span>
           </span>
+          <OptionsEditor name="options" />
         </div>
 
-        <div className="block rounded-md border border-border p-3">
-          <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-            <Checkbox checked={configEnabled} onCheckedChange={(v) => setConfigEnabled(v === true)} />
-            Price-changing options
-          </label>
-          <span className="block text-xs text-muted-foreground mt-1 mb-2">
-            Unlike Options above, these change the price , e.g. a Storage group where
-            &quot;256GB&quot; costs more than &quot;128GB&quot;. Set a price per region if it should differ.
-          </span>
+        <div className="hc-panel flex flex-col gap-2">
+          <Checkbox
+            label="Price-changing options"
+            checked={configEnabled}
+            onChange={(e) => setConfigEnabled(e.target.checked)}
+          />
+          <Muted className="text-xs">
+            Unlike Options above, these change the price, e.g. a Storage group where &quot;256GB&quot; costs more than
+            &quot;128GB&quot;. Set a price per region if it should differ.
+          </Muted>
           {configEnabled && (
-            <div className="space-y-2 mt-2">
+            <div className="mt-2 flex flex-col gap-2">
               <input type="hidden" name="config_enable" value="1" />
               <Input
                 name="config_reference_url"
                 type="url"
-                placeholder="https://… (reference listing for the base price)"
-                className="w-full text-sm"
+                placeholder="https://... (reference listing for the base price)"
               />
               <ShopConfigEditor
                 name="config_groups"
@@ -216,44 +183,40 @@ export function AddShopItemForm({
           )}
         </div>
 
-        <Label className="block font-normal">
-          <span className="block text-sm font-medium mb-1.5">Image</span>
-          <input name="image" type="file" accept="image/png,image/jpeg,image/webp" onChange={onFile} className={FILE_INPUT} />
-          <span className="block text-xs text-muted-foreground mt-1">Optional , PNG/JPG/WebP, max 4 MB.</span>
-        </Label>
+        <Field label="Image" hint="Optional. PNG, JPG or WebP, max 4 MB.">
+          <input
+            name="image"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={onFile}
+            className="hc-file"
+          />
+        </Field>
 
-        <div className="flex justify-start">
-          <PendingButton
-            className="bg-brand text-white border-transparent"
-            pendingText="Adding… (uploading can take a few seconds)"
-          >
+        <div>
+          <ActionButton pendingLabel="Adding... (uploading can take a few seconds)" icon="plus">
             Add item
-          </PendingButton>
+          </ActionButton>
         </div>
       </div>
 
-      {/* live preview , what the card looks like in the shop */}
-      <div className="lg:sticky lg:top-14 self-start">
-        <div className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Preview</div>
-        <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
-          <div className="aspect-square rounded-lg border border-border bg-gradient-to-b from-muted/40 to-muted/10 flex items-center justify-center overflow-hidden mb-3">
+      {/* Live preview: roughly what the card looks like in the shop. */}
+      <div className="self-start lg:sticky lg:top-20">
+        <div className="hc-eyebrow mb-2">Preview</div>
+        <Card padding="compact" sunken>
+          <div className="mb-3 flex aspect-square items-center justify-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface)]">
             {image ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={image} alt="" className="w-full h-full object-cover [image-rendering:pixelated]" />
+              <img src={image} alt="" className="h-full w-full object-cover [image-rendering:pixelated]" />
             ) : (
-              <span className="text-3xl opacity-50">🎁</span>
+              <Icon glyph="photo" size={40} className="hc-muted" />
             )}
           </div>
-          <div className="font-semibold text-sm truncate">{name || "Item name"}</div>
-          <div className="text-xs text-muted-foreground line-clamp-2 min-h-8 mt-0.5">
-            {description || "Description shows up here."}
-          </div>
+          <div className="truncate text-sm font-bold">{name || "Item name"}</div>
+          <p className="hc-caption mt-0.5 line-clamp-2 min-h-8 text-xs">{description || "Description shows up here."}</p>
           <div className="mt-2">
-            <span className="inline-flex items-center rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 px-2 py-0.5 text-xs font-semibold tabular-nums">
-              {price ? Number(price).toLocaleString() : "0"} px
-            </span>
+            <Badge tone="success">{price ? Number(price).toLocaleString() : "0"} px</Badge>
           </div>
-        </div>
+        </Card>
       </div>
     </form>
   );

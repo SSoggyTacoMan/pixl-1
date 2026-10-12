@@ -1,3 +1,5 @@
+/* eslint-disable @next/next/no-img-element */
+import { Suspense, type ReactNode } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
@@ -44,25 +46,47 @@ import {
 import { ReviewPipelineSteps } from "@/app/_components/ReviewPipelineSteps";
 import { SecondPassChecklist } from "@/app/_components/SecondPassChecklist";
 import { hackatimeCutoffUnix, hackatimeCutoffLabel } from "@/app/_generated/config";
-import { PendingButton } from "@/app/_components/PendingButton";
 import { ReviewDetailTabs } from "@/app/_components/ReviewDetailTabs";
 import { ReviewHeartbeat } from "@/app/_components/ReviewHeartbeat";
 import { ProjectNotes } from "@/app/_components/ProjectNotes";
 import { LevelBadge, TypeBadge, ShipBadges, StatusBadge, BeaconBadge, FundingBadge } from "@/app/_components/ProjectBadges";
+import { CardSkeleton } from "@/app/_components/Loading";
 import { slackHandle } from "@/lib/slack";
 import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
 import { ShowReviewerNames } from "@/app/_components/ShowReviewerNames";
 import { liveAlias, redactBuilderDetails, reviewerName } from "@/lib/liveMode";
 import { unshipWarning } from "@/lib/unship";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  ActionButton,
+  Avatar,
+  Badge,
+  ButtonLink,
+  Callout,
+  Card,
+  CardHeader,
+  Checkbox,
+  CountBadge,
+  DescriptionList,
+  Details,
+  EmptyState,
+  Field,
+  Flash,
+  Icon,
+  Input,
+  Mono,
+  Muted,
+  NativeSelect,
+  Table,
+  TextLink,
+  Textarea,
+  buttonClass,
+  formatDate,
+  formatDateTime,
+  type GlyphName,
+  type Tone,
+} from "@/app/_ui/ui";
+import Tabs from "@/app/_ui/Tabs";
+import { Await } from "./Await";
 
 export const dynamic = "force-dynamic";
 
@@ -93,20 +117,45 @@ function ago(iso: string | null): string {
   return `${Math.floor(d / 60_000)}m ago`;
 }
 
-const TRUST_VARIANT = (
-  level: string,
-): "success" | "destructive" | "warning" | "info" | "secondary" =>
-  level === "green"
-    ? "success"
-    : level === "red" || level === "convicted"
-      ? "destructive"
-      : level === "yellow" || level === "suspected"
-        ? "warning"
-        : "secondary";
+function trustTone(level: string): Tone {
+  if (level === "green") return "success";
+  if (level === "red" || level === "convicted") return "danger";
+  if (level === "yellow" || level === "suspected") return "warning";
+  return "neutral";
+}
 
-// Hackatime returns "blue" for accounts it hasn't scored yet.
-const TRUST_LABEL = (level: string): string =>
-  level === "blue" ? "unscored" : level;
+function trustText(level: string): string {
+  if (level === "green") return "No fraud flags on this account.";
+  if (level === "red" || level === "convicted")
+    return "Hackatime has convicted this account of fraud. Do not credit without digging.";
+  if (level === "yellow" || level === "suspected") return "Hackatime suspects this account. Verify carefully.";
+  return "Not scored yet.";
+}
+
+// A titled block of free text the builder (or the system) attached to the ship.
+function NoteCallout({
+  tone,
+  icon,
+  title,
+  children,
+}: {
+  tone: "warning" | "danger" | "info" | "success" | "neutral";
+  icon: GlyphName;
+  title: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <Callout tone={tone} icon={icon}>
+      <p className="font-bold">{title}</p>
+      <div className="mt-1 whitespace-pre-wrap break-words">{children}</div>
+    </Callout>
+  );
+}
+
+const HOURS_COLOR = { hackatime: "var(--hc-blue)", journals: "#e0701f" };
+
+const VOID_PAYOUT_LABEL =
+  "This was the first-pass reviewer's mistake. Void their payout and take the pixels back instead of keeping it.";
 
 export default async function ReviewDetail({
   params,
@@ -134,9 +183,6 @@ export default async function ReviewDetail({
   const rn = (label: string | null | undefined, fallback?: string) =>
     reviewerName(label, viewer, hideReviewers, fallback);
 
-  // getProject and listCollaboratorsForProject don't depend on each other
-  // (the latter only needs projectId), so they run together instead of one
-  // after the other.
   const [data, allCollaborators, blackoutEntry, notes] = await Promise.all([
     getProject(projectId),
     listCollaboratorsForProject(projectId),
@@ -145,8 +191,8 @@ export default async function ReviewDetail({
   ]);
   if (!data) notFound();
   const { project: p, journals, reviewAudits } = data;
-  // A reviewer restricted to one queue can't open a project from the other ,
-  // treat it the same as a missing project rather than exposing that it exists.
+  // A reviewer restricted to one queue can't open a project from the other.
+  // Treat it the same as a missing project rather than exposing that it exists.
   if (access.reviewQueues !== "both" && p.kind !== access.reviewQueues) notFound();
   // The Trial this project was shipped for, if the player flagged one at ship
   // time (joined in getProject). null = they built their own idea.
@@ -155,20 +201,17 @@ export default async function ReviewDetail({
   ).sidequests;
 
   const isFinalStage = p.status === "second_review";
-  // A first-pass reviewer proposing a ban skips Robert entirely - it goes
+  // A first-pass reviewer proposing a ban skips Robert entirely: it goes
   // straight to a full ReviewForm confirm/overturn by a different
   // canSecondPass reviewer (see the isProposedBan gate in reviewProject,
   // app/actions.ts), never through fraud review.
   const isProposedBan = isFinalStage && p.first_pass_verdict === "banned";
-  // Fraud review now happens at Robert (p.status "fraud_review", shown
-  // read-only on the Second pass tab - see listSecondReviewProjects) - a
-  // project only ever reaches second_review once Robert's score has already
-  // landed, carrying second_pass_verdict "not_fraud" with it (see
-  // robertSync.ts), so spotCheckStage is the only thing isFinalStage can
-  // mean here besides a proposed ban.
+  // A project only reaches second_review once Robert's score has landed,
+  // carrying second_pass_verdict "not_fraud" with it (see robertSync.ts), so
+  // the spot check is the only thing isFinalStage can mean besides a proposed ban.
   const spotCheckStage = isFinalStage && p.second_pass_verdict === "not_fraud";
   // Owner of the project, or a collaborator on it, pending invites included
-  // (all are paid on approval, so none may review it - owners included).
+  // (all are paid on approval, so none may review it, owners included).
   // Mirrors isOwnProject in app/actions.ts.
   const isOwn =
     (!!p.users?.slack_id && p.users.slack_id === viewer) ||
@@ -176,9 +219,8 @@ export default async function ReviewDetail({
       (c) => (c.status === "accepted" || c.status === "pending") && !!c.users?.slack_id && c.users.slack_id === viewer,
     );
   const isHeld = !!p.hold_at;
-  // hold_by is stored as "Name (SlackID)" (see holdReview in app/actions.ts) -
-  // parse the id back out to tell whether this viewer is the one who set it,
-  // since only they (or an owner) may release it.
+  // hold_by is stored as "Name (SlackID)" (see holdReview in app/actions.ts).
+  // Only the reviewer who set it (or an owner) may release it.
   const heldByMe = isHeld && p.hold_by?.match(/\(([^)]+)\)\s*$/)?.[1] === viewer;
   const canReview =
     !isHeld &&
@@ -191,19 +233,13 @@ export default async function ReviewDetail({
   const unshipNote = canSecondPass && !isOwn && !isHeld ? unshipWarning(p.status) : null;
   const shippedAt = (p as { shipped_at?: string | null }).shipped_at ?? null;
 
-  // Everything below only depends on `p` (already resolved above), not on
-  // each other, so they run concurrently rather than as a chain of
-  // sequential round-trips - same conditions and fallbacks as before, just
-  // not waited on one at a time.
   const [claim, playerReBefore, firstPassAuditNote, bountyEventsResult] = await Promise.all([
-    canReview
-      ? claimReview(projectId, viewer)
-      : Promise.resolve({ ok: true as const, by: undefined }),
-    // The RE the player already holds, excluding this project - this is what
-    // sets the rate they'll be paid at, so the reviewer sees it before deciding.
+    canReview ? claimReview(projectId, viewer) : Promise.resolve({ ok: true as const, by: undefined }),
+    // The RE the player already holds, excluding this project. It sets the
+    // rate they'll be paid at, so the reviewer sees it before deciding.
     lifetimeRe(p.user_id, projectId),
     // So the final reviewer starts from what the first reviewer already wrote
-    // instead of a blank form - they can still edit or overturn any of it.
+    // instead of a blank form. They can still edit or overturn any of it.
     isFinalStage && p.first_pass_by ? getFirstPassAuditNote(projectId) : Promise.resolve(null),
     shippedAt
       ? db
@@ -215,73 +251,90 @@ export default async function ReviewDetail({
           .gt("ends_at", shippedAt)
       : Promise.resolve({ data: [] as { id: number; name: string; config: Record<string, unknown> }[] }),
   ]);
-  const claimHandle =
-    !claim.ok && claim.by && rn(claim.by) !== "Reviewer" ? await slackHandle(claim.by) : null;
 
+  // ---- Slow external lookups. Started here, never awaited by the page itself:
+  // each one streams into its own <Suspense> boundary below, so GitHub,
+  // Hackatime, the YSWS archive and Slack can't hold up the reviewer's view.
   const hackatimeProjects = p.hackatime_projects ?? [];
+  // Promise.resolve turns the query builder's thenable into a real promise,
+  // so the token query runs once even though two lookups await it.
+  const tokenPromise: Promise<string | null> = hackatimeProjects.length
+    ? Promise.resolve(
+        db
+          .from("users")
+          .select("hackatime_token")
+          .eq("id", p.user_id)
+          .single()
+          .then((r) => (r.data as { hackatime_token?: string } | null)?.hackatime_token ?? null),
+      )
+    : Promise.resolve(null);
+  // Commit stats and tracked time both mutate the same result, so they run as
+  // one chain alongside everything else.
+  const commitsPromise = (async () => {
+    const commits = await fetchCommits(p.repo_url);
+    await attachCommitStats(commits);
+    if (commits.commits.length > 0 && hackatimeProjects.length > 0) {
+      const spans = await fetchUserSpans(p.users?.slack_id, await tokenPromise, hackatimeProjects);
+      if (spans) attachTrackedTime(commits.commits, spans);
+    }
+    return commits;
+  })();
+  const hackatimeReportPromise = hackatimeProjects.length
+    ? tokenPromise.then((tok) => fetchHackatimeReport(p.users?.slack_id, tok, hackatimeProjects))
+    : Promise.resolve(null);
+  const trustPromise = fetchTrustFactor(p.users?.slack_id);
+  const yswsPromise = yswsShipsFor(p.users?.slack_id, p.repo_url, p.demo_url);
+  const ownerHandlePromise = slackHandle(p.users?.slack_id);
+  const bomPromise = p.needs_funding && p.bom_url ? fetchBomRows(p.bom_url) : null;
+  const claimByShown = !claim.ok && !!claim.by && rn(claim.by) !== "Reviewer";
+  const claimHandlePromise = claimByShown ? slackHandle(claim.by) : null;
+  // includeClaimed so prev/next and the "Submission N of M" counter walk the
+  // same queue the list page shows. nextReviewId (the auto-advance after a
+  // verdict) deliberately keeps excluding them, since it picks work for you.
+  const queuePromise = isFinalStage
+    ? listSecondReviewProjects(viewer, undefined, { includeClaimed: true })
+    : listShippedProjects(viewer, undefined, { includeClaimed: true });
+
   // approved_hours is a reviewer's per-entry deflation set from the Journals
-  // tab (see setJournalHours in app/actions.ts) - null means "use the
-  // player's own claimed hours for this entry", so it's a fallback, not a
-  // separate number. Everything below (hours, payoutHours, the Credited
-  // Hours default in ReviewForm) derives from this, so editing one entry's
-  // approved hours immediately changes the whole page's totals.
-  const journalHours =
-    Math.round(
-      journals.reduce((s, j) => s + (Number(j.approved_hours ?? j.hours) || 0), 0) * 10,
-    ) / 10;
-  const rawTrackedHours = Math.round(((p.hackatime_seconds ?? 0) / 3600) * 10) / 10;
-  // For a hardware ship, hackatime_seconds is never pure Hackatime time, the
-  // ship route (projects.ts: trackedSeconds = htSeconds + round(ownerJournalHours
-  // * 3600), owner-only, not collaborators) always folds journal hours into
-  // that same column at the moment of shipping, whether or not a Hackatime
-  // project is linked, so a journal-only hardware ship can meet the 1h floor
-  // (see 0130_project_kind.sql). Subtract the RAW owner-only journal sum (not
-  // the live, possibly-deflated journalHours above) back out, so this stays
-  // the real, never-changing Hackatime-tracked portion - subtracting the live
-  // number here and adding it back below would cancel out any approved_hours
-  // edit, which is exactly why deflating a journal entry previously had no
-  // visible effect on hardware ships.
-  const rawOwnerJournalHours =
-    Math.round(
-      journals
-        .filter((j) => j.user_id === p.user_id)
-        .reduce((s, j) => s + (Number(j.hours) || 0), 0) * 10,
-    ) / 10;
-  // Raw (undeflated) journal-hours total across everyone, mirroring
-  // journalHours above but ignoring any approved_hours override - the gap
-  // between the two is exactly how much a reviewer's per-journal-entry
-  // deflation (see Journals tab / setJournalHours) has taken off the overall
-  // credited total, which stays 1:1 whether this is a hardware or software
-  // ship since hackatimeHours never depends on the live/deflated journalHours.
-  const rawJournalHours =
-    Math.round(journals.reduce((s, j) => s + (Number(j.hours) || 0), 0) * 10) / 10;
-  const journalDeflatedHours = Math.max(0, Math.round((rawJournalHours - journalHours) * 10) / 10);
+  // tab (see setJournalHours in app/actions.ts). null means "use the player's
+  // own claimed hours for this entry". Every total below derives from it, so
+  // deflating one entry changes the whole page's totals.
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+  const sumHours = (rows: typeof journals, approved: boolean) =>
+    round1(rows.reduce((s, j) => s + (Number(approved ? (j.approved_hours ?? j.hours) : j.hours) || 0), 0));
+  const ownerJournals = journals.filter((j) => j.user_id === p.user_id);
+  const journalHours = sumHours(journals, true);
+  const rawTrackedHours = round1((p.hackatime_seconds ?? 0) / 3600);
+  // For a hardware ship, hackatime_seconds is never pure Hackatime time: the
+  // ship route folds the owner's raw journal hours into that column (see
+  // 0130_project_kind.sql). Subtract that RAW owner-only sum back out, not the
+  // live possibly-deflated journalHours, or a deflation edit would cancel out.
+  const rawOwnerJournalHours = sumHours(ownerJournals, false);
+  // The gap between raw and approved journal hours is exactly how much
+  // per-entry deflation has taken off the credited total.
+  const rawJournalHours = sumHours(journals, false);
+  const journalDeflatedHours = Math.max(0, round1(rawJournalHours - journalHours));
   const hackatimeHours =
-    p.kind === "hardware"
-      ? Math.max(0, Math.round((rawTrackedHours - rawOwnerJournalHours) * 10) / 10)
-      : rawTrackedHours;
+    p.kind === "hardware" ? Math.max(0, round1(rawTrackedHours - rawOwnerJournalHours)) : rawTrackedHours;
   // Kept in sync with claimedHoursFor() in actions.ts (the actual server-side
-  // payout cap): real Hackatime-tracked hours plus today's journalHours,
-  // which reacts immediately to a reviewer deflating a journal entry.
-  const hours = Math.round((hackatimeHours + journalHours) * 10) / 10;
+  // payout cap).
+  const hours = round1(hackatimeHours + journalHours);
   const htPct = hours > 0 ? Math.round((hackatimeHours / hours) * 100) : 0;
   const payoutHours = hours;
+  // The owner's own journal hours only, so a collaborator's time stays visible
+  // on a multi-person ship.
+  const ownerJournalHoursOnly = sumHours(ownerJournals, true);
 
-  // Same "hackatime if tracked, else journal" source-of-truth as
-  // claimedHoursFor() in actions.ts uses for the owner, kept consistent so
-  // the cap shown here matches what reviewProject actually enforces.
   const acceptedCollaborators = allCollaborators.filter((c) => c.status === "accepted");
   const collaboratorIds = acceptedCollaborators.map((c) => c.user_id);
   const displayName = (userId: string, real: string): string =>
     live ? liveAlias(userId, p.user_id, collaboratorIds) : real;
   const collaboratorHours = acceptedCollaborators.map((c) => {
-    const cJournalHours =
-      Math.round(
-        journals
-          .filter((j) => j.user_id === c.user_id)
-          .reduce((s, j) => s + (Number(j.approved_hours ?? j.hours) || 0), 0) * 10,
-      ) / 10;
-    const cHackatimeHours = Math.round(((c.hackatime_seconds ?? 0) / 3600) * 10) / 10;
+    const cJournalHours = sumHours(
+      journals.filter((j) => j.user_id === c.user_id),
+      true,
+    );
+    const cHackatimeHours = round1((c.hackatime_seconds ?? 0) / 3600);
     return {
       id: c.id,
       userId: c.user_id,
@@ -291,6 +344,15 @@ export default async function ReviewDetail({
       claimedHours: cHackatimeHours > 0 ? cHackatimeHours : cJournalHours,
     };
   });
+  // Legal name for owners/final reviewers only (builderNameFor); a first-pass
+  // reviewer sees the Slack handle or display name.
+  const ownerNameFor = (handle: string | null) =>
+    displayName(p.user_id, builderNameFor(access, p.users, { handle, fallback: p.user_id }));
+  const contributorsFor = (ownerName: string) => [
+    { userId: p.user_id, name: ownerName, hackatimeHours, journalHours: ownerJournalHoursOnly },
+    ...collaboratorHours,
+  ];
+
   const blackoutForReview: BlackoutReviewData | null =
     isBlackoutReviewable(blackoutEntry) && blackoutEntry.firstQualifiedShipAt
       ? {
@@ -333,146 +395,609 @@ export default async function ReviewDetail({
         }
       : null;
 
-  // The owner's own journal hours only. `journalHours` above pools every
-  // contributor's entries into one number, which is exactly what made a
-  // collaborator's own time invisible on a multi-person ship.
-  const ownerJournalHoursOnly =
-    Math.round(
-      journals
-        .filter((j) => j.user_id === p.user_id)
-        .reduce((s, j) => s + (Number(j.approved_hours ?? j.hours) || 0), 0) * 10,
-    ) / 10;
-
-  // first_pass_hours is a Postgres numeric column - the driver returns it as a
-  // string, which silently zeroed the RE/level lines above (reForHours does a
-  // strict Number.isFinite check that fails on strings) while the payout math
-  // elsewhere happened to still work via implicit numeric coercion on `*`/`-`.
+  // first_pass_hours is a Postgres numeric column the driver returns as a
+  // string, so it has to go through Number() before any RE/level math.
   const formDefaultHours =
     spotCheckStage && p.second_pass_hours != null
       ? Number(p.second_pass_hours)
       : isFinalStage && p.first_pass_hours != null
         ? Number(p.first_pass_hours)
         : payoutHours;
-
   const firstPassAudit = firstPassAuditNote ? parseAuditNote(firstPassAuditNote) : null;
-
-  const firstPassDeflated =
-    p.first_pass_hours != null ? Math.round((hours - p.first_pass_hours) * 10) / 10 : 0;
+  const firstPassDeflated = p.first_pass_hours != null ? round1(hours - p.first_pass_hours) : 0;
   const firstPassCutPct =
-    p.first_pass_hours != null && hours > 0
-      ? Math.round(((hours - p.first_pass_hours) / hours) * 100)
-      : 0;
+    p.first_pass_hours != null && hours > 0 ? Math.round(((hours - p.first_pass_hours) / hours) * 100) : 0;
 
   const ageFlag = turnedNineteenSinceShipping(p.users?.birthday, shippedAt);
   // One day before the global cutoff, for the extend-hours date input's max.
-  const maxExtendDateStr = new Date((hackatimeCutoffUnix - 86_400) * 1000)
-    .toISOString()
-    .slice(0, 10);
-  const bounties: BountyOption[] = ((bountyEventsResult.data ?? []) as {
-    id: number;
-    name: string;
-    config: Record<string, unknown>;
-  }[]).map((ev) => ({
+  const maxExtendDateStr = new Date((hackatimeCutoffUnix - 86_400) * 1000).toISOString().slice(0, 10);
+  const bounties: BountyOption[] = (
+    (bountyEventsResult.data ?? []) as { id: number; name: string; config: Record<string, unknown> }[]
+  ).map((ev) => ({
     id: ev.id,
     name: ev.name,
     reward: Number(ev.config.reward) || 0,
     description: String(ev.config.description ?? ""),
   }));
 
-  // These calls hit GitHub, Hackatime, the YSWS archive, Slack and the DB.
-  // They're independent, so run them concurrently , the page is only as slow as
-  // the slowest one, not their sum. The commit stats + tracked-time attach form
-  // one chain (both mutate `commits`) that runs alongside the rest.
-  const tokenPromise = hackatimeProjects.length
-    ? db
-        .from("users")
-        .select("hackatime_token")
-        .eq("id", p.user_id)
-        .single()
-        .then((r) => (r.data as { hackatime_token?: string } | null)?.hackatime_token ?? null)
-    : Promise.resolve(null);
+  // ---- Builder details for the eligibility check.
+  // PII is encrypted at rest; decryptPII also passes legacy plaintext through.
+  // In live mode nothing is decrypted at all (see redactBuilderDetails).
+  // Name/email/birth date/address are for final reviewers and owners only
+  // (canSeeBuilderPII); a first-pass reviewer gets the age plus "on file" /
+  // "missing" per field, and for them only the birthday is even decrypted.
+  const u = p.users as
+    | {
+        first_name?: string | null;
+        last_name?: string | null;
+        real_name?: string | null;
+        email?: string | null;
+        birthday?: string | null;
+        address_line1?: string | null;
+        address_line2?: string | null;
+        address_city?: string | null;
+        address_state?: string | null;
+        address_country?: string | null;
+        address_postal?: string | null;
+      }
+    | null
+    | undefined;
+  const privileged = canSeeBuilderPII(access);
+  const dec = (v: string | null | undefined) => (live ? "" : decryptPII(v) || "");
+  const present = (v: string | null | undefined) => (live ? "" : v ? "x" : "");
+  const pii = privileged ? dec : present;
+  const birthday = dec(u?.birthday);
+  const country = pii(u?.address_country);
+  const builderView = builderDetailsView(access, isFinalStage, {
+    fullName:
+      [pii(u?.first_name), pii(u?.last_name)].filter(Boolean).join(" ") ||
+      (privileged ? (u?.real_name ?? "") : present(u?.real_name)),
+    email: pii(u?.email),
+    birthday: privileged ? birthday : "",
+    age: ageFrom(birthday),
+    country,
+    address: [pii(u?.address_line1), pii(u?.address_line2), pii(u?.address_city), pii(u?.address_state), pii(u?.address_postal), country]
+      .filter(Boolean)
+      .join(", "),
+  });
+  const builderDetails = redactBuilderDetails(live, {
+    fullName: builderView.fullName,
+    email: builderView.email,
+    ageLabel: builderView.ageLabel,
+    country: builderView.country,
+    address: builderView.address ?? "",
+  });
 
-  const commitsChain = (async () => {
-    const commits = await fetchCommits(p.repo_url);
-    await attachCommitStats(commits);
-    if (commits.commits.length > 0 && hackatimeProjects.length > 0) {
-      const spans = await fetchUserSpans(p.users?.slack_id, await tokenPromise, hackatimeProjects);
-      if (spans) attachTrackedTime(commits.commits, spans);
-    }
-    return commits;
-  })();
+  const repoUrl = isSafeUrl(p.repo_url) ? p.repo_url : null;
+  const demoUrl = isSafeUrl(p.demo_url) ? p.demo_url : null;
+  const cartScreenshots = p.cart_screenshot_urls ?? [];
+  const returnTo = `/review/${p.id}`;
 
-  const hackatimeReportPromise = hackatimeProjects.length
-    ? tokenPromise.then((tok) => fetchHackatimeReport(p.users?.slack_id, tok, hackatimeProjects))
-    : Promise.resolve(null);
+  const claimCallout = (handle: string | null) => (
+    <Callout tone="warning" icon="private">
+      Heads up: {handle ?? (claimByShown ? claim.by : "another reviewer")} is already reviewing this submission.
+      Avoid double-grading it.
+    </Callout>
+  );
 
-  const [commits, trust, yswsShips, ownerHandle, queue, hackatimeReport, bomRows] = await Promise.all([
-    commitsChain,
-    fetchTrustFactor(p.users?.slack_id),
-    yswsShipsFor(p.users?.slack_id, p.repo_url, p.demo_url),
-    slackHandle(p.users?.slack_id),
-    // includeClaimed so prev/next and the "Submission N of M" counter below
-    // walk the same queue the list page shows. nextReviewId (the auto-advance
-    // after a verdict) deliberately keeps excluding them - that one picks a
-    // project for you, so it should only ever pick actionable work.
-    isFinalStage
-      ? listSecondReviewProjects(viewer, undefined, { includeClaimed: true })
-      : listShippedProjects(viewer, undefined, { includeClaimed: true }),
-    hackatimeReportPromise,
-    p.bom_url ? fetchBomRows(p.bom_url) : Promise.resolve(null),
-  ]);
-  // Legal name for owners/final reviewers only (builderNameFor); a first-pass
-  // reviewer sees the Slack handle or display name.
-  const ownerName = displayName(p.user_id, builderNameFor(access, p.users, { handle: ownerHandle, fallback: p.user_id }));
-  // Per-person time, only meaningful once there's more than one contributor.
-  // The "Logged hours" card pools everyone together, so on a collaborative
-  // ship it can't answer "who actually did what" on its own.
-  const contributors = [
-    { userId: p.user_id, name: ownerName, hackatimeHours, journalHours: ownerJournalHoursOnly },
-    ...collaboratorHours.map((c) => ({
-      userId: c.userId,
-      name: c.name,
-      hackatimeHours: c.hackatimeHours,
-      journalHours: c.journalHours,
-    })),
+  const ownerCard = (ownerName: string) => {
+    const contributors = contributorsFor(ownerName);
+    return (
+      <Card padding="compact">
+        <div className="flex flex-wrap items-center gap-3">
+          <Avatar src={null} size={40} />
+          <div className="min-w-0 flex-1">
+            <TextLink href={`/players/${p.user_id}`} className="block truncate font-bold">
+              {ownerName}
+            </TextLink>
+            <div className="text-sm">
+              {!live && p.users?.slack_id && (
+                <TextLink href={`https://hackclub.slack.com/team/${p.users.slack_id}`} external>
+                  <Mono>{p.users.slack_id}</Mono>
+                </TextLink>
+              )}
+              {acceptedCollaborators.length > 0 && (
+                <Muted>
+                  {!live && p.users?.slack_id ? " · " : ""}with {collaboratorHours.map((c) => c.name).join(", ")}
+                </Muted>
+              )}
+            </div>
+          </div>
+          {!live && p.users?.slack_id && (
+            <ButtonLink
+              href={`https://hackclub.slack.com/team/${p.users.slack_id}`}
+              external
+              variant="outline"
+              size="sm"
+              icon="slack"
+            >
+              Open in Slack
+            </ButtonLink>
+          )}
+        </div>
+        {acceptedCollaborators.length > 0 && (
+          <div className="mt-4 border-t border-[var(--border)] pt-4">
+            <p className="hc-eyebrow mb-2">Time by contributor</p>
+            <DescriptionList
+              items={contributors.map((c) => [
+                c.name,
+                <Mono key={c.userId}>
+                  {fmtHM(c.hackatimeHours)} Hackatime · {fmtHM(c.journalHours)} journals
+                </Mono>,
+              ])}
+            />
+            <p className="hc-caption mt-2 text-xs">
+              Journal entries are labelled by who wrote them, and each commit in the Commits tab shows its own author.
+            </p>
+          </div>
+        )}
+      </Card>
+    );
+  };
+
+  // ---- Right column tabs.
+
+  const reviewTab = (
+    <div className="flex flex-col gap-4 pt-4">
+      {blackoutEntry && !blackoutForReview && blackoutEntry.status !== "entered" && (
+        <BlackoutSummary entry={blackoutEntry} />
+      )}
+      {canReview ? (
+        <>
+          {spotCheckStage && p.robert_trust_score != null && (
+            <Card padding="compact">
+              <h3 className="hc-heading text-base">Robert fraud review</h3>
+              <p className="hc-caption mt-1 text-sm">
+                Trust score <Mono>{p.robert_trust_score}/10</Mono>
+                {p.robert_trust_score <= ROBERT_FRAUD_THRESHOLD ? ", in Robert's \"Fraud\" range" : ""}
+              </p>
+              {p.robert_note && <p className="mt-2 whitespace-pre-wrap break-words text-sm">{p.robert_note}</p>}
+            </Card>
+          )}
+          <Card>
+            <h3 className="hc-heading text-base">
+              {isProposedBan ? "Final pass" : spotCheckStage ? "Spot check" : "First pass"}
+            </h3>
+            <p className="hc-caption mt-1 mb-4 text-sm">
+              {isProposedBan
+                ? "A first-pass reviewer proposed banning this. Confirm it, or approve to overturn. Approving credits pixels at the player's level rate ($4-6/hr in px) and ships it. Every verdict needs a note. You can only lower the credited hours."
+                : spotCheckStage
+                  ? "The real final verdict, after Robert's fraud review. Approving credits pixels at the player's level rate ($4-6/hr in px) and ships it. Every verdict needs a note. You can only lower the credited hours."
+                  : "Every verdict needs a note. Approving sends this to Robert for fraud review before pixels are credited, so even with final-reviewer rights your first look is still a proposal. You can only lower the credited hours."}
+            </p>
+            <ReviewForm
+              projectId={p.id}
+              repoUrl={p.repo_url}
+              demoUrl={p.demo_url}
+              claimedHours={payoutHours}
+              defaultHours={formDefaultHours}
+              journalDeflatedHours={journalDeflatedHours}
+              isSuper={access.isOwner}
+              canEditSubmission={access.canEditSubmission}
+              secondPass={spotCheckStage || isProposedBan}
+              bounties={bounties}
+              trial={trial?.name ? { name: trial.name, minHours: trial.min_hours ?? null } : null}
+              ageFlag={ageFlag}
+              collaborators={collaboratorHours}
+              blackout={blackoutForReview}
+              tier={Number(p.level) || 1}
+              playerReBefore={playerReBefore}
+              fundingUsd={p.needs_funding ? Number(p.funding_usd ?? 0) : 0}
+              currentName={p.name}
+              currentDescription={p.description}
+              currentImageUrl={p.image_url}
+              firstPass={
+                firstPassAudit
+                  ? {
+                      technicalFeatures: firstPassAudit["TECHNICAL FEATURES"],
+                      deflationReason: firstPassAudit["DEFLATION REASON"],
+                      ageJustification: firstPassAudit["AGE JUSTIFICATION"],
+                      notes: firstPassAudit["NOTES"],
+                      note: p.first_pass_note,
+                    }
+                  : undefined
+              }
+              serverDraft={
+                p.review_draft ? { draft: p.review_draft, by: p.review_draft_by, at: p.review_draft_at } : undefined
+              }
+            />
+          </Card>
+        </>
+      ) : isOwn ? (
+        <EmptyState title="Your own submission" icon="private">
+          Someone else has to review it.
+        </EmptyState>
+      ) : p.status === "fraud_review" ? (
+        <Card>
+          <p className="text-sm">
+            Passed the first review and waiting on Robert&apos;s fraud review. Nothing to action here until it comes
+            back.
+          </p>
+          {p.robert_error && (
+            <div className="mt-3">
+              <Callout tone="danger" icon="important">
+                Last submission to Robert failed: {p.robert_error}. The reconcile job will retry it.
+              </Callout>
+            </div>
+          )}
+          {canSecondPass && (
+            <form action={skipRobertPass} className="mt-3">
+              <input type="hidden" name="projectId" value={p.id} />
+              <ActionButton
+                variant="outline"
+                size="sm"
+                pendingLabel="Skipping..."
+                confirm="Skip Robert's fraud review and send this project straight to Spot check?"
+              >
+                Skip Robert pass
+              </ActionButton>
+            </form>
+          )}
+        </Card>
+      ) : isFinalStage ? (
+        <Callout tone="neutral" icon="clock">
+          Passed the first review. Waiting on a final reviewer to sign off before pixels are credited.
+        </Callout>
+      ) : (
+        <Callout tone="neutral" icon="checkmark">
+          <span className="inline-flex flex-wrap items-center gap-2">
+            Already reviewed <StatusBadge status={p.status} />
+          </span>
+          <p className="mt-1">
+            See the{" "}
+            <TextLink href={`/projects/${p.id}`} className="font-bold">
+              project page
+            </TextLink>{" "}
+            to revert or take further action.
+          </p>
+        </Callout>
+      )}
+    </div>
+  );
+
+  const actionsTab = (
+    <div className="flex flex-col gap-4 pt-4">
+      <Card padding="compact">
+        <div className="flex flex-col gap-4">
+          {!isOwn && (
+            <form action={setProjectLevel} className="flex items-end gap-2">
+              <input type="hidden" name="projectId" value={p.id} />
+              <Field label="Re-grade tier" className="flex-1">
+                <NativeSelect name="level" defaultValue={p.level ?? 1}>
+                  <option value={1}>T1 · Spark</option>
+                  <option value={2}>T2 · Signal</option>
+                  <option value={3}>T3 · Grid</option>
+                  <option value={4}>T4 · Nexus</option>
+                </NativeSelect>
+              </Field>
+              <ActionButton variant="outline" pendingLabel="Saving...">
+                Set
+              </ActionButton>
+            </form>
+          )}
+          <form action={toggleProjectPeak} className="flex items-center justify-between gap-3">
+            <input type="hidden" name="projectId" value={p.id} />
+            {!p.is_peak && <input type="hidden" name="isPeak" value="1" />}
+            <div>
+              <p className="hc-heading text-sm">Beacon</p>
+              <p className="hc-caption text-xs">Nominate a standout project. Cosmetic only, never affects payout.</p>
+            </div>
+            <ActionButton
+              size="sm"
+              variant={p.is_peak ? "outline" : "cream"}
+              icon={p.is_peak ? undefined : "rep"}
+              pendingLabel={p.is_peak ? "Removing..." : "Marking..."}
+            >
+              {p.is_peak ? "Remove" : "Mark"}
+            </ActionButton>
+          </form>
+        </div>
+      </Card>
+
+      {!isHeld && (
+        <Details summary="Put this review on hold">
+          <form action={holdReview} className="flex flex-col gap-3">
+            <input type="hidden" name="projectId" value={p.id} />
+            <input type="hidden" name="returnTo" value={returnTo} />
+            <p className="hc-caption text-sm">
+              Blocks any verdict on this project until you or an admin releases it, e.g. mid-investigation. It stays
+              visible in the queue.
+            </p>
+            <Textarea name="reason" required rows={2} placeholder="Why hold this (internal, not shown to the player)..." />
+            <ActionButton
+              variant="outline"
+              pendingLabel="Holding..."
+              confirm="Hold this review? Nobody can submit a verdict on it until you or another owner releases it."
+            >
+              Hold this review
+            </ActionButton>
+          </form>
+        </Details>
+      )}
+
+      {canReview && (
+        <Details summary="Extend hours cutoff">
+          <form action={extendHoursCutoff} className="flex flex-col gap-3">
+            <input type="hidden" name="projectId" value={p.id} />
+            <p className="hc-caption text-sm">
+              Normally only hours from {hackatimeCutoffLabel} onward count. If this project genuinely started earlier
+              and paused (verify against Hackatime&apos;s first-activity date), pick how far back to count from. This
+              re-pulls their Hackatime spans and raises the credited total, it never lowers it.
+            </p>
+            <Input
+              type="date"
+              name="since"
+              required
+              max={maxExtendDateStr}
+              defaultValue={
+                p.hours_extended_since ? new Date(p.hours_extended_since).toISOString().slice(0, 10) : undefined
+              }
+            />
+            <Textarea
+              name="note"
+              required
+              rows={2}
+              placeholder="Why count from this date (the player will see this in a DM)..."
+            />
+            <ActionButton
+              variant="outline"
+              pendingLabel="Extending..."
+              confirm="Recount this project's hours from that date? This only ever raises the credited total."
+            >
+              Extend cutoff
+            </ActionButton>
+          </form>
+        </Details>
+      )}
+
+      {canReview && isFinalStage && (
+        <Details summary="Send back to first pass">
+          <form action={sendBackToFirstPass} className="flex flex-col gap-3">
+            <input type="hidden" name="projectId" value={p.id} />
+            <p className="hc-caption text-sm">
+              Not confident enough to confirm or overturn the first pass yourself? Send it back to the front of the
+              queue for a fresh first-pass look instead. No verdict, no pixels credited yet. The first-pass reviewer
+              is still paid in full unless you flag it as their mistake below.
+            </p>
+            <Textarea
+              name="reason"
+              required
+              rows={2}
+              placeholder="Why send this back (internal, not shown to the player)..."
+            />
+            <Checkbox name="voidPayout" value="1" label={VOID_PAYOUT_LABEL} />
+            <ActionButton variant="cream" pendingLabel="Sending back..." confirm="Send this back to first pass?">
+              Send back to first pass
+            </ActionButton>
+          </form>
+        </Details>
+      )}
+
+      {unshipNote && (
+        <Details summary="Unship to draft">
+          <form action={unshipProject} className="flex flex-col gap-3">
+            <input type="hidden" name="projectId" value={p.id} />
+            <p className="hc-caption text-sm">
+              Takes this out of the queue and hands it back to the owner as an editable draft. They fix it and
+              reship, and review starts from scratch: the first-pass verdict (including a ban proposal), notes and
+              second-pass checklist are all cleared. The owner and any collaborators are notified with your reason.
+            </p>
+            <Callout tone="warning" icon="important">
+              {unshipNote}
+            </Callout>
+            <Textarea name="reason" required rows={2} placeholder="Why unship this (shown to the owner)..." />
+            <Checkbox name="voidPayout" value="1" label={VOID_PAYOUT_LABEL} />
+            <ActionButton
+              variant="danger"
+              pendingLabel="Unshipping..."
+              confirm={`${unshipNote}\n\nUnship this project back to a draft? The owner is notified and it leaves the queue.`}
+            >
+              Unship to draft
+            </ActionButton>
+          </form>
+        </Details>
+      )}
+
+      {canReview && canModerate && (
+        <Details summary="Ban project (permanent)">
+          <form action={banProject} className="flex flex-col gap-3">
+            <input type="hidden" name="projectId" value={p.id} />
+            <input type="hidden" name="returnTo" value={returnTo} />
+            <p className="hc-caption text-sm">
+              Permanently bans this project. It can never be shipped again and is hidden everywhere. Different from
+              requesting changes. Reversible by staff only.
+            </p>
+            <Textarea name="reason" required rows={2} placeholder="Reason for the ban (shown to the owner)..." />
+            <ActionButton
+              variant="danger"
+              pendingLabel="Banning..."
+              confirm="Permanently ban this project? It can never be shipped again."
+            >
+              Ban project
+            </ActionButton>
+          </form>
+        </Details>
+      )}
+    </div>
+  );
+
+  const overviewTab = (
+    <div className="flex flex-col gap-4 pt-4">
+      <Card>
+        <p className="hc-eyebrow">Logged hours</p>
+        <p className="mt-1 mb-3">
+          <span className="hc-stat-value">{fmtHM(hours)}</span> <Muted className="text-sm">logged</Muted>
+        </p>
+        {/* Blue vs a deepened Hack Club orange: checked for colorblind
+            separation and contrast on both themes (blue/purple wasn't). */}
+        <div className="flex h-2 gap-0.5 rounded-full bg-[var(--sunken)]">
+          {htPct > 0 && (
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${htPct}%`, background: HOURS_COLOR.hackatime }}
+              title={`Hackatime: ${fmtHM(hackatimeHours)}`}
+            />
+          )}
+          {htPct < 100 && hours > 0 && (
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${100 - htPct}%`, background: HOURS_COLOR.journals }}
+              title={`Journals: ${fmtHM(journalHours)}`}
+            />
+          )}
+        </div>
+        <div className="mt-4 flex flex-col gap-2 text-sm">
+          <a href="#hackatime" className="hc-link flex items-center gap-2" title="See the full Hackatime breakdown">
+            <span className="hc-dot" style={{ background: HOURS_COLOR.hackatime }} />
+            Hackatime
+            <span className="hc-mono ml-auto">{fmtHM(hackatimeHours)}</span>
+          </a>
+          <div className="flex items-center gap-2">
+            <span className="hc-dot" style={{ background: HOURS_COLOR.journals }} />
+            Journals
+            <span className="hc-mono ml-auto">{fmtHM(journalHours)}</span>
+          </div>
+        </div>
+        {p.hours_extended_since && (
+          <p className="hc-caption mt-3 border-t border-[var(--border)] pt-3 text-xs">
+            Counting hours from <strong>{formatDate(p.hours_extended_since)}</strong> (before the{" "}
+            {hackatimeCutoffLabel} cutoff), set by <strong>{p.hours_extended_by}</strong>: {p.hours_extended_note}
+          </p>
+        )}
+      </Card>
+
+      <Suspense fallback={null}>
+        <Await promise={trustPromise}>
+          {(trust) =>
+            trust && (
+              <Card padding="compact">
+                <div className="flex items-center gap-3">
+                  <Badge tone={trustTone(trust.level)}>{trust.level === "blue" ? "unscored" : trust.level}</Badge>
+                  <span className="hc-caption text-sm">Hackatime trust factor. {trustText(trust.level)}</span>
+                </div>
+              </Card>
+            )
+          }
+        </Await>
+      </Suspense>
+
+      {isFinalStage && (
+        <Card>
+          <CardHeader title="First pass" icon="history" />
+          {p.first_pass_verdict && p.first_pass_verdict !== "approved" && (
+            <div className="mb-3">
+              <Callout tone="danger" icon="important">
+                First reviewer proposed {p.first_pass_verdict === "banned" ? "a BAN" : "changes"}. Confirm it, or
+                approve to overturn.
+                {p.first_pass_verdict === "banned" && !access.isOwner && (
+                  <p className="mt-1">
+                    Only an owner can confirm a ban. Approving sends it back through fraud review and the owner spot
+                    check.
+                  </p>
+                )}
+              </Callout>
+            </div>
+          )}
+          <p className="text-sm">
+            {p.first_pass_verdict === "banned"
+              ? "Ban proposed by "
+              : p.first_pass_verdict === "needs_changes"
+                ? "Changes proposed by "
+                : "Passed by "}
+            <strong>{rn(p.first_pass_by, "a reviewer")}</strong>
+            {p.first_pass_hours != null && (
+              <>
+                {" "}
+                · credited <Mono>{p.first_pass_hours}h</Mono> of <Mono>{hours}h</Mono> claimed
+              </>
+            )}
+          </p>
+          {firstPassDeflated > 0 && (
+            <p className="mt-1 text-sm text-[var(--hc-red)]">
+              Deflated {firstPassDeflated}h{firstPassCutPct > 0 ? ` (-${firstPassCutPct}%)` : ""}
+            </p>
+          )}
+          {p.first_pass_note && (
+            <div className="mt-3">
+              <p className="hc-eyebrow mb-1">Their note</p>
+              <p className="whitespace-pre-wrap break-words text-sm">{p.first_pass_note}</p>
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Card>
+        <CardHeader title="Pipeline" icon="list-checked" />
+        <div className="flex flex-col gap-4">
+          <ReviewPipelineSteps
+            shippedAt={p.shipped_at}
+            firstPassAt={p.first_pass_at}
+            status={p.status}
+            airtableRecordId={p.airtable_record_id}
+          />
+          {isFinalStage && canSecondPass && (
+            <SecondPassChecklist
+              projectId={p.id}
+              values={{
+                second_pass_telescreen_checked: Boolean(p.second_pass_telescreen_checked),
+                second_pass_hours_deflated: Boolean(p.second_pass_hours_deflated),
+                second_pass_heartbeats_added: Boolean(p.second_pass_heartbeats_added),
+              }}
+            />
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+
+  const rightTabs = [
+    { key: "review", label: "Review", content: reviewTab },
+    { key: "actions", label: "Actions", content: actionsTab },
+    { key: "overview", label: "Overview", content: overviewTab },
+    {
+      key: "notes",
+      label: (
+        <span className="flex items-center gap-2">
+          Notes {notes.length > 0 && <CountBadge>{notes.length}</CountBadge>}
+        </span>
+      ),
+      content: (
+        <div className="pt-4">
+          <ProjectNotes projectId={p.id} notes={notes} />
+        </div>
+      ),
+    },
   ];
-  const contributorNames = Object.fromEntries(contributors.map((c) => [c.userId, c.name]));
-  // projects.id is a Postgres bigint; compare numerically rather than with
-  // strict equality so a bigint serialized as a string by the DB client
-  // doesn't silently miss the match and strand prev/next at "not in queue".
-  const idx = queue.findIndex((q) => Number(q.id) === projectId);
-  const prev = idx > 0 ? queue[idx - 1] : null;
-  const next = idx >= 0 && idx < queue.length - 1 ? queue[idx + 1] : null;
 
   return (
-    <div>
+    <div className="hc-review flex flex-col gap-6">
       {claim.ok && canReview && <ReviewHeartbeat projectId={projectId} />}
-      <div className="flex items-center justify-between gap-3">
-        <Link href="/review" className="text-sm text-brand font-medium hover:underline">
-          ← Needs review
-        </Link>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <ButtonLink href="/review" variant="ghost" size="sm" icon="view-back">
+          Review queue
+        </ButtonLink>
         {live && <ShowReviewerNames hidden={hideReviewers} />}
       </div>
 
-      {error && (
-        <Alert variant="destructive" className="mt-4">
-          <AlertDescription className="font-medium text-destructive">{error}</AlertDescription>
-        </Alert>
-      )}
-      {!claim.ok && (
-        <Alert className="mt-4 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10">
-          <AlertDescription className="text-amber-800 dark:text-amber-300">
-            Heads up , {claimHandle ?? (claim.by && rn(claim.by) !== "Reviewer" ? claim.by : "another reviewer")} is already reviewing this
-            submission. Avoid double-grading it.
-          </AlertDescription>
-        </Alert>
+      {(error || !claim.ok) && (
+        <div className="flex flex-col gap-3">
+          <Flash error={error} />
+          {!claim.ok &&
+            (claimHandlePromise ? (
+              <Suspense fallback={claimCallout(null)}>
+                <Await promise={claimHandlePromise}>{(handle) => claimCallout(handle)}</Await>
+              </Suspense>
+            ) : (
+              claimCallout(null)
+            ))}
+        </div>
       )}
 
-      <div className="flex flex-col lg:flex-row gap-6 pb-24 mt-4">
-        {/* main */}
-        <div className="flex-1 min-w-0 space-y-5">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_460px] xl:gap-8">
+        <div className="flex min-w-0 flex-col gap-6">
           <div>
-            <div className="flex items-center gap-2 flex-wrap mb-3">
+            <div className="flex flex-wrap items-center gap-2">
               <StatusBadge status={p.status} />
               <LevelBadge level={p.level} />
               <TypeBadge type={p.project_type} />
@@ -481,1000 +1006,438 @@ export default async function ReviewDetail({
               {p.is_peak && <BeaconBadge />}
               {blackoutEntry && blackoutEntry.status !== "entered" && <BlackoutBadge />}
               {trial?.name && (
-                <Badge variant="secondary" className="font-bold">
+                <Badge tone="cyan">
                   Trial: {trial.name}
                   {trial.min_hours != null ? ` · min ${trial.min_hours}h` : ""}
                 </Badge>
               )}
-              <span className="text-xs text-muted-foreground font-mono ml-auto">#{p.id}</span>
+              {isHeld && (
+                <Badge tone="warning" icon="private">
+                  On hold
+                </Badge>
+              )}
+              <Muted className="ml-auto text-sm">
+                <Mono>#{p.id}</Mono>
+              </Muted>
             </div>
-            {!isOwn && (
-              <form action={setProjectLevel} className="flex items-center gap-2 mb-3 text-sm">
-                <input type="hidden" name="projectId" value={p.id} />
-                <label className="text-muted-foreground">Re-grade tier</label>
-                <select
-                  name="level"
-                  defaultValue={p.level ?? 1}
-                  className="rounded-md border border-border bg-background px-2 py-1 text-sm"
-                >
-                  <option value={1}>T1 · Spark</option>
-                  <option value={2}>T2 · Signal</option>
-                  <option value={3}>T3 · Grid</option>
-                  <option value={4}>T4 · Nexus</option>
-                </select>
-                <PendingButton variant="secondary" size="sm" pendingText="Saving…">
-                  Set
-                </PendingButton>
-              </form>
-            )}
-            <h1 className="text-3xl md:text-4xl font-bold tracking-tight break-words">{p.name}</h1>
-            {p.description && (
-              <div
-                className="md text-muted-foreground mt-2 break-words"
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(p.description) }}
-              />
-            )}
+            <h1 className="hc-title mt-2 break-words">{p.name}</h1>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {repoUrl ? (
+                <>
+                  <ButtonLink href={repoUrl} external variant="outline" size="sm" icon="github">
+                    Repo
+                  </ButtonLink>
+                  <ButtonLink
+                    href={`${repoUrl.replace(/\/$/, "")}#readme`}
+                    external
+                    variant="outline"
+                    size="sm"
+                    icon="docs"
+                  >
+                    README
+                  </ButtonLink>
+                </>
+              ) : (
+                <Badge tone="danger">No repo</Badge>
+              )}
+              {demoUrl ? (
+                <ButtonLink href={demoUrl} external variant="outline" size="sm" icon="link">
+                  Live demo
+                </ButtonLink>
+              ) : (
+                <Badge tone="danger">No demo</Badge>
+              )}
+              {/* Final pass only: the Telescreen workbench is what a final
+                  reviewer cross-checks heartbeats against. One button per
+                  linked Hackatime project so &p= opens that project's
+                  heartbeats, or a single unscoped link when none is linked. */}
+              {!live && isFinalStage && (
+                <Suspense fallback={null}>
+                  <Await promise={hackatimeReportPromise}>
+                    {(report) => {
+                      if (!report?.hackatimeUserId) return null;
+                      const telescreenUrl = (projectName?: string) => {
+                        const url = new URL("https://telescreen.hackclub.com/workbench/hackatime/overview");
+                        url.searchParams.set("u", report.hackatimeUserId);
+                        if (projectName) url.searchParams.set("p", projectName);
+                        return url.toString();
+                      };
+                      const linked = report.projects.filter((hp) => hp.linked);
+                      if (linked.length === 0) {
+                        return (
+                          <ButtonLink href={telescreenUrl()} external size="sm" icon="view">
+                            Telescreen
+                          </ButtonLink>
+                        );
+                      }
+                      return linked.map((hp) => (
+                        <ButtonLink key={hp.name} href={telescreenUrl(hp.name)} external size="sm" icon="view">
+                          Telescreen: {hp.name}
+                        </ButtonLink>
+                      ));
+                    }}
+                  </Await>
+                </Suspense>
+              )}
+            </div>
           </div>
 
           {p.image_url && (
             <img
               src={p.image_url}
               alt=""
-              className="w-full max-h-96 object-contain rounded-xl border border-border bg-black/40"
+              className="max-h-96 w-full rounded-lg border border-[var(--border)] bg-[var(--sunken)] object-contain"
             />
           )}
 
-          {p.needs_funding && (
-            <div className="rounded-xl border border-emerald-300 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-500/10 p-4 text-sm space-y-3">
-              <div className="font-semibold text-emerald-800 dark:text-emerald-300">
-                Funding requested: ${Number(p.funding_usd ?? 0).toFixed(2)}
-              </div>
-              <form action={updateFundingAmount} className="flex items-center gap-2">
-                <input type="hidden" name="projectId" value={p.id} />
-                <span className="text-xs text-muted-foreground">Correct amount ($)</span>
-                <Input
-                  type="number"
-                  name="fundingUsd"
-                  step="0.01"
-                  min="0"
-                  max="100000"
-                  defaultValue={Number(p.funding_usd ?? 0)}
-                  className="h-8 max-w-28 text-sm"
-                />
-                <PendingButton pendingText="Saving…" className="h-8 px-2 text-xs">
-                  Save
-                </PendingButton>
-              </form>
-              {p.funding_deducted_px > 0 && (
-                <div className="text-xs text-muted-foreground">
-                  Already approved once: {p.funding_deducted_px.toLocaleString()} px was withheld from the payout for
-                  this grant.
-                </div>
-              )}
-              <div>
-                <div className="text-xs font-medium text-muted-foreground mb-1">Bill of Materials</div>
-                {p.bom_url ? (
-                  <div className="space-y-1">
-                    {bomRows ? (
-                      <details>
-                        <summary className="cursor-pointer font-medium text-brand select-none">
-                          View BOM ({bomRows.length - 1} item{bomRows.length - 1 === 1 ? "" : "s"})
-                        </summary>
-                        <div className="mt-2 overflow-x-auto rounded-lg border border-emerald-300/60 dark:border-emerald-500/30">
-                          <table className="w-full text-xs">
-                            <thead>
-                              <tr className="bg-emerald-100/60 dark:bg-emerald-500/10">
-                                {bomRows[0].map((cell, i) => (
-                                  <th key={i} className="text-left font-semibold px-2 py-1 whitespace-nowrap">
-                                    {cell}
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {bomRows.slice(1).map((row, i) => (
-                                <tr key={i} className="border-t border-emerald-300/40 dark:border-emerald-500/20">
-                                  {row.map((cell, j) => (
-                                    <td key={j} className="px-2 py-1 whitespace-nowrap">
-                                      {cell}
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </details>
-                    ) : (
-                      <span className="text-muted-foreground text-xs">
-                        Couldn&apos;t load a preview , download instead.
-                      </span>
-                    )}
-                    <a
-                      href={p.bom_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block text-brand font-medium hover:underline"
-                    >
-                      Download BOM (.csv) ↗
-                    </a>
-                  </div>
-                ) : (
-                  <span className="text-muted-foreground">Not uploaded.</span>
-                )}
-              </div>
-              <div>
-                <div className="text-xs font-medium text-muted-foreground mb-1">
-                  Cart screenshot{(p.cart_screenshot_urls ?? []).length === 1 ? "" : "s"}
-                </div>
-                {(p.cart_screenshot_urls ?? []).length ? (
-                  <div className="flex flex-wrap gap-2">
-                    {(p.cart_screenshot_urls ?? []).map((url, i) => (
-                      <a key={i} href={url} target="_blank" rel="noreferrer">
-                        <img
-                          src={url}
-                          alt={`Cart screenshot ${i + 1}`}
-                          className="w-24 h-24 object-cover rounded-lg border border-border"
-                        />
-                      </a>
-                    ))}
-                  </div>
-                ) : (
-                  <span className="text-muted-foreground">None uploaded.</span>
-                )}
-              </div>
-            </div>
+          {p.description && (
+            <Card>
+              <div className="hc-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(p.description) }} />
+            </Card>
           )}
 
           {p.system_note && (
-            <Alert className="border-brand/30 bg-brand/10">
-              <AlertDescription className="font-medium text-brand">{p.system_note}</AlertDescription>
-            </Alert>
+            <Callout tone="info" icon="info">
+              {p.system_note}
+            </Callout>
           )}
-          {(() => {
-            const aiCommits = commits.commits.filter((c) => c.ai).length;
-            if (aiCommits === 0 || p.used_ai) return null;
-            return (
-              <Alert className="border-violet-300 dark:border-violet-500/40 bg-violet-50 dark:bg-violet-500/10">
-                <AlertDescription className="font-medium text-violet-700 dark:text-violet-300">
-                  {aiCommits} commit{aiCommits === 1 ? "" : "s"} in this repo {aiCommits === 1 ? "is" : "are"} signed
-                  by an AI tool, but the maker did not tick &ldquo;AI used&rdquo;. Undisclosed AI ,
-                  verify before crediting.
-                </AlertDescription>
-              </Alert>
-            );
-          })()}
+          {!p.used_ai && (
+            <Suspense fallback={null}>
+              <Await promise={commitsPromise}>
+                {(commits) => {
+                  const aiCommits = commits.commits.filter((c) => c.ai).length;
+                  if (aiCommits === 0) return null;
+                  return (
+                    <Callout tone="danger" icon="important">
+                      {aiCommits} commit{aiCommits === 1 ? "" : "s"} in this repo {aiCommits === 1 ? "is" : "are"}{" "}
+                      signed by an AI tool, but the maker did not tick &ldquo;AI used&rdquo;. Undisclosed AI: verify
+                      before crediting.
+                    </Callout>
+                  );
+                }}
+              </Await>
+            </Suspense>
+          )}
           {p.is_update && p.update_notes && (
-            <div className="rounded-xl border border-blue-300 dark:border-blue-500/40 bg-blue-50 dark:bg-blue-500/10 p-4 text-sm">
-              <div className="font-semibold mb-1 text-blue-700 dark:text-blue-300">
-                What changed since last approval
-              </div>
-              <div className="whitespace-pre-wrap break-words text-blue-900/90 dark:text-blue-200/90">
-                {p.update_notes}
-              </div>
-            </div>
+            <NoteCallout tone="info" icon="view-reload" title="What changed since last approval">
+              {p.update_notes}
+            </NoteCallout>
           )}
           {p.other_ysws_notes && (
-            <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 p-4 text-sm">
-              <div className="font-semibold mb-1 text-amber-700 dark:text-amber-300">
-                What changed since their other YSWS submission
-              </div>
-              <div className="whitespace-pre-wrap break-words text-amber-900/90 dark:text-amber-200/90">
-                {p.other_ysws_notes}
-              </div>
-            </div>
+            <NoteCallout tone="warning" icon="important" title="What changed since their other YSWS submission">
+              {p.other_ysws_notes}
+            </NoteCallout>
           )}
           {p.ship_note && (
-            <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 p-4 text-sm">
-              <div className="font-semibold mb-1 text-amber-700 dark:text-amber-300">
-                Note from the builder
-              </div>
-              <div className="whitespace-pre-wrap break-words text-amber-900/90 dark:text-amber-200/90">
-                {p.ship_note}
-              </div>
-            </div>
+            <NoteCallout tone="warning" icon="message" title="Note from the builder">
+              {p.ship_note}
+            </NoteCallout>
           )}
           {p.used_ai && (
-            <div className="rounded-xl border border-violet-300 dark:border-violet-500/40 bg-violet-50 dark:bg-violet-500/10 p-4 text-sm">
-              <div className="font-semibold mb-1 text-violet-700 dark:text-violet-300">
-                AI declaration
-              </div>
-              <div className="whitespace-pre-wrap break-words text-violet-900/90 dark:text-violet-200/90">
-                {p.ai_notes || "Player ticked “AI used” but gave no details (pre-dates the details field)."}
-              </div>
-            </div>
+            <NoteCallout tone="neutral" icon="code" title="AI declaration">
+              {p.ai_notes || "Player ticked “AI used” but gave no details (pre-dates the details field)."}
+            </NoteCallout>
           )}
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <span className="grid place-items-center w-8 h-8 rounded-full bg-primary/15 text-primary text-xs font-semibold shrink-0">
-                {String(ownerName).replace(/^@/, "").slice(0, 2).toUpperCase()}
-              </span>
-              <div className="min-w-0">
-                <Link href={`/players/${p.user_id}`} className="font-medium hover:text-brand truncate block">
-                  {ownerName}
-                </Link>
-                {!live && p.users?.slack_id && (
-                  <a
-                    href={`https://hackclub.slack.com/team/${p.users.slack_id}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs font-mono text-muted-foreground hover:text-brand"
-                    title="Open in Slack"
-                  >
-                    {p.users.slack_id}
-                  </a>
+          {p.needs_funding && (
+            <Card>
+              <CardHeader
+                title="Funding requested"
+                icon="bank-account"
+                action={<Badge tone="success">${Number(p.funding_usd ?? 0).toFixed(2)}</Badge>}
+              />
+              <div className="flex flex-col gap-4">
+                <form action={updateFundingAmount} className="flex items-end gap-2">
+                  <input type="hidden" name="projectId" value={p.id} />
+                  <Field label="Correct amount ($)">
+                    <Input
+                      type="number"
+                      name="fundingUsd"
+                      step="0.01"
+                      min="0"
+                      max="100000"
+                      defaultValue={Number(p.funding_usd ?? 0)}
+                      className="max-w-36"
+                    />
+                  </Field>
+                  <ActionButton variant="outline" pendingLabel="Saving...">
+                    Save
+                  </ActionButton>
+                </form>
+                {p.funding_deducted_px > 0 && (
+                  <p className="hc-caption text-sm">
+                    Already approved once: {p.funding_deducted_px.toLocaleString()} px was withheld from the payout
+                    for this grant.
+                  </p>
                 )}
+                <div>
+                  <p className="hc-eyebrow mb-2">Bill of materials</p>
+                  {p.bom_url && bomPromise ? (
+                    <div className="flex flex-col gap-2">
+                      <Suspense fallback={<Muted className="text-sm">Loading BOM preview...</Muted>}>
+                        <Await promise={bomPromise}>
+                          {(bomRows) =>
+                            bomRows ? (
+                              <Details
+                                summary={`View BOM (${bomRows.length - 1} item${bomRows.length - 1 === 1 ? "" : "s"})`}
+                              >
+                                <Table headers={bomRows[0]}>
+                                  {bomRows.slice(1).map((row, i) => (
+                                    <tr key={i}>
+                                      {row.map((cell, j) => (
+                                        <td key={j} className="whitespace-nowrap">
+                                          {cell}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </Table>
+                              </Details>
+                            ) : (
+                              <Muted className="text-sm">Couldn&apos;t load a preview, download it instead.</Muted>
+                            )
+                          }
+                        </Await>
+                      </Suspense>
+                      <TextLink href={p.bom_url} external className="text-sm">
+                        Download BOM (.csv)
+                      </TextLink>
+                    </div>
+                  ) : (
+                    <Muted className="text-sm">Not uploaded.</Muted>
+                  )}
+                </div>
+                <div>
+                  <p className="hc-eyebrow mb-2">Cart screenshot{cartScreenshots.length === 1 ? "" : "s"}</p>
+                  {cartScreenshots.length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {cartScreenshots.map((url, i) => (
+                        <a key={i} href={url} target="_blank" rel="noreferrer">
+                          <img
+                            src={url}
+                            alt={`Cart screenshot ${i + 1}`}
+                            className="h-24 w-24 rounded-lg border border-[var(--border)] object-cover"
+                          />
+                        </a>
+                      ))}
+                    </div>
+                  ) : (
+                    <Muted className="text-sm">None uploaded.</Muted>
+                  )}
+                </div>
               </div>
-            </div>
-            {acceptedCollaborators.length > 0 && (
-              <div className="text-xs text-muted-foreground">
-                with{" "}
-                {acceptedCollaborators
-                  .map((c) =>
-                    displayName(c.user_id, builderNameFor(access, c.users, { fallback: c.user_id })),
-                  )
-                  .join(", ")}
-              </div>
-            )}
-          </div>
-
-          {acceptedCollaborators.length > 0 && (
-            <div className="rounded-xl border border-border bg-muted/20 p-4">
-              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
-                Time by contributor
-              </div>
-              <div className="space-y-1.5">
-                {contributors.map((c) => (
-                  <div key={c.userId} className="flex items-center gap-3 text-sm">
-                    <span className="font-medium min-w-0 truncate">{c.name}</span>
-                    <span className="text-xs text-muted-foreground ml-auto shrink-0 tabular-nums">
-                      {fmtHM(c.hackatimeHours)} hackatime · {fmtHM(c.journalHours)} journals
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <p className="text-[11px] text-muted-foreground mt-2 leading-relaxed">
-                Journal entries below are labelled by who wrote them, and each commit in the
-                Commits tab already shows its own author.
-              </p>
-            </div>
+            </Card>
           )}
 
-          <div className="flex items-center gap-3 flex-wrap">
-            {isSafeUrl(p.repo_url) && (
-              <Button asChild variant="secondary" size="sm">
-                <a href={p.repo_url} target="_blank" rel="noreferrer">
-                  Repo ↗
-                </a>
-              </Button>
-            )}
-            {isSafeUrl(p.repo_url) && (
-              <Button asChild variant="secondary" size="sm">
-                <a href={`${p.repo_url.replace(/\/$/, "")}#readme`} target="_blank" rel="noreferrer">
-                  README ↗
-                </a>
-              </Button>
-            )}
-            {isSafeUrl(p.demo_url) && (
-              <Button asChild variant="secondary" size="sm">
-                <a href={p.demo_url} target="_blank" rel="noreferrer">
-                  Live demo ↗
-                </a>
-              </Button>
-            )}
-            {/* Second pass only - the Telescreen workbench is what a final
-                reviewer cross-checks heartbeats against, and there's nothing
-                to link to before the owner's Hackatime id resolves. One
-                button per linked Hackatime project (not the Pixl project's
-                own name) so &p= drops the reviewer straight into that
-                project's heartbeats instead of the whole-account overview -
-                falls back to a single unscoped link when nothing's linked
-                yet. */}
-            {!live && isFinalStage && hackatimeReport?.hackatimeUserId && (() => {
-              const linkedProjects = hackatimeReport.projects.filter((hp) => hp.linked);
-              const telescreenUrl = (projectName?: string) => {
-                const url = new URL("https://telescreen.hackclub.com/workbench/hackatime/overview");
-                url.searchParams.set("u", hackatimeReport.hackatimeUserId);
-                if (projectName) url.searchParams.set("p", projectName);
-                return url.toString();
-              };
-              if (linkedProjects.length === 0) {
-                return (
-                  <Button asChild variant="default" size="sm">
-                    <a href={telescreenUrl()} target="_blank" rel="noreferrer">
-                      Telescreen ↗
-                    </a>
-                  </Button>
-                );
-              }
-              return linkedProjects.map((hp) => (
-                <Button key={hp.name} asChild variant="default" size="sm">
-                  <a href={telescreenUrl(hp.name)} target="_blank" rel="noreferrer">
-                    Telescreen: {hp.name} ↗
-                  </a>
-                </Button>
-              ));
-            })()}
-          </div>
+          <Suspense fallback={ownerCard(ownerNameFor(null))}>
+            <Await promise={ownerHandlePromise}>{(handle) => ownerCard(ownerNameFor(handle))}</Await>
+          </Suspense>
 
-          {/* Eligibility check - YSWS submission guideline gaps (exclusions,
-              builder unified-DB fields, README). */}
-          {(() => {
-            const u = p.users as
-              | {
-                  first_name?: string | null;
-                  last_name?: string | null;
-                  real_name?: string | null;
-                  email?: string | null;
-                  birthday?: string | null;
-                  address_line1?: string | null;
-                  address_line2?: string | null;
-                  address_city?: string | null;
-                  address_state?: string | null;
-                  address_country?: string | null;
-                  address_postal?: string | null;
+          <Card>
+            <CardHeader title="Eligibility check" icon="checkmark" />
+            <ul className="hc-caption flex list-disc flex-col gap-1 pl-5 text-sm">
+              <li>
+                <strong>Not</strong> a school assignment, and <strong>not</strong> built as paid Hack Club work. Both
+                are ineligible for the unified database.
+              </li>
+              <li>Repo has a usable README and the live demo actually works.</li>
+            </ul>
+            <div className="mt-4">
+              <Details
+                summary={
+                  builderView.privileged
+                    ? "Builder details (name, email, age, shipping)"
+                    : "Builder details (age, fields on file)"
                 }
-              | null
-              | undefined;
-            // PII (name/email/birthday/address) is encrypted at rest; decryptPII
-            // also passes legacy plaintext through unchanged.
-            // In live mode nothing is decrypted at all - the real values never
-            // leave this block (see redactBuilderDetails).
-            // Name/email/birth date/address are for final reviewers and owners
-            // only (canSeeBuilderPII); a first-pass reviewer gets the age plus
-            // "on file"/"missing" per field, and for them nothing but the
-            // birthday (needed for the age) is even decrypted.
-            const privileged = canSeeBuilderPII(access);
-            const dec = (v: string | null | undefined) => (live ? "" : decryptPII(v) || "");
-            const present = (v: string | null | undefined) => (live ? "" : v ? "x" : "");
-            const pii = privileged ? dec : present;
-            const birthday = dec(u?.birthday);
-            const builderAge = ageFrom(birthday);
-            const country = pii(u?.address_country);
-            const view = builderDetailsView(access, isFinalStage, {
-              fullName:
-                [pii(u?.first_name), pii(u?.last_name)].filter(Boolean).join(" ") ||
-                (privileged ? (u?.real_name ?? "") : present(u?.real_name)),
-              email: pii(u?.email),
-              birthday: privileged ? birthday : "",
-              age: builderAge,
-              country,
-              address: [pii(u?.address_line1), pii(u?.address_line2), pii(u?.address_city), pii(u?.address_state), pii(u?.address_postal), country]
-                .filter(Boolean)
-                .join(", "),
-            });
-            const details = redactBuilderDetails(live, {
-              fullName: view.fullName,
-              email: view.email,
-              ageLabel: view.ageLabel,
-              country: view.country,
-              address: view.address ?? "",
-            });
-            return (
-              <div className="rounded-xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 p-4 text-sm space-y-2">
-                <div className="font-semibold text-amber-800 dark:text-amber-300">Eligibility check</div>
-                <ul className="list-disc pl-5 space-y-0.5 text-amber-900/90 dark:text-amber-200/90">
-                  <li>
-                    <strong>Not</strong> a school assignment, and <strong>not</strong> built as paid Hack Club work, both
-                    are ineligible for the unified database.
-                  </li>
-                  <li>Repo has a usable README and the live demo actually works.</li>
-                </ul>
-                <details className="text-amber-900/90 dark:text-amber-200/90">
-                  <summary className="cursor-pointer font-medium select-none">
-                    {view.privileged ? "Builder details (name · email · age · shipping)" : "Builder details (age · fields on file)"}
-                  </summary>
-                  <div className="mt-2 grid gap-1 sm:grid-cols-2">
-                    <div>
-                      <span className="text-muted-foreground">Name:</span> {details.fullName}
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Email:</span> {details.email}
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Age:</span> {details.ageLabel}
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Country:</span> {details.country}
-                    </div>
-                    {view.address !== null && (
-                      <div className="sm:col-span-2">
-                        <span className="text-muted-foreground">Address:</span> {details.address}
-                      </div>
-                    )}
-                  </div>
-                </details>
-              </div>
-            );
-          })()}
+              >
+                <DescriptionList
+                  items={[
+                    ["Name", builderDetails.fullName],
+                    ["Email", builderDetails.email],
+                    ["Age", builderDetails.ageLabel],
+                    ["Country", builderDetails.country],
+                    ...(builderView.address !== null
+                      ? ([["Address", builderDetails.address]] as [ReactNode, ReactNode][])
+                      : []),
+                  ]}
+                />
+              </Details>
+            </div>
+          </Card>
 
-          <div className="text-xs text-muted-foreground">
+          <p className="hc-caption text-sm">
             Submitted {ago(p.shipped_at)} · {fmtHM(hours)} logged
-            {p.hackatime_projects?.length > 0 && (
+            {hackatimeProjects.length > 0 && (
               <>
                 {" · "}
-                <a href="#hackatime" className="text-brand hover:underline">
-                  hackatime: {p.hackatime_projects.join(", ")}
+                <a href="#hackatime" className="hc-link">
+                  Hackatime: {hackatimeProjects.join(", ")}
                 </a>
               </>
             )}
-          </div>
+          </p>
 
-          <ReviewDetailTabs
-            projectId={p.id}
-            commits={commits}
-            journals={journals}
-            contributorNames={contributorNames}
-            reviewAudits={
-              // Masked on the server so hidden reviewers' names never reach
-              // the client props (see hideReviewers above).
-              hideReviewers
-                ? reviewAudits.map((a) => (rn(a.reviewer) === "Reviewer" ? { ...a, reviewer: "Reviewer" } : a))
-                : reviewAudits
-            }
-            yswsShips={yswsShips}
-            yswsImport={
-              p.imported_from_ysws
-                ? {
-                    ysws: String(p.imported_from_ysws),
-                    hours: Number(p.imported_ysws_hours) || 0,
-                    approvedAt: p.imported_ysws_approved_at
-                      ? String(p.imported_ysws_approved_at)
-                      : null,
+          <Suspense fallback={<CardSkeleton lines={6} />}>
+            <Await
+              promise={Promise.all([commitsPromise, yswsPromise, hackatimeReportPromise, ownerHandlePromise])}
+            >
+              {([commits, yswsShips, hackatimeReport, ownerHandle]) => (
+                <ReviewDetailTabs
+                  projectId={p.id}
+                  commits={commits}
+                  journals={journals}
+                  contributorNames={Object.fromEntries(
+                    contributorsFor(ownerNameFor(ownerHandle)).map((c) => [c.userId, c.name]),
+                  )}
+                  reviewAudits={
+                    // Masked on the server so hidden reviewers' names never
+                    // reach the client props.
+                    hideReviewers
+                      ? reviewAudits.map((a) => (rn(a.reviewer) === "Reviewer" ? { ...a, reviewer: "Reviewer" } : a))
+                      : reviewAudits
                   }
-                : null
-            }
-            hackatime={live && hackatimeReport ? { ...hackatimeReport, hackatimeUserId: "" } : hackatimeReport}
-            repoUrl={p.repo_url ?? null}
-            projectKind={p.kind}
-          />
+                  yswsShips={yswsShips}
+                  yswsImport={
+                    p.imported_from_ysws
+                      ? {
+                          ysws: String(p.imported_from_ysws),
+                          hours: Number(p.imported_ysws_hours) || 0,
+                          approvedAt: p.imported_ysws_approved_at ? String(p.imported_ysws_approved_at) : null,
+                        }
+                      : null
+                  }
+                  hackatime={live && hackatimeReport ? { ...hackatimeReport, hackatimeUserId: "" } : hackatimeReport}
+                  repoUrl={p.repo_url ?? null}
+                  projectKind={p.kind}
+                />
+              )}
+            </Await>
+          </Suspense>
         </div>
 
-        {/* sidebar */}
-        <aside className="lg:w-[30rem] shrink-0">
-          <div className="lg:sticky lg:top-24 space-y-4">
-            {/* Pinned above the tabs, never hidden behind a click , these are
-                the "stop and look at this before you decide" states. */}
-            {isHeld && (
-              <Card className="p-5 gap-1 ring-amber-400 dark:ring-amber-500/40 bg-amber-50 dark:bg-amber-500/10">
-                <div className="font-semibold text-amber-800 dark:text-amber-300">
-                  🔒 On hold , can't be reviewed right now
-                </div>
-                <p className="text-sm text-amber-800/90 dark:text-amber-200/90 mt-1">
-                  {p.hold_reason || "No reason given."}
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Held by {rn(p.hold_by, "an owner")}
-                  {p.hold_at ? ` on ${new Date(p.hold_at).toLocaleString()}` : ""}.
-                </p>
-                {(access.isOwner || heldByMe) && (
-                  <form action={releaseReviewHold} className="pt-2">
-                    <input type="hidden" name="projectId" value={p.id} />
-                    <input type="hidden" name="returnTo" value={`/review/${p.id}`} />
-                    <PendingButton
-                      variant="outline"
-                      size="sm"
-                      pendingText="Releasing…"
-                      confirm="Release the hold on this project? It goes back to normal review."
-                    >
-                      Release hold
-                    </PendingButton>
-                  </form>
-                )}
-              </Card>
-            )}
-
-            {spotCheckStage && p.second_pass_note && (
-              <Card className="p-4 text-sm gap-1">
-                <div className="font-semibold text-foreground">
-                  Fraud triage note ({rn(p.second_pass_by, "a reviewer")})
-                </div>
-                <p className="text-xs text-muted-foreground whitespace-pre-wrap">{p.second_pass_note}</p>
-              </Card>
-            )}
-
-            {ageFlag && (
-              <Card className="p-4 text-sm gap-1 ring-amber-300 dark:ring-amber-500/30">
-                <div className="font-semibold text-amber-700 dark:text-amber-300">
-                  Age eligibility
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  This submitter turns 19 between shipping this project and now , Hack
-                  Club's YSWS guidelines want an Override Age Justification documented
-                  before deciding. See the audit note below.
-                </div>
-              </Card>
-            )}
-
-            {isFinalStage && p.robert_trust_score != null && p.robert_trust_score <= ROBERT_FRAUD_THRESHOLD && (
-              <Card className="p-5 text-sm gap-0 ring-rose-300 dark:ring-rose-500/30 text-rose-700 dark:text-rose-300">
-                <strong>Robert scored this {p.robert_trust_score}/10 , its &quot;Fraud&quot; range.</strong>{" "}
-                {p.robert_note || "No note given."} You can still approve it, but document
-                why in your notes.
-              </Card>
-            )}
-
-            {isOwn && p.status === "shipped" && (
-              <Card className="p-5 text-sm gap-0 ring-amber-300 dark:ring-amber-500/30 text-amber-700 dark:text-amber-300">
-                This is your own submission , another reviewer has to do the first pass.
-              </Card>
-            )}
-            {isOwn && isFinalStage && (
-              <Card className="p-4 text-xs gap-0 ring-amber-300 dark:ring-amber-500/30 text-amber-700 dark:text-amber-300">
-                Your own submission , another owner has to give the final verdict.
-              </Card>
-            )}
-
-            <ProjectNotes projectId={p.id} notes={notes} />
-
-            <Tabs defaultValue="review" className="gap-3">
-              <TabsList className="w-full">
-                <TabsTrigger value="review" className="flex-1">Review</TabsTrigger>
-                <TabsTrigger value="overview" className="flex-1">Overview</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="overview" className="space-y-4">
-                <Card className="p-5 gap-0">
-                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    Logged hours
-                  </div>
-                  <div className="mt-1 mb-3">
-                    <span className="text-3xl font-bold">{fmtHM(hours)}</span>{" "}
-                    <span className="text-muted-foreground text-sm">logged</span>
-                  </div>
-                  <div className="h-2 rounded-full bg-muted overflow-hidden flex">
-                    <div className="h-full bg-[color:var(--color-hc-blue)]" style={{ width: `${htPct}%` }} />
-                    <div className="h-full bg-[color:var(--color-hc-purple)]" style={{ width: `${100 - htPct}%` }} />
-                  </div>
-                  <div className="mt-4 space-y-2 text-sm">
-                    <a href="#hackatime" className="flex items-center gap-2 hover:text-brand" title="See the full Hackatime breakdown">
-                      <span className="w-2.5 h-2.5 rounded-full bg-[color:var(--color-hc-blue)]" />
-                      <span className="text-foreground/70">Hackatime →</span>
-                      <span className="ml-auto tabular-nums font-medium">{fmtHM(hackatimeHours)}</span>
-                    </a>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-[color:var(--color-hc-purple)]" />
-                      <span className="text-foreground/70">Journals</span>
-                      <span className="ml-auto tabular-nums font-medium">{fmtHM(journalHours)}</span>
-                    </div>
-                  </div>
-                  {p.hours_extended_since && (
-                    <div className="mt-3 pt-3 border-t border-border text-xs text-muted-foreground">
-                      Counting hours from{" "}
-                      <span className="font-medium text-foreground">
-                        {new Date(p.hours_extended_since).toLocaleDateString()}
-                      </span>{" "}
-                      (before the {hackatimeCutoffLabel} cutoff) , set by{" "}
-                      <span className="font-medium text-foreground">{p.hours_extended_by}</span>:{" "}
-                      {p.hours_extended_note}
-                    </div>
-                  )}
-                </Card>
-
-                <Card className="p-4 gap-0 flex-row items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold">Beacon</div>
-                    <p className="text-xs text-muted-foreground">
-                      Nominate a standout project , cosmetic only, never affects payout.
-                    </p>
-                  </div>
-                  <form action={toggleProjectPeak}>
-                    <input type="hidden" name="projectId" value={p.id} />
-                    {!p.is_peak && <input type="hidden" name="isPeak" value="1" />}
-                    <PendingButton
-                      size="sm"
-                      variant={p.is_peak ? "outline" : undefined}
-                      className={p.is_peak ? "" : "bg-amber-500 text-black hover:bg-amber-600 border-transparent"}
-                      pendingText={p.is_peak ? "Removing…" : "Marking…"}
-                    >
-                      {p.is_peak ? "Remove" : "★ Mark"}
-                    </PendingButton>
-                  </form>
-                </Card>
-
-                {trust && (
-                  <Card className="p-4 flex-row items-center gap-3">
-                    <Badge variant={TRUST_VARIANT(trust.level)}>{TRUST_LABEL(trust.level)}</Badge>
-                    <span className="text-xs text-muted-foreground">
-                      Hackatime trust factor , {trust.level === "green"
-                        ? "no fraud flags on this account."
-                        : trust.level === "red" || trust.level === "convicted"
-                          ? "Hackatime has convicted this account of fraud. Do not credit without digging."
-                          : trust.level === "yellow" || trust.level === "suspected"
-                            ? "Hackatime suspects this account , verify carefully."
-                            : "not scored yet."}
-                    </span>
-                  </Card>
-                )}
-
-                {isFinalStage && (
-                  <Card className="p-5 gap-0 ring-violet-300 dark:ring-violet-500/30">
-                    <div className="text-xs font-semibold text-violet-600 dark:text-violet-400 uppercase tracking-wide mb-2">
-                      First pass
-                    </div>
-                    {p.first_pass_verdict && p.first_pass_verdict !== "approved" && (
-                      <div className="mb-2 rounded-md bg-rose-50 dark:bg-rose-950/30 px-2 py-1 text-sm font-semibold text-rose-700 dark:text-rose-300">
-                        ⚠ First reviewer proposed{" "}
-                        {p.first_pass_verdict === "banned" ? "a BAN" : "changes"} , confirm it, or approve to overturn.
-                        {p.first_pass_verdict === "banned" && !access.isOwner && (
-                          <span className="block font-normal">
-                            Only an owner can confirm a ban. Approving sends it back through fraud review and the owner spot check.
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    <div className="text-sm text-foreground/70">
-                      {p.first_pass_verdict === "banned"
-                        ? "Ban proposed by "
-                        : p.first_pass_verdict === "needs_changes"
-                          ? "Changes proposed by "
-                          : "Passed by "}
-                      <span className="font-medium text-foreground">{rn(p.first_pass_by, "a reviewer")}</span>
-                      {p.first_pass_hours != null && (
-                        <>
-                          {" "}
-                          · credited <span className="font-medium text-foreground">{p.first_pass_hours}h</span> of{" "}
-                          {hours}h claimed
-                        </>
-                      )}
-                    </div>
-                    {firstPassDeflated > 0 && (
-                      <div className="mt-1 text-sm font-medium text-rose-600 dark:text-rose-400">
-                        Deflated {firstPassDeflated}h {firstPassCutPct > 0 ? `(−${firstPassCutPct}%)` : ""}
-                      </div>
-                    )}
-                    {p.first_pass_note && (
-                      <p className="mt-2 text-sm whitespace-pre-wrap break-words text-foreground/80">
-                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                          Their note:{" "}
-                        </span>
-                        {p.first_pass_note}
-                      </p>
-                    )}
-                  </Card>
-                )}
-
-                <Card className="p-5 gap-3">
-                  <ReviewPipelineSteps
-                    shippedAt={p.shipped_at}
-                    firstPassAt={p.first_pass_at}
-                    status={p.status}
-                    airtableRecordId={p.airtable_record_id}
-                  />
-                  {isFinalStage && canSecondPass && (
-                    <SecondPassChecklist
-                      projectId={p.id}
-                      values={{
-                        second_pass_telescreen_checked: Boolean(p.second_pass_telescreen_checked),
-                        second_pass_hours_deflated: Boolean(p.second_pass_hours_deflated),
-                        second_pass_heartbeats_added: Boolean(p.second_pass_heartbeats_added),
-                      }}
-                    />
-                  )}
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="review" className="space-y-4">
-                {!isHeld && (
-                  <details className="rounded-xl bg-card ring-1 ring-border p-4 text-card-foreground">
-                    <summary className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-foreground select-none list-none">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                      Put this review on hold
-                    </summary>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Blocks any verdict on this project until you or an admin releases it. Stays
-                      visible in the queue , this just stops it from being reviewed while it&apos;s on
-                      hold, e.g. mid-investigation.
-                    </p>
-                    <form action={holdReview} className="mt-3 flex flex-col gap-2">
-                      <input type="hidden" name="projectId" value={p.id} />
-                      <input type="hidden" name="returnTo" value={`/review/${p.id}`} />
-                      <Textarea
-                        name="reason"
-                        required
-                        rows={2}
-                        placeholder="Why hold this (internal, not shown to the player)…"
-                        className="text-sm resize-y"
-                      />
-                      <PendingButton
-                        variant="secondary"
-                        pendingText="Holding…"
-                        confirm="Hold this review? Nobody can submit a verdict on it until you or another owner releases it."
-                      >
-                        Hold this review
-                      </PendingButton>
-                    </form>
-                  </details>
-                )}
-
-                {blackoutEntry && !blackoutForReview && blackoutEntry.status !== "entered" && (
-                  <BlackoutSummary entry={blackoutEntry} />
-                )}
-                {canReview ? (
-                  <>
-                    {spotCheckStage && p.robert_trust_score != null && (
-                      <Card className="p-5 gap-0">
-                        <div className="text-sm font-semibold mb-1">Robert fraud review</div>
-                        <p className="text-xs text-muted-foreground">
-                          Trust score <strong>{p.robert_trust_score}/10</strong>
-                          {p.robert_trust_score <= ROBERT_FRAUD_THRESHOLD ? " , Robert's \"Fraud\" range" : ""}
-                        </p>
-                        {p.robert_note && (
-                          <p className="mt-2 text-sm whitespace-pre-wrap break-words text-foreground/80">
-                            {p.robert_note}
-                          </p>
-                        )}
-                      </Card>
-                    )}
-                    <Card className="p-5 gap-0">
-                      <div className="text-sm font-semibold mb-1">
-                        {isProposedBan ? "Final pass" : spotCheckStage ? "Spot check" : "First pass"}
-                      </div>
-                      <p className="text-xs text-muted-foreground mb-3">
-                        {isProposedBan
-                          ? "A first-pass reviewer proposed banning this , confirm it, or approve to overturn. Approving credits pixels at the player's level rate ($4–6/hr in px) and ships it. Every verdict needs a note. You can only lower the credited hours."
-                          : spotCheckStage
-                            ? "The real final verdict, after Robert's fraud review (see above). Approving credits pixels at the player's level rate ($4–6/hr in px) and ships it. Every verdict needs a note. You can only lower the credited hours."
-                            : "Every verdict needs a note. Approving sends this to Robert for fraud review before pixels are credited , even you have final-reviewer rights, your own first look is still just a proposal. You can only lower the credited hours."}
-                      </p>
-                      <ReviewForm
-                        projectId={p.id}
-                        repoUrl={p.repo_url}
-                        demoUrl={p.demo_url}
-                        claimedHours={payoutHours}
-                        defaultHours={formDefaultHours}
-                        journalDeflatedHours={journalDeflatedHours}
-                        isSuper={access.isOwner}
-                        canEditSubmission={access.canEditSubmission}
-                        secondPass={spotCheckStage || isProposedBan}
-                        bounties={bounties}
-                        trial={
-                          trial?.name ? { name: trial.name, minHours: trial.min_hours ?? null } : null
-                        }
-                        ageFlag={ageFlag}
-                        collaborators={collaboratorHours}
-                        blackout={blackoutForReview}
-                        tier={Number(p.level) || 1}
-                        playerReBefore={playerReBefore}
-                        fundingUsd={p.needs_funding ? Number(p.funding_usd ?? 0) : 0}
-                        currentName={p.name}
-                        currentDescription={p.description}
-                        currentImageUrl={p.image_url}
-                        firstPass={
-                          firstPassAudit
-                            ? {
-                                technicalFeatures: firstPassAudit["TECHNICAL FEATURES"],
-                                deflationReason: firstPassAudit["DEFLATION REASON"],
-                                ageJustification: firstPassAudit["AGE JUSTIFICATION"],
-                                notes: firstPassAudit["NOTES"],
-                                note: p.first_pass_note,
-                              }
-                            : undefined
-                        }
-                        serverDraft={
-                          p.review_draft
-                            ? { draft: p.review_draft, by: p.review_draft_by, at: p.review_draft_at }
-                            : undefined
-                        }
-                      />
-                    </Card>
-
-                    <details className="rounded-xl bg-card ring-1 ring-border p-4 text-card-foreground">
-                      <summary className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-foreground select-none list-none">
-                        <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground" />
-                        Extend hours cutoff
-                      </summary>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Normally only hours from {hackatimeCutoffLabel} onward count. If this project
-                        genuinely started earlier and paused (verify against Hackatime&apos;s first-activity
-                        date above), pick how far back to count from , this re-pulls their Hackatime
-                        spans and raises the credited total, it never lowers it.
-                      </p>
-                      <form action={extendHoursCutoff} className="mt-3 flex flex-col gap-2">
-                        <input type="hidden" name="projectId" value={p.id} />
-                        <Input
-                          type="date"
-                          name="since"
-                          required
-                          max={maxExtendDateStr}
-                          defaultValue={
-                            p.hours_extended_since
-                              ? new Date(p.hours_extended_since).toISOString().slice(0, 10)
-                              : undefined
-                          }
-                        />
-                        <Textarea
-                          name="note"
-                          required
-                          rows={2}
-                          placeholder="Why count from this date (the player will see this in a DM)…"
-                          className="text-sm resize-y"
-                        />
-                        <PendingButton
-                          variant="secondary"
-                          pendingText="Extending…"
-                          confirm="Recount this project's hours from that date? This only ever raises the credited total."
-                        >
-                          Extend cutoff
-                        </PendingButton>
-                      </form>
-                    </details>
-
-                    {isFinalStage && (
-                    <details className="rounded-xl bg-card ring-1 ring-violet-300 dark:ring-violet-500/30 p-4 text-card-foreground">
-                      <summary className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-violet-700 dark:text-violet-400 select-none list-none">
-                        <span className="w-1.5 h-1.5 rounded-full bg-violet-600" />
-                        Send back to first pass
-                      </summary>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Not confident enough to confirm or overturn the first pass yourself? Send it back
-                        to the front of the queue for a fresh first-pass look instead , no verdict, no
-                        pixels credited yet. The first-pass reviewer is still paid in full unless you
-                        flag it as their mistake below.
-                      </p>
-                      <form action={sendBackToFirstPass} className="mt-3 flex flex-col gap-2">
-                        <input type="hidden" name="projectId" value={p.id} />
-                        <Textarea
-                          name="reason"
-                          required
-                          rows={2}
-                          placeholder="Why send this back (internal, not shown to the player)…"
-                          className="text-sm resize-y"
-                        />
-                        <Label className="flex items-start gap-2 text-sm py-0.5 font-normal">
-                          <Checkbox name="voidPayout" value="1" className="mt-0.5" />
-                          <span>
-                            This was the first-pass reviewer&apos;s mistake , void their payout and take
-                            the pixels back instead of keeping it
-                          </span>
-                        </Label>
-                        <PendingButton
-                          className="bg-violet-700 text-white border-transparent hover:bg-violet-800"
-                          pendingText="Sending back…"
-                          confirm="Send this back to first pass?"
-                        >
-                          Send back to first pass
-                        </PendingButton>
-                      </form>
-                    </details>
-                    )}
-
-                    {canModerate && (
-                    <details className="rounded-xl bg-card ring-1 ring-rose-300 dark:ring-rose-500/30 p-4 text-card-foreground">
-                      <summary className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-rose-700 dark:text-rose-400 select-none list-none">
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-600" />
-                        Ban project , permanent
-                      </summary>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Permanently bans this project , it can never be shipped again and is hidden
-                        everywhere. Different from requesting changes. Reversible by staff only.
-                      </p>
-                      <form action={banProject} className="mt-3 flex flex-col gap-2">
-                        <input type="hidden" name="projectId" value={p.id} />
-                        <input type="hidden" name="returnTo" value={`/review/${p.id}`} />
-                        <Textarea
-                          name="reason"
-                          required
-                          rows={2}
-                          placeholder="Reason for the ban (shown to the owner)…"
-                          className="text-sm resize-y"
-                        />
-                        <PendingButton
-                          className="bg-rose-800 text-white border-transparent hover:bg-rose-900"
-                          pendingText="Banning…"
-                          confirm="Permanently ban this project? It can never be shipped again."
-                        >
-                          Ban project
-                        </PendingButton>
-                      </form>
-                    </details>
-                    )}
-                  </>
-                ) : isOwn ? null : p.status === "fraud_review" ? (
-                  <Card className="p-5 text-sm text-muted-foreground">
-                    Passed the first review , awaiting Robert&apos;s fraud review. Nothing to action here
-                    until it comes back.
-                    {p.robert_error && (
-                      <span className="mt-2 block text-rose-600 dark:text-rose-400">
-                        Last submission to Robert failed: {p.robert_error} , the reconcile job will retry it.
-                      </span>
-                    )}
-                    {canSecondPass && (
-                      <form action={skipRobertPass} className="mt-3">
-                        <input type="hidden" name="projectId" value={p.id} />
-                        <PendingButton
-                          variant="secondary"
-                          size="sm"
-                          pendingText="Skipping…"
-                          confirm="Skip Robert's fraud review and send this project straight to Spot check?"
-                        >
-                          Skip Robert pass
-                        </PendingButton>
-                      </form>
-                    )}
-                  </Card>
-                ) : isFinalStage ? (
-                  <Card className="p-5 text-sm text-muted-foreground">
-                    Passed the first review , waiting on a final reviewer to sign off before pixels are
-                    credited.
-                  </Card>
-                ) : (
-                  <Card className="p-5 text-sm text-muted-foreground">
-                    Already reviewed ,{" "}
-                    <StatusBadge status={p.status} />. See the{" "}
-                    <Link href={`/projects/${p.id}`} className="text-brand hover:underline">
-                      project page
-                    </Link>{" "}
-                    to revert or take further action.
-                  </Card>
-                )}
-              </TabsContent>
-            </Tabs>
-
-            {unshipNote && (
-              <details className="rounded-xl bg-card ring-1 ring-amber-300 dark:ring-amber-500/30 p-4 text-card-foreground">
-                <summary className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-amber-700 dark:text-amber-400 select-none list-none">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
-                  Unship to draft
-                </summary>
-                <p className="text-xs text-muted-foreground mt-2">
-                  Takes this out of the queue and hands it back to the owner as an editable draft. They
-                  fix it and reship, and review starts from scratch: the first-pass verdict (including a
-                  ban proposal), notes and second-pass checklist are all cleared. The owner and any
-                  collaborators are notified with your reason.
-                </p>
-                <Alert className="mt-3 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10">
-                  <AlertDescription className="text-xs font-medium text-amber-800 dark:text-amber-300">
-                    {unshipNote}
-                  </AlertDescription>
-                </Alert>
-                <form action={unshipProject} className="mt-3 flex flex-col gap-2">
+        <aside className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-20 lg:max-h-[calc(100vh-10rem)] lg:self-start lg:overflow-y-auto lg:pr-1">
+          {/* Pinned above the tabs, never behind a click: the "stop and look
+              at this before you decide" states. */}
+          {isHeld && (
+            <Callout tone="warning" icon="private">
+              <p className="font-bold">On hold, can&apos;t be reviewed right now</p>
+              <p className="mt-1">{p.hold_reason || "No reason given."}</p>
+              <p className="hc-caption mt-1 text-xs">
+                Held by {rn(p.hold_by, "an owner")}
+                {p.hold_at ? ` on ${formatDateTime(p.hold_at)}` : ""}.
+              </p>
+              {(access.isOwner || heldByMe) && (
+                <form action={releaseReviewHold} className="mt-2">
                   <input type="hidden" name="projectId" value={p.id} />
-                  <Textarea
-                    name="reason"
-                    required
-                    rows={2}
-                    placeholder="Why unship this (shown to the owner)…"
-                    className="text-sm resize-y"
-                  />
-                  <Label className="flex items-start gap-2 text-sm py-0.5 font-normal">
-                    <Checkbox name="voidPayout" value="1" className="mt-0.5" />
-                    <span>
-                      This was the first-pass reviewer&apos;s mistake , void their payout and take the
-                      pixels back instead of keeping it
-                    </span>
-                  </Label>
-                  <PendingButton
-                    className="bg-amber-700 text-white border-transparent hover:bg-amber-800"
-                    pendingText="Unshipping…"
-                    confirm={`${unshipNote}\n\nUnship this project back to a draft? The owner is notified and it leaves the queue.`}
+                  <input type="hidden" name="returnTo" value={returnTo} />
+                  <ActionButton
+                    variant="outline"
+                    size="sm"
+                    pendingLabel="Releasing..."
+                    confirm="Release the hold on this project? It goes back to normal review."
                   >
-                    Unship to draft
-                  </PendingButton>
+                    Release hold
+                  </ActionButton>
                 </form>
-              </details>
-            )}
-          </div>
+              )}
+            </Callout>
+          )}
+
+          {spotCheckStage && p.second_pass_note && (
+            <Card padding="compact">
+              <p className="hc-heading text-sm">Fraud triage note ({rn(p.second_pass_by, "a reviewer")})</p>
+              <p className="hc-caption mt-1 whitespace-pre-wrap text-sm">{p.second_pass_note}</p>
+            </Card>
+          )}
+
+          {ageFlag && (
+            <Callout tone="warning" icon="important">
+              <p className="font-bold">Age eligibility</p>
+              <p className="mt-1">
+                This submitter turned 19 between shipping this project and now. Hack Club&apos;s YSWS guidelines want an
+                Override Age Justification documented before deciding. See the audit note in the review form.
+              </p>
+            </Callout>
+          )}
+
+          {isFinalStage && p.robert_trust_score != null && p.robert_trust_score <= ROBERT_FRAUD_THRESHOLD && (
+            <Callout tone="danger" icon="important">
+              <strong>Robert scored this {p.robert_trust_score}/10, its &quot;Fraud&quot; range.</strong>{" "}
+              {p.robert_note || "No note given."} You can still approve it, but document why in your notes.
+            </Callout>
+          )}
+
+          {isOwn && p.status === "shipped" && (
+            <Callout tone="warning" icon="private">
+              This is your own submission. Another reviewer has to do the first pass.
+            </Callout>
+          )}
+          {isOwn && isFinalStage && (
+            <Callout tone="warning" icon="private">
+              Your own submission. Another owner has to give the final verdict.
+            </Callout>
+          )}
+
+          <Tabs variant="segmented" tabs={rightTabs} />
         </aside>
       </div>
 
-      {/* sticky nav bar */}
-      <div className="sticky bottom-0 -mx-4 md:-mx-6 px-4 md:px-6 py-3 border-t border-border bg-background/90 backdrop-blur flex items-center gap-4">
-        <Button asChild variant="outline" size="sm" className={prev ? "" : "pointer-events-none opacity-40"}>
-          <Link href={prev ? `/review/${prev.id}` : "#"} prefetch={false}>
-            ← Prev
-          </Link>
-        </Button>
-        <div className="flex-1 text-center text-sm text-muted-foreground tabular-nums">
-          {idx >= 0 ? `Submission ${idx + 1} of ${queue.length}` : "Not in queue"}
-        </div>
-        <Button asChild variant="outline" size="sm" className={next ? "" : "pointer-events-none opacity-40"}>
-          <Link href={next ? `/review/${next.id}` : "#"} prefetch={false}>
-            Next →
-          </Link>
-        </Button>
-      </div>
+      <nav className="sticky bottom-0 z-10 -mx-6 flex items-center gap-4 border-t border-[var(--border)] bg-[var(--background)] px-6 py-3">
+        <Suspense fallback={<QueueNav prevId={null} nextId={null} label="Loading queue..." />}>
+          <Await promise={queuePromise}>
+            {(queue) => {
+              // projects.id is a Postgres bigint; compare numerically so a
+              // bigint serialized as a string doesn't miss the match.
+              const idx = queue.findIndex((q) => Number(q.id) === projectId);
+              return (
+                <QueueNav
+                  prevId={idx > 0 ? queue[idx - 1].id : null}
+                  nextId={idx >= 0 && idx < queue.length - 1 ? queue[idx + 1].id : null}
+                  label={idx >= 0 ? `Submission ${idx + 1} of ${queue.length}` : "Not in queue"}
+                />
+              );
+            }}
+          </Await>
+        </Suspense>
+      </nav>
     </div>
+  );
+}
+
+function QueueNav({
+  prevId,
+  nextId,
+  label,
+}: {
+  prevId: number | string | null;
+  nextId: number | string | null;
+  label: string;
+}) {
+  const step = (id: number | string | null, prev: boolean) => {
+    const body = prev ? (
+      <>
+        <Icon glyph="view-back" size={18} /> Prev
+      </>
+    ) : (
+      <>
+        Next <Icon glyph="view-forward" size={18} />
+      </>
+    );
+    return id != null ? (
+      <Link href={`/review/${id}`} prefetch={false} className={buttonClass("outline", "sm")}>
+        {body}
+      </Link>
+    ) : (
+      <span className={`${buttonClass("outline", "sm")} pointer-events-none opacity-40`} aria-disabled>
+        {body}
+      </span>
+    );
+  };
+  return (
+    <>
+      {step(prevId, true)}
+      <span className="hc-caption hc-mono flex-1 text-center text-sm">{label}</span>
+      {step(nextId, false)}
+    </>
   );
 }

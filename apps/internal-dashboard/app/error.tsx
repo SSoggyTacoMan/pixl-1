@@ -1,50 +1,54 @@
 "use client";
 
 import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { Button, Card, EmptyState } from "@/app/_ui/ui";
 
-// Server Actions are versioned per deploy (a content hash baked into the
-// client bundle). This project auto-deploys on every push to main, so any
-// reviewer who has a review page open across a deploy is left holding a
-// stale action reference - their next click (Approve, Next, claim, etc.)
-// throws exactly this Next.js error, and with no error boundary in place it
-// used to fail with nothing visible happening: no verdict recorded, no
-// navigation, nothing - which reads as "the project vanished". There is no
-// way to recover a stale action client-side, so the fix is a fresh page
-// load; do that automatically instead of leaving the reviewer stuck.
+// Server Actions are versioned per build and this app auto-deploys on every
+// push to main, so a tab left open across a deploy holds stale action ids and
+// its next click fails with "Failed to find Server Action". next.config's
+// deploymentId catches most of these on navigation; this catches the rest by
+// reloading once (a sessionStorage flag stops a reload loop).
 // See https://nextjs.org/docs/messages/failed-to-find-server-action
-export default function Error({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string };
-  reset: () => void;
-}) {
-  const isStaleDeploy = /failed to find server action/i.test(error.message);
+const STALE = /failed to find server action|older or newer deployment/i;
+const RELOAD_FLAG = "pixl:stale-reload";
+
+export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  const isStaleDeploy = STALE.test(error.message);
 
   useEffect(() => {
-    if (isStaleDeploy) window.location.reload();
+    if (!isStaleDeploy) return;
+    let reloaded = false;
+    try {
+      reloaded = sessionStorage.getItem(RELOAD_FLAG) === location.pathname;
+      sessionStorage.setItem(RELOAD_FLAG, location.pathname);
+    } catch {
+      // storage blocked: reload anyway
+    }
+    if (!reloaded) window.location.reload();
   }, [isStaleDeploy]);
 
-  if (isStaleDeploy) {
-    return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <Card className="p-6 text-sm text-muted-foreground">
-          A new version just deployed , reloading…
-        </Card>
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!isStaleDeploy) console.error(error);
+  }, [error, isStaleDeploy]);
 
   return (
-    <div className="flex items-center justify-center min-h-[50vh]">
-      <Card className="p-6 max-w-sm text-center space-y-3">
-        <div className="font-semibold">Something went wrong</div>
-        <p className="text-sm text-muted-foreground break-words">
-          {error.message || "Unknown error."}
-        </p>
-        <Button onClick={() => reset()}>Try again</Button>
+    <div className="mx-auto max-w-md pt-16">
+      <Card>
+        {isStaleDeploy ? (
+          <EmptyState title="New version deployed" icon="history">
+            Reloading to pick it up. Your last click didn&apos;t go through, so do it again after the reload.
+          </EmptyState>
+        ) : (
+          <EmptyState title="Something broke" icon="important">
+            {error.digest ? `Error ${error.digest} was logged.` : error.message || "Unknown error."}
+          </EmptyState>
+        )}
+        <div className="flex justify-center gap-2">
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            Reload page
+          </Button>
+          {!isStaleDeploy && <Button onClick={() => reset()}>Try again</Button>}
+        </div>
       </Card>
     </div>
   );

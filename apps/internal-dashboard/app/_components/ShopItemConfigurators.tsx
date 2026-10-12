@@ -4,7 +4,7 @@ import { useState } from "react";
 import { PriceUsdInput } from "@/app/_components/PriceUsdInput";
 import { ShopConfiguratorPanel } from "@/app/_components/ShopConfiguratorPanel";
 import type { EditableGroup } from "@/app/_components/ShopConfigEditor";
-import { Input } from "@/components/ui/input";
+import { Input, Muted, TextLink } from "@/app/_ui/ui";
 
 export interface ShopDetailRegionData {
   region: string;
@@ -18,11 +18,10 @@ export interface ShopDetailRegionData {
   groups: EditableGroup[];
 }
 
-// The whole per-item regional-pricing table body, as one client component -
-// pulled out of shop-detail/page.tsx specifically so "Apply to all regions"
-// on a configurator group has a shared parent to coordinate through. Each
-// region's ShopConfiguratorPanel is otherwise fully independent React state
-// with nothing connecting them.
+// The whole per-item regional-pricing table body, as one client component, so
+// "Apply to all regions" on a configurator group has a shared parent to
+// coordinate through. Each region's ShopConfiguratorPanel is otherwise fully
+// independent React state with nothing connecting them.
 export function ShopItemConfigurators({
   regions,
   pixelValueUsd,
@@ -49,12 +48,12 @@ export function ShopItemConfigurators({
   return (
     <>
       {regions.map((r) => (
-        <tr key={r.region}>
-          <td className="pr-2 align-top pt-1.5 whitespace-nowrap">
-            {r.label}
-            {!r.hasRow && <div className="text-[11px] text-muted-foreground">not stocked</div>}
+        <tr key={r.region} className="align-top">
+          <td className="whitespace-nowrap">
+            <span className="font-bold">{r.label}</span>
+            {!r.hasRow && <Muted className="block text-xs">Not stocked</Muted>}
           </td>
-          <td className="pr-2 align-top">
+          <td>
             <PriceUsdInput
               name={`price_${r.region}`}
               defaultValue={r.price}
@@ -62,28 +61,20 @@ export function ShopItemConfigurators({
               pixelValueUsd={pixelValueUsd}
             />
           </td>
-          <td className="pr-2 align-top pt-1.5 text-muted-foreground tabular-nums whitespace-nowrap">
-            ${(r.price * pixelValueUsd).toFixed(2)}
-          </td>
-          <td className="align-top">
-            <div className="flex items-center gap-1.5">
+          <td className="hc-muted whitespace-nowrap tabular-nums">${(r.price * pixelValueUsd).toFixed(2)}</td>
+          <td className="min-w-72">
+            <div className="flex items-center gap-2">
               <Input
                 name={`source_${r.region}`}
                 type="url"
                 disabled={!r.hasRow}
-                placeholder="https://…"
+                placeholder="https://..."
                 defaultValue={r.priceSourceUrl}
-                className="w-full min-w-[12rem] text-sm"
               />
               {r.priceSourceUrl && (
-                <a
-                  href={r.priceSourceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-brand hover:underline shrink-0"
-                >
+                <TextLink href={r.priceSourceUrl} external className="shrink-0 text-sm">
                   Open
-                </a>
+                </TextLink>
               )}
             </div>
             {r.hasRow && (

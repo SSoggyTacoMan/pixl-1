@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { requirePage } from "@/lib/guard";
 import { db } from "@/lib/db";
 import {
@@ -12,32 +11,47 @@ import {
   type OperationRow,
 } from "@/lib/operations";
 import { createOperation, operationControl } from "@/app/operations/actions";
-import { BlackoutBadge } from "@/app/_components/BlackoutBadge";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import {
+  ActionButton,
+  Badge,
+  Card,
+  CardHeader,
+  Checkbox,
+  Details,
+  EmptyRow,
+  Field,
+  Flash,
+  Input,
+  LinkTabs,
+  Muted,
+  NativeSelect,
+  PageHeader,
+  Pagination,
+  Stat,
+  StatGrid,
+  Table,
+  TextLink,
+  type Tone,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
 const PER = 20;
 
-const STATUS_TONE: Record<OperationRow["effectiveStatus"], "success" | "warning" | "secondary" | "destructive"> = {
+const STATUS_TONE: Record<OperationRow["effectiveStatus"], Tone> = {
   active: "success",
   paused: "warning",
-  upcoming: "secondary",
-  ended: "destructive",
+  upcoming: "neutral",
+  ended: "danger",
 };
 
-const ENTRY_TONE: Record<EntryStatus, "secondary" | "warning" | "info" | "success" | "destructive" | "violet"> = {
-  entered: "secondary",
+const ENTRY_TONE: Record<EntryStatus, Tone> = {
+  entered: "neutral",
   shipped: "warning",
   eligible: "info",
-  needs_changes: "violet",
+  needs_changes: "purple",
   approved: "success",
-  ineligible: "destructive",
+  ineligible: "danger",
 };
 
 const fmt = (iso: string) =>
@@ -50,61 +64,40 @@ const actorLabel = (actor: string) =>
 const usd = (n: number) => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
 const hrs = (n: number) => `${Math.round(n * 100) / 100}h`;
 
-function Stat({ label, value, hint }: { label: string; value: string | number; hint?: string }) {
-  return (
-    <Card className="p-4 gap-1">
-      <div className="text-[0.7rem] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="text-2xl font-semibold tabular-nums leading-tight">{value}</div>
-      {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
-    </Card>
-  );
-}
-
 function CreateForm() {
   return (
-    <Card className="p-5 md:p-6 gap-0 max-w-2xl">
-      <div className="text-base font-semibold mb-1">Create Operation Blackout</div>
-      <p className="text-xs text-muted-foreground mb-4">
+    <Card className="max-w-2xl">
+      <CardHeader title="Create Operation Blackout" icon="plus" />
+      <p className="hc-caption mb-4 text-sm">
         Nothing is live until the start time. Entries open at the start and close at the end. All times UTC.
       </p>
       <form action={createOperation} className="grid gap-3 sm:grid-cols-2">
-        <label className="grid gap-1 text-sm sm:col-span-2">
-          Name
+        <Field label="Name" className="sm:col-span-2">
           <Input name="name" defaultValue="Operation Blackout" required maxLength={80} />
-        </label>
-        <label className="grid gap-1 text-sm">
-          Slug
+        </Field>
+        <Field label="Slug">
           <Input name="slug" defaultValue={BLACKOUT_SLUG} required pattern="[a-z0-9][a-z0-9\-]{0,63}" />
-        </label>
-        <label className="grid gap-1 text-sm">
-          Bonus ($/hr)
+        </Field>
+        <Field label="Bonus ($/hr)">
           <Input name="rateUsd" type="number" step="0.01" min="0" defaultValue="1" required />
-        </label>
-        <label className="grid gap-1 text-sm">
-          <span>Rate mode</span>
-          <select
-            name="rateMode"
-            defaultValue="additive"
-            className="w-full text-sm h-9 rounded-md border border-border bg-background px-3"
-          >
-            <option value="additive">Additive - flat bonus on top of each player&apos;s own rate</option>
-            <option value="floor">Floor - nobody drops below this rate</option>
-          </select>
-        </label>
-        <label className="grid gap-1 text-sm">
-          Starts (UTC)
+        </Field>
+        <Field label="Rate mode">
+          <NativeSelect name="rateMode" defaultValue="additive">
+            <option value="additive">Additive: flat bonus on top of each player&apos;s own rate</option>
+            <option value="floor">Floor: nobody drops below this rate</option>
+          </NativeSelect>
+        </Field>
+        <Field label="Starts (UTC)">
           <Input name="startsAt" type="datetime-local" required />
-        </label>
-        <label className="grid gap-1 text-sm">
-          Ends (UTC)
+        </Field>
+        <Field label="Ends (UTC)">
           <Input name="endsAt" type="datetime-local" required />
-        </label>
-        <label className="grid gap-1 text-sm">
-          Grace period after changes are requested (hours)
+        </Field>
+        <Field label="Grace period after changes are requested (hours)">
           <Input name="graceHours" type="number" min="0" defaultValue="72" required />
-        </label>
+        </Field>
         <div className="sm:col-span-2">
-          <PendingButton pendingText="Creating…">Create operation</PendingButton>
+          <ActionButton pendingLabel="Creating...">Create operation</ActionButton>
         </div>
       </form>
     </Card>
@@ -124,36 +117,21 @@ export default async function OperationsPage({
 
   const op = await getOperation(slug);
   const header = (
-    <div>
-      <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-3 flex-wrap">
-        Operations <BlackoutBadge />
-      </h1>
-      <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-        Time-boxed campaigns. Reviewers rule on eligibility and hours; the database works out the pay. All
-        times are UTC.
-      </p>
-    </div>
-  );
-  const alerts = (
-    <>
-      {sp.ok && (
-        <Alert>
-          <AlertDescription className="font-medium text-emerald-600 dark:text-emerald-400">{sp.ok}</AlertDescription>
-        </Alert>
-      )}
-      {sp.error && (
-        <Alert variant="destructive">
-          <AlertDescription className="font-medium text-destructive">{sp.error}</AlertDescription>
-        </Alert>
-      )}
-    </>
+    <PageHeader
+      title={
+        <>
+          Operations <Badge tone="warning">Blackout</Badge>
+        </>
+      }
+      description="Time-boxed campaigns. Reviewers rule on eligibility and hours, the database works out the pay. All times are UTC."
+    />
   );
 
   if (!op) {
     return (
-      <div className="space-y-6">
+      <div className="flex flex-col gap-6">
         {header}
-        {alerts}
+        <Flash error={sp.error} ok={sp.ok} />
         <CreateForm />
       </div>
     );
@@ -182,229 +160,281 @@ export default async function OperationsPage({
   const eff = op.effectiveStatus;
   const e = stats?.entries;
   const skippedForTrial = Number(stats?.trial_held_skips ?? 0);
+  const canChange = op.status !== "ended" && eff !== "ended";
 
   return (
-    <div className="space-y-8">
+    <div className="flex flex-col gap-6">
       {header}
-      {alerts}
+      <Flash error={sp.error} ok={sp.ok} />
 
-      <Card className="p-5 md:p-6 gap-4">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
+      <Card>
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-lg font-semibold">{op.name}</span>
-              <Badge variant={STATUS_TONE[eff]} className="uppercase tracking-wide text-[0.65rem]">{eff}</Badge>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="hc-heading text-lg">{op.name}</h2>
+              <Badge tone={STATUS_TONE[eff]}>{eff}</Badge>
               {(op.status === "paused" || op.status === "ended") && op.status !== eff && (
-                <span className="text-xs text-muted-foreground">(set to {op.status})</span>
+                <Muted className="text-xs">(set to {op.status})</Muted>
               )}
             </div>
-            <div className="text-sm text-muted-foreground mt-1">
-              {fmt(op.startsAt)} → {fmt(op.endsAt)} UTC
-            </div>
-            <div className="text-sm text-muted-foreground">
-              {op.rateMode === "additive"
-                ? <>+{usd(op.rateUsd)}/hr bonus, effective rate = player&apos;s own rate + {usd(op.rateUsd)}</>
-                : <>Floor rate {usd(op.rateUsd)}/hr, effective rate = max(player&apos;s own rate, {usd(op.rateUsd)})</>}
+            <p className="hc-caption mt-1 text-sm">
+              {fmt(op.startsAt)} to {fmt(op.endsAt)} UTC
+            </p>
+            <p className="hc-caption text-sm">
+              {op.rateMode === "additive" ? (
+                <>+{usd(op.rateUsd)}/hr bonus, effective rate = player&apos;s own rate + {usd(op.rateUsd)}</>
+              ) : (
+                <>Floor rate {usd(op.rateUsd)}/hr, effective rate = max(player&apos;s own rate, {usd(op.rateUsd)})</>
+              )}
               {" "}· grace {op.gracePeriodHours}h
-            </div>
+            </p>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {op.status !== "ended" && eff !== "ended" && op.status !== "paused" && (
+          <div className="flex flex-wrap items-center gap-2">
+            {canChange && op.status !== "paused" && (
               <form action={operationControl}>
                 <input type="hidden" name="slug" value={slug} />
                 <input type="hidden" name="action" value="pause" />
-                <PendingButton variant="outline" size="sm" pendingText="Pausing…" confirm="Pause new entries? Projects already entered can still ship.">
+                <ActionButton
+                  variant="outline"
+                  size="sm"
+                  icon="pause-circle"
+                  pendingLabel="Pausing..."
+                  confirm="Pause new entries? Projects already entered can still ship."
+                >
                   Pause entries
-                </PendingButton>
+                </ActionButton>
               </form>
             )}
             {op.status === "paused" && (
               <form action={operationControl}>
                 <input type="hidden" name="slug" value={slug} />
                 <input type="hidden" name="action" value="resume" />
-                <PendingButton size="sm" pendingText="Resuming…">Resume entries</PendingButton>
+                <ActionButton size="sm" icon="play-circle" pendingLabel="Resuming...">
+                  Resume entries
+                </ActionButton>
               </form>
             )}
           </div>
         </div>
 
-        {op.status !== "ended" && eff !== "ended" && (
-          <div className="grid gap-4 md:grid-cols-2">
-            <form action={operationControl} className="grid gap-2 rounded-lg border border-border p-3">
-              <input type="hidden" name="slug" value={slug} />
-              <input type="hidden" name="action" value="extend" />
-              <div className="text-sm font-medium">Extend the end</div>
-              <p className="text-xs text-muted-foreground">
-                Only later. Entries keep their recorded join and first-ship times; nothing already decided changes.
-              </p>
-              <Input name="endsAt" type="datetime-local" required defaultValue={inputValue(op.endsAt)} />
-              <div><PendingButton size="sm" variant="outline" pendingText="Saving…">Extend</PendingButton></div>
-            </form>
-            <form action={operationControl} className="grid gap-2 rounded-lg border border-rose-200 dark:border-rose-500/30 p-3">
-              <input type="hidden" name="slug" value={slug} />
-              <input type="hidden" name="action" value="end" />
-              <div className="text-sm font-medium">End the operation now</div>
-              <p className="text-xs text-muted-foreground">
-                Closes it immediately. Entries that already shipped are still reviewed and paid; unshipped ones can&apos;t qualify.
-              </p>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" name="confirmEnd" value="1" /> I understand this can&apos;t be undone
-              </label>
-              <div>
-                <PendingButton size="sm" variant="outline" pendingText="Ending…" className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:text-rose-600">
-                  End now
-                </PendingButton>
-              </div>
-            </form>
+        {canChange && (
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <Card sunken padding="compact">
+              <form action={operationControl} className="flex flex-col gap-2">
+                <input type="hidden" name="slug" value={slug} />
+                <input type="hidden" name="action" value="extend" />
+                <h3 className="hc-heading text-sm">Extend the end</h3>
+                <p className="hc-caption text-xs">
+                  Only later. Entries keep their recorded join and first-ship times, nothing already decided changes.
+                </p>
+                <Input name="endsAt" type="datetime-local" required defaultValue={inputValue(op.endsAt)} />
+                <div>
+                  <ActionButton size="sm" variant="outline" pendingLabel="Saving...">
+                    Extend
+                  </ActionButton>
+                </div>
+              </form>
+            </Card>
+            <Card sunken padding="compact">
+              <form action={operationControl} className="flex flex-col gap-2">
+                <input type="hidden" name="slug" value={slug} />
+                <input type="hidden" name="action" value="end" />
+                <h3 className="hc-heading text-sm">End the operation now</h3>
+                <p className="hc-caption text-xs">
+                  Closes it immediately. Entries that already shipped are still reviewed and paid, unshipped ones
+                  can&apos;t qualify.
+                </p>
+                <Checkbox name="confirmEnd" value="1" label="I understand this can't be undone" />
+                <div>
+                  <ActionButton size="sm" variant="danger" pendingLabel="Ending...">
+                    End now
+                  </ActionButton>
+                </div>
+              </form>
+            </Card>
           </div>
         )}
 
-        <details className="rounded-lg border border-border p-3">
-          <summary className="cursor-pointer text-sm font-medium">Edit name, rate, grace</summary>
-          <form action={operationControl} className="grid gap-3 sm:grid-cols-3 mt-3">
-            <input type="hidden" name="slug" value={slug} />
-            <input type="hidden" name="action" value="edit" />
-            <label className="grid gap-1 text-sm sm:col-span-3">
-              Name
-              <Input name="name" defaultValue={op.name} maxLength={80} />
-            </label>
-            <label className="grid gap-1 text-sm">
-              Bonus ($/hr)
-              <Input name="rateUsd" type="number" step="0.01" min="0" defaultValue={op.rateUsd} />
-            </label>
-            <label className="grid gap-1 text-sm">
-              <span>Rate mode</span>
-              <select
-                name="rateMode"
-                defaultValue={op.rateMode}
-                className="w-full text-sm h-9 rounded-md border border-border bg-background px-3"
-              >
-                <option value="additive">Additive - flat bonus</option>
-                <option value="floor">Floor - minimum rate</option>
-              </select>
-            </label>
-            <label className="grid gap-1 text-sm">
-              Grace (hours)
-              <Input name="graceHours" type="number" min="0" defaultValue={op.gracePeriodHours} />
-            </label>
-            <p className="text-xs text-muted-foreground sm:col-span-3">
-              Rate, rate mode, and grace apply only to entries created after this save; each entry snapshots them
-              when it joins. The start can only move before anything has joined.
-            </p>
-            <div className="sm:col-span-3"><PendingButton size="sm" pendingText="Saving…">Save</PendingButton></div>
-          </form>
-        </details>
+        <div className="mt-4">
+          <Details summary="Edit name, rate, grace">
+            <form action={operationControl} className="grid gap-3 sm:grid-cols-3">
+              <input type="hidden" name="slug" value={slug} />
+              <input type="hidden" name="action" value="edit" />
+              <Field label="Name" className="sm:col-span-3">
+                <Input name="name" defaultValue={op.name} maxLength={80} />
+              </Field>
+              <Field label="Bonus ($/hr)">
+                <Input name="rateUsd" type="number" step="0.01" min="0" defaultValue={op.rateUsd} />
+              </Field>
+              <Field label="Rate mode">
+                <NativeSelect name="rateMode" defaultValue={op.rateMode}>
+                  <option value="additive">Additive: flat bonus</option>
+                  <option value="floor">Floor: minimum rate</option>
+                </NativeSelect>
+              </Field>
+              <Field label="Grace (hours)">
+                <Input name="graceHours" type="number" min="0" defaultValue={op.gracePeriodHours} />
+              </Field>
+              <p className="hc-caption text-xs sm:col-span-3">
+                Rate, rate mode, and grace apply only to entries created after this save, each entry snapshots them
+                when it joins. The start can only move before anything has joined.
+              </p>
+              <div className="sm:col-span-3">
+                <ActionButton size="sm" pendingLabel="Saving...">
+                  Save
+                </ActionButton>
+              </div>
+            </form>
+          </Details>
+        </div>
       </Card>
 
       {stats && e && (
         <>
-          <div>
-            <div className="text-sm font-medium text-muted-foreground mb-3">Entries</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <section className="flex flex-col gap-3">
+            <h2 className="hc-eyebrow">Entries</h2>
+            <StatGrid>
               <Stat label="Entered" value={e.entries} hint={`${e.not_shipped} not shipped yet`} />
               <Stat label="Shipped" value={e.shipped_entries} />
               <Stat label="Pending review" value={e.pending_review} hint="shipped or ruled, awaiting final" />
               <Stat label="Changes requested" value={e.needs_changes} hint="in the grace window" />
               <Stat label="Eligible" value={e.eligible} />
               <Stat label="Ineligible" value={e.ineligible} />
-              <Stat label="Approved" value={e.approved} />
-              <Stat label="Participants" value={stats.participants} hint={`${stats.active_builders_7d} journaling in the last 7d`} />
-            </div>
-          </div>
+              <Stat label="Approved" value={e.approved} tone="success" />
+              <Stat
+                label="Participants"
+                value={stats.participants}
+                hint={`${stats.active_builders_7d} journaling in the last 7d`}
+              />
+            </StatGrid>
+          </section>
 
-          <div>
-            <div className="text-sm font-medium text-muted-foreground mb-3">Blackout cost (top-up only)</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Stat label="Blackout cost paid" value={usd(stats.actual_uplift_usd)} hint={`extra pixels credited over normal pay, net of reversals · ${stats.ledger.paid_transactions} payouts`} />
-              <Stat label="Pending cost (max)" value={usd(Number(stats.pending.uplift_max_usd))} hint="most the unpaid entries could still add" />
+          <section className="flex flex-col gap-3">
+            <h2 className="hc-eyebrow">Blackout cost (top-up only)</h2>
+            <StatGrid>
+              <Stat
+                label="Blackout cost paid"
+                value={usd(stats.actual_uplift_usd)}
+                hint={`extra pixels credited over normal pay, net of reversals · ${stats.ledger.paid_transactions} payouts`}
+              />
+              <Stat
+                label="Pending cost (max)"
+                value={usd(Number(stats.pending.uplift_max_usd))}
+                hint="most the unpaid entries could still add"
+              />
               <Stat label="Projected cost (max)" value={usd(stats.projected_uplift_max_usd)} hint="paid + pending max" />
               <Stat label="Trial-held skips" value={skippedForTrial} hint="owner top-ups skipped, Trial prize pending" />
-            </div>
-            <div className="text-sm font-medium text-muted-foreground mt-6 mb-3">Work value (not extra cost)</div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Stat label="Approved hours" value={hrs(Number(stats.contributors.approved_hours))} hint={`power restored: ${Math.round(Number(stats.power_units))} units`} />
-              <Stat label="Approved work value" value={usd(stats.actual_gross_usd)} hint="approved hours × effective rate; mostly paid by normal payouts" />
+            </StatGrid>
+            <h2 className="hc-eyebrow mt-3">Work value (not extra cost)</h2>
+            <StatGrid>
+              <Stat
+                label="Approved hours"
+                value={hrs(Number(stats.contributors.approved_hours))}
+                hint={`power restored: ${Math.round(Number(stats.power_units))} units`}
+              />
+              <Stat
+                label="Approved work value"
+                value={usd(stats.actual_gross_usd)}
+                hint="approved hours × effective rate, mostly paid by normal payouts"
+              />
               <Stat label="Pending hours" value={hrs(Number(stats.pending.hours))} hint="upper bound, not yet approved" />
-              <Stat label="Pending work value" value={usd(Number(stats.pending.gross_usd))} hint="if every pending hour is approved" />
-            </div>
-            <p className="text-xs text-muted-foreground mt-3 max-w-3xl">
+              <Stat
+                label="Pending work value"
+                value={usd(Number(stats.pending.gross_usd))}
+                hint="if every pending hour is approved"
+              />
+            </StatGrid>
+            <p className="hc-caption max-w-3xl text-xs">
               Blackout cost means only the top-up. Each person&apos;s normal project payout already pays their hours at
               their own rate, so the operation adds just the difference on top.{" "}
-              {op.rateMode === "additive"
-                ? <>Every eligible contributor gets the same flat +{usd(Number(op.rateUsd))}/hr, whether their own rate
-                    is $4, $5, or $6/hr - nobody is left out for already being above some minimum.</>
-                : <>Below the {usd(Number(op.rateUsd))}/hr floor, the difference is added; at or above it, nothing extra.</>}
-              {" "}Work value is the total those hours are worth at the effective rate, for context. Pending hours are a
+              {op.rateMode === "additive" ? (
+                <>
+                  Every eligible contributor gets the same flat +{usd(Number(op.rateUsd))}/hr, whether their own rate
+                  is $4, $5, or $6/hr, so nobody is left out for already being above some minimum.
+                </>
+              ) : (
+                <>Below the {usd(Number(op.rateUsd))}/hr floor, the difference is added. At or above it, nothing extra.</>
+              )}{" "}
+              Work value is the total those hours are worth at the effective rate, for context. Pending hours are a
               ceiling from tracked time inside each entry&apos;s window, not yet approved
-              {op.rateMode === "additive" && "; the pending cost figure itself is exact for the bonus (it doesn't depend on anyone's real rate), not an estimate"}.
+              {op.rateMode === "additive" &&
+                ". The pending cost figure itself is exact for the bonus (it doesn't depend on anyone's real rate), not an estimate"}
+              .
             </p>
-          </div>
+          </section>
         </>
       )}
 
-      <div>
-        <div className="flex items-center gap-2 flex-wrap mb-3">
-          <span className="text-sm font-medium text-muted-foreground mr-1">Entries</span>
-          <Button asChild variant="ghost" size="sm" className={!statusFilter ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}>
-            <Link href={qs(1)}>All</Link>
-          </Button>
-          {ENTRY_STATUSES.map((s) => (
-            <Button key={s} asChild variant="ghost" size="sm" className={statusFilter === s ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}>
-              <Link href={qs(1, s)}>{ENTRY_STATUS_LABEL[s]}</Link>
-            </Button>
-          ))}
-        </div>
-        <div className="space-y-2">
+      <Card padding="flush">
+        <CardHeader title="Entries" icon="list" count={list.total} />
+        <LinkTabs
+          active={statusFilter ?? "all"}
+          tabs={[
+            { key: "all", href: qs(1), label: "All" },
+            ...ENTRY_STATUSES.map((s) => ({ key: s, href: qs(1, s), label: ENTRY_STATUS_LABEL[s] })),
+          ]}
+        />
+        <Table headers={["Project", "Status", "Joined", "Shipped", "Hours"]}>
           {list.items.map((it) => (
-            <Link key={it.id} href={`/projects/${it.projectId}`} className="block">
-              <Card className="p-3.5 gap-1 hover:bg-muted/40">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-sm">{it.projectName}</span>
-                  <Badge variant={ENTRY_TONE[it.status]} className="uppercase tracking-wide text-[0.65rem]">
-                    {ENTRY_STATUS_LABEL[it.status]}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">{it.ownerName}</span>
-                  {it.evidenceIncomplete && <Badge variant="destructive" className="text-[0.65rem]">Hackatime incomplete</Badge>}
-                  {it.trialHoldSkipped && <Badge variant="warning" className="text-[0.65rem]">Top-up skipped: Trial hold</Badge>}
+            <tr key={it.id}>
+              <td>
+                <TextLink href={`/projects/${it.projectId}`} className="font-bold">
+                  {it.projectName}
+                </TextLink>
+                <div className="text-xs">
+                  <Muted>{it.ownerName}</Muted>
                 </div>
-                <div className="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-0.5">
-                  <span>joined {fmt(it.joinedAt)}</span>
-                  <span>{it.firstQualifiedShipAt ? `shipped ${fmt(it.firstQualifiedShipAt)}` : "not shipped"}</span>
-                  <span>{hrs(it.eligibleHours)} in window</span>
-                  {it.approvedHours > 0 && <span>{hrs(it.approvedHours)} ruled</span>}
-                  {it.paidHours > 0 && <span>{hrs(it.paidHours)} paid (+{it.upliftPx} px)</span>}
+              </td>
+              <td>
+                <div className="flex flex-wrap gap-1">
+                  <Badge tone={ENTRY_TONE[it.status]}>{ENTRY_STATUS_LABEL[it.status]}</Badge>
+                  {it.evidenceIncomplete && <Badge tone="danger">Hackatime incomplete</Badge>}
+                  {it.trialHoldSkipped && <Badge tone="warning">Top-up skipped: Trial hold</Badge>}
                 </div>
-              </Card>
-            </Link>
+              </td>
+              <td className="text-sm">
+                <Muted>{fmt(it.joinedAt)}</Muted>
+              </td>
+              <td className="text-sm">
+                {it.firstQualifiedShipAt ? fmt(it.firstQualifiedShipAt) : <Muted>not shipped</Muted>}
+              </td>
+              <td className="text-sm">
+                <div>{hrs(it.eligibleHours)} in window</div>
+                {it.approvedHours > 0 && <div><Muted>{hrs(it.approvedHours)} ruled</Muted></div>}
+                {it.paidHours > 0 && (
+                  <div>
+                    <Muted>
+                      {hrs(it.paidHours)} paid (+{it.upliftPx} px)
+                    </Muted>
+                  </div>
+                )}
+              </td>
+            </tr>
           ))}
           {list.items.length === 0 && (
-            <Card className="p-5 text-sm text-muted-foreground">No entries{statusFilter ? " with that status" : " yet"}.</Card>
+            <EmptyRow colSpan={5} title={`No entries${statusFilter ? " with that status" : " yet"}`} icon="search" />
           )}
-        </div>
-        {pages > 1 && (
-          <div className="flex items-center justify-between text-sm mt-4">
-            <span className="text-muted-foreground">Page {page} of {pages}</span>
-            <div className="flex gap-2">
-              {page > 1 && <Button asChild variant="outline" size="sm"><Link href={qs(page - 1, statusFilter)}>Previous</Link></Button>}
-              {page < pages && <Button asChild variant="outline" size="sm"><Link href={qs(page + 1, statusFilter)}>Next</Link></Button>}
-            </div>
-          </div>
-        )}
-      </div>
+        </Table>
+      </Card>
+      <Pagination page={page} totalPages={pages} hrefFor={(p) => qs(p, statusFilter)} />
 
       {audit.length > 0 && (
-        <div>
-          <div className="text-sm font-medium text-muted-foreground mb-3">Audit trail</div>
-          <Card className="divide-y divide-border py-0">
+        <Card padding="flush">
+          <CardHeader title="Audit trail" icon="history" />
+          <Table headers={["Action", "By", "When"]}>
             {audit.map((a) => (
-              <div key={a.id} className="p-3 text-xs flex flex-wrap gap-x-3 gap-y-0.5 items-center">
-                <span className="font-medium text-foreground">{a.action.replaceAll("_", " ")}</span>
-                <span className="text-muted-foreground">{actorLabel(a.actor)}</span>
-                <span className="text-muted-foreground ml-auto">{fmt(new Date(a.created_at).toISOString())} UTC</span>
-              </div>
+              <tr key={a.id}>
+                <td className="font-bold">{a.action.replaceAll("_", " ")}</td>
+                <td>
+                  <Muted>{actorLabel(a.actor)}</Muted>
+                </td>
+                <td className="text-sm">
+                  <Muted>{fmt(new Date(a.created_at).toISOString())} UTC</Muted>
+                </td>
+              </tr>
             ))}
-          </Card>
-        </div>
+          </Table>
+        </Card>
       )}
     </div>
   );

@@ -14,6 +14,10 @@
 const BASE_ID = "app80yzut0bdMNdHJ";
 const TABLE_ID = "tbl8UpMm6gsLPKEN0";
 
+// Every Airtable call gives up after this, so a hung Airtable can't hold up a
+// review or a page render.
+const AIRTABLE_TIMEOUT_MS = 10_000;
+
 export function githubUsernameFromRepoUrl(repoUrl: string): string {
   let u: URL;
   try {
@@ -202,6 +206,7 @@ export async function fetchAirtableRecord(recordId: string): Promise<FetchRecord
   try {
     res = await fetch(`https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}/${recordId}`, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(AIRTABLE_TIMEOUT_MS),
     });
   } catch (err) {
     return { ok: false, error: `Airtable request failed: ${(err as Error).message}` };
@@ -235,6 +240,7 @@ export async function pushProjectRecord(
   try {
     res = await fetch(url, {
       method,
+      signal: AbortSignal.timeout(AIRTABLE_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",

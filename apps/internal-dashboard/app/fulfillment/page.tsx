@@ -1,10 +1,11 @@
-import Link from "next/link";
+import type { ReactNode } from "react";
 import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import {
   listShopOrders,
   listFulfillers,
+  countPendingOrders,
   buyerDetailsByUserId,
   buyerCountriesByUserId,
   fulfillerStatsBySlackId,
@@ -15,7 +16,6 @@ import {
   type BuyerDetails,
   type ShopEconomySummary,
 } from "@/lib/db";
-import { slackHandles } from "@/lib/slack";
 import { canSeeBuyerDetails, isOwnOrder } from "@/lib/fulfillmentAccess";
 import {
   claimOrder,
@@ -30,32 +30,42 @@ import {
   clearOrderFlag,
   updateOrderFulfillmentInfo,
 } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Disclosure } from "@/app/_components/Disclosure";
 import { isSafeUrl } from "@/lib/safeUrl";
 import { config } from "@/app/_generated/config";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import {
+  ActionButton,
+  Badge,
+  ButtonLink,
+  Callout,
+  Card,
+  CardHeader,
+  DescriptionList,
+  Details,
+  EmptyRow,
+  EmptyState,
+  Field,
+  Input,
+  LinkTabs,
+  Mono,
+  Muted,
+  PageHeader,
+  Stat,
+  StatGrid,
+  Table,
+  TextLink,
+  formatDate,
+  formatDateTime,
+  type Tone,
+} from "@/app/_ui/ui";
+import { SlackHandle } from "./SlackHandle";
 
 export const dynamic = "force-dynamic";
-
-const STATUS_BADGE: Record<OrderStatus, "secondary" | "success" | "destructive" | "warning"> = {
-  pending: "secondary",
-  ordered: "warning",
-  credited: "warning",
-  shipped: "success",
-  done: "success",
-  cancelled: "destructive",
-};
 
 // These two ship in a plain envelope with no carrier tracking of their own,
 // so a printable address label (app/fulfillment/label/[id]) is how the
 // fulfiller actually gets it to the right mailbox.
 const LABEL_ELIGIBLE_ITEMS = new Set(["Random Desk Object", "Signed Org Photo"]);
 
-// Human labels for each stage.
 const STAGE_LABEL: Record<OrderStatus, string> = {
   pending: "New",
   ordered: "Ordered",
@@ -65,144 +75,134 @@ const STAGE_LABEL: Record<OrderStatus, string> = {
   cancelled: "Cancelled",
 };
 
-function slackLink(id: string): string {
-  return `https://slack.com/app_redirect?channel=${id}`;
-}
-
-// What the order's pixels are actually worth in dollars, i.e. the ceiling a
-// fulfiller has to source the item under. Mirrors the px figure 1:1 so the two
-// badges always describe the same amount.
-function usdBudget(pricePx: number): string {
-  return (pricePx * config.economy.pixelValueUsd).toFixed(2);
-}
-
-// Lifetime shop P&L, fulfilled orders only - both sides are scoped to the
-// exact same cohort (orders with an actual_cost_usd on file, i.e. reached
-// credited-or-later), so it's a true fulfilled-vs-fulfilled comparison, not
-// all pixels ever redeemed against only some of the real spend. Orders still
-// sitting in New/Ordered aren't counted on either side yet.
-function ShopEconomyCard({ economy }: { economy: ShopEconomySummary }) {
-  const redeemedUsd = economy.totalPx * config.economy.pixelValueUsd;
-  const net = redeemedUsd - economy.totalActualCostUsd;
-  const orderNote = economy.ordersWithCost > 0 ? ` (${economy.ordersWithCost} orders)` : "";
-  return (
-    <Card className="p-4 mb-5 max-w-2xl">
-      <div className="text-xs text-muted-foreground mb-3">Shop economy, fulfilled orders{orderNote}</div>
-      <div className="grid grid-cols-3 gap-4">
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">Redeemed by players</div>
-          <div className="text-lg font-semibold tabular-nums">{economy.totalPx.toLocaleString()} px</div>
-          <div className="text-xs text-muted-foreground tabular-nums">${redeemedUsd.toFixed(2)}</div>
-        </div>
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">Spent fulfilling them</div>
-          <div className="text-lg font-semibold tabular-nums">${economy.totalActualCostUsd.toFixed(2)}</div>
-        </div>
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">Net</div>
-          <Badge variant={net >= 0 ? "success" : "destructive"} className="text-sm tabular-nums">
-            {net >= 0 ? "+" : "-"}${Math.abs(net).toFixed(2)}
-          </Badge>
-        </div>
-      </div>
-    </Card>
-  );
-}
+const STAGE_TONE: Record<OrderStatus, Tone> = {
+  pending: "warning",
+  ordered: "info",
+  credited: "purple",
+  shipped: "cyan",
+  done: "success",
+  cancelled: "neutral",
+};
 
 const TAB_KEYS = ["pending", "ordered", "credited", "shipped", "done", "cancelled", "flagged", "all", "leaderboard", "fulfillers"] as const;
 type TabKey = (typeof TAB_KEYS)[number];
 
-// Who's actually fulfilling orders - ranked by lifetime fulfillment pixels
-// earned (3px per order shipped, see FULFILLMENT_PAYOUT_PIXELS in
-// app/actions.ts), not just order count, so a handful of expensive/slow
-// orders don't look like less work than a pile of easy ones.
+// What the order's pixels are actually worth in dollars, i.e. the ceiling a
+// fulfiller has to source the item under.
+function usdBudget(pricePx: number): string {
+  return (pricePx * config.economy.pixelValueUsd).toFixed(2);
+}
+
+function slackLink(id: string): string {
+  return `https://slack.com/app_redirect?channel=${id}`;
+}
+
+function SafeLink({ url }: { url: string }) {
+  return isSafeUrl(url) ? (
+    <TextLink href={url} external className="break-all">
+      {url}
+    </TextLink>
+  ) : (
+    <span className="break-all">{url}</span>
+  );
+}
+
+// Lifetime shop P&L, fulfilled orders only. Both sides are scoped to the same
+// cohort (orders with an actual_cost_usd on file, i.e. credited or later), so
+// it compares fulfilled against fulfilled. New/Ordered orders aren't counted.
+function ShopEconomy({ economy }: { economy: ShopEconomySummary }) {
+  const redeemedUsd = economy.totalPx * config.economy.pixelValueUsd;
+  const net = redeemedUsd - economy.totalActualCostUsd;
+  const orders = economy.ordersWithCost > 0 ? `${economy.ordersWithCost} fulfilled orders` : "Fulfilled orders";
+  return (
+    <StatGrid>
+      <Stat
+        label="Redeemed by players"
+        icon="enter"
+        value={`${economy.totalPx.toLocaleString()} px`}
+        hint={`$${redeemedUsd.toFixed(2)} · ${orders}`}
+      />
+      <Stat label="Spent fulfilling" icon="payment" value={`$${economy.totalActualCostUsd.toFixed(2)}`} />
+      <Stat
+        label="Net"
+        icon="analytics"
+        tone={net >= 0 ? "success" : "danger"}
+        value={`${net >= 0 ? "+" : "-"}$${Math.abs(net).toFixed(2)}`}
+      />
+    </StatGrid>
+  );
+}
+
+// Who's actually fulfilling orders, ranked by lifetime fulfillment pixels
+// earned rather than order count, so a few expensive or slow orders don't look
+// like less work than a pile of easy ones.
 async function FulfillmentLeaderboard() {
   const stats = await fulfillerStatsBySlackId();
   const rows = [...stats.entries()].sort((a, b) => b[1].pixelsEarned - a[1].pixelsEarned);
-  const handles = await slackHandles(rows.map(([slack]) => slack));
   return (
-    <Card className="overflow-hidden py-0">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-xs text-muted-foreground text-left border-b border-border">
-            <th className="p-3 font-medium">Fulfiller</th>
-            <th className="p-3 font-medium">Orders fulfilled</th>
-            <th className="p-3 font-medium">Pixels earned</th>
-            <th className="p-3 font-medium">Last active</th>
+    <Card padding="flush">
+      <CardHeader title="Leaderboard" icon="leader" count={rows.length} />
+      <Table headers={["Fulfiller", "Orders fulfilled", "Pixels earned", "Last active"]}>
+        {rows.length === 0 && <EmptyRow colSpan={4} title="No fulfillments yet" icon="package" />}
+        {rows.map(([slack, s]) => (
+          <tr key={slack}>
+            <td>
+              <TextLink href={`/fulfillers/${slack}`} className="font-bold">
+                <SlackHandle id={slack} fallback={`@${slack}`} />
+              </TextLink>
+            </td>
+            <td className="tabular-nums">{s.shipped}</td>
+            <td className="tabular-nums font-bold">{s.pixelsEarned.toLocaleString()} px</td>
+            <td className="hc-muted">{formatDate(s.lastActivity)}</td>
           </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {rows.length === 0 && (
-            <tr>
-              <td colSpan={4} className="p-5 text-center text-muted-foreground">
-                No fulfillments yet.
-              </td>
-            </tr>
-          )}
-          {rows.map(([slack, s]) => (
-            <tr key={slack}>
-              <td className="p-3 font-medium">
-                <Link href={`/fulfillers/${slack}`} className="hover:text-brand">
-                  {handles.get(slack) ?? `@${slack}`}
-                </Link>
-              </td>
-              <td className="p-3 tabular-nums">{s.shipped}</td>
-              <td className="p-3 tabular-nums font-medium">{s.pixelsEarned.toLocaleString()} px</td>
-              <td className="p-3 text-muted-foreground">{fmtDate(s.lastActivity)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        ))}
+      </Table>
     </Card>
   );
 }
 
 async function FulfillerManager() {
   const fulfillers = await listFulfillers();
-  const handles = await slackHandles(fulfillers.map((f) => f.slack_user_id));
   return (
-    <Card className="p-5 mb-6">
-      <div className="text-sm font-semibold mb-1">Fulfillers</div>
-      <p className="text-xs text-muted-foreground mb-3">
-        Fulfillers (and owners) can claim orders and mark them credited/shipped. Marking an order
-        done, reassigning it, and cancel &amp; refund stay owner-only.
-      </p>
-      <form action={addFulfillerAction} className="flex flex-wrap gap-2 mb-3">
-        <Input
-          name="slackId"
-          placeholder="Slack user ID (U0…)"
-          className="max-w-56 text-sm font-mono"
-          required
-        />
-        <PendingButton pendingText="Adding…">Add fulfiller</PendingButton>
-      </form>
-      {fulfillers.length === 0 ? (
-        <div className="text-xs text-muted-foreground">No fulfillers yet.</div>
-      ) : (
-        <ul className="flex flex-wrap gap-2">
-          {fulfillers.map((f) => (
-            <li
-              key={f.slack_user_id}
-              className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1 text-sm"
-            >
-              <Link href={`/fulfillers/${f.slack_user_id}`} className="font-medium hover:text-brand">
-                {handles.get(f.slack_user_id) ?? `@${f.slack_user_id}`}
-              </Link>
-              <span className="font-mono text-xs text-muted-foreground">{f.slack_user_id}</span>
+    <Card padding="flush">
+      <CardHeader title="Fulfillers" icon="person" count={fulfillers.length} />
+      <div className="flex flex-col gap-3 px-4 py-4">
+        <p className="hc-caption text-sm">
+          Fulfillers (and owners) can claim orders and mark them credited or shipped. Marking an order done,
+          reassigning it, and cancel &amp; refund stay owner-only.
+        </p>
+        <form action={addFulfillerAction} className="flex flex-wrap items-end gap-2">
+          <Field label="Slack user ID" className="w-full max-w-60">
+            <Input name="slackId" placeholder="U0..." className="font-mono" required />
+          </Field>
+          <ActionButton pendingLabel="Adding..." icon="member-add">
+            Add fulfiller
+          </ActionButton>
+        </form>
+      </div>
+      <Table headers={["Fulfiller", "Slack ID", ""]}>
+        {fulfillers.length === 0 && <EmptyRow colSpan={3} title="No fulfillers yet" icon="person" />}
+        {fulfillers.map((f) => (
+          <tr key={f.slack_user_id}>
+            <td>
+              <TextLink href={`/fulfillers/${f.slack_user_id}`} className="font-bold">
+                <SlackHandle id={f.slack_user_id} fallback={`@${f.slack_user_id}`} />
+              </TextLink>
+            </td>
+            <td>
+              <Mono>{f.slack_user_id}</Mono>
+            </td>
+            <td className="text-right">
               <form action={removeFulfillerAction}>
                 <input type="hidden" name="slackId" value={f.slack_user_id} />
-                <button
-                  type="submit"
-                  className="text-xs text-destructive hover:underline"
-                  title="Remove fulfiller"
-                >
-                  remove
-                </button>
+                <ActionButton variant="danger" size="sm" pendingLabel="Removing...">
+                  Remove
+                </ActionButton>
               </form>
-            </li>
-          ))}
-        </ul>
-      )}
+            </td>
+          </tr>
+        ))}
+      </Table>
     </Card>
   );
 }
@@ -221,11 +221,10 @@ export default async function FulfillmentPage({
   const showingFulfillers = active === "fulfillers";
   const showingLeaderboard = active === "leaderboard";
 
-  // "My queue" is a fixed cross-stage view, not a filter on whatever status
-  // tab happens to be selected - it always shows every order this fulfiller
-  // has claimed that isn't done yet (ordered/credited/shipped), regardless
-  // of `active`. Otherwise toggling it on from the default "New" tab showed
-  // nothing, since pending orders are never claimed by anyone yet.
+  // "My queue" is a fixed cross-stage view, not a filter on the selected tab:
+  // every order this fulfiller has claimed that isn't done yet. Filtering the
+  // default New tab instead would always be empty, since nobody has claimed a
+  // pending order yet.
   let orders: ShopOrderRow[];
   if (showingFulfillers || showingLeaderboard) {
     orders = [];
@@ -241,15 +240,12 @@ export default async function FulfillmentPage({
   } else {
     orders = await listShopOrders(active === "all" ? undefined : active, 500);
   }
-  const pendingCount =
-    active === "pending" && !mineOnly
-      ? orders.length
-      : (await listShopOrders("pending", 1)).length;
-  const flaggedCount =
-    active === "flagged" && !mineOnly ? orders.length : (await listShopOrders("flagged", 50)).length;
-  const handles = await slackHandles(orders.map((o) => o.player_slack));
+  const [pendingCount, flaggedCount] = await Promise.all([
+    active === "pending" && !mineOnly ? orders.length : countPendingOrders(),
+    active === "flagged" && !mineOnly ? orders.length : listShopOrders("flagged", 50).then((r) => r.length),
+  ]);
   // Name/email/phone/mailing address are decrypted ONLY for orders this
-  // fulfiller has claimed (or for an owner) - see canSeeBuyerDetails. Every
+  // fulfiller has claimed (or for an owner), see canSeeBuyerDetails. Every
   // other order shows the buyer's country only, so browsing the queue doesn't
   // decrypt hundreds of kids' addresses.
   const detailOrders = orders.filter((o) => canSeeBuyerDetails(o, access));
@@ -258,18 +254,17 @@ export default async function FulfillmentPage({
     buyerDetailsByUserId(detailOrders.map((o) => o.user_id)),
     buyerCountriesByUserId(countryOrders.map((o) => o.user_id)),
   ]);
-  // Owner-only, since it's a financial rollup rather than a per-order
-  // fulfillment task - plain fulfillers don't need it to do their job.
+  // Owner-only: a financial rollup, not something a fulfiller needs to do the job.
   const economy = access.isOwner ? await shopEconomySummary() : null;
 
-  const tabs: { key: TabKey; label: string }[] = [
-    { key: "pending", label: "New" },
+  const tabs: { key: TabKey; label: string; count?: number }[] = [
+    { key: "pending", label: "New", count: pendingCount > 0 ? pendingCount : undefined },
     { key: "ordered", label: "Ordered" },
     { key: "credited", label: "Credited" },
     { key: "shipped", label: "Shipped" },
     { key: "done", label: "Done" },
     { key: "cancelled", label: "Cancelled" },
-    { key: "flagged", label: `Over budget${flaggedCount > 0 ? ` (${flaggedCount})` : ""}` },
+    { key: "flagged", label: "Over budget", count: flaggedCount > 0 ? flaggedCount : undefined },
     { key: "all", label: "All" },
     { key: "leaderboard", label: "Leaderboard" },
     ...(access.isOwner ? [{ key: "fulfillers" as TabKey, label: "Fulfillers" }] : []),
@@ -290,121 +285,107 @@ export default async function FulfillmentPage({
     return qs ? `/fulfillment?${qs}` : "/fulfillment";
   };
 
+  const emptyTitle = mineOnly
+    ? "Nothing in your queue"
+    : active === "pending"
+      ? "No orders waiting to be claimed"
+      : active === "flagged"
+        ? "Nothing over budget right now"
+        : "Nothing here yet";
+
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-1">Fulfillment</h1>
-      <p className="text-sm text-muted-foreground mb-5 max-w-2xl">
-        Orders players placed in the shop with pixels. Claim one to place the real order , it moves
-        into your queue and walks through <em>ordered → credited → shipped</em>. Enter tracking when
-        it ships and Pixo DMs it to the buyer. Cancel any time before it ships to refund the pixels.
-      </p>
-      <p className="text-sm text-muted-foreground mb-5 max-w-2xl">
-        Every order shows a <span className="text-foreground font-medium">budget</span>, what the
-        player&apos;s pixels are worth at ${config.economy.pixelValueUsd.toFixed(2)} per pixel. Buy
-        it for that or less. If the cheapest you can find is over budget, don&apos;t place the order:
-        flag it with what you found and an owner picks it up from the Over budget tab.
-      </p>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title={mineOnly ? "My queue" : "Fulfillment"}
+        description={
+          <>
+            Shop orders paid for with pixels. Claim one to place the real order; it walks through ordered, credited
+            and shipped. Tracking is DM&apos;d to the buyer when it ships, and an order can be cancelled for a refund
+            until someone claims it.
+          </>
+        }
+        actions={
+          !showingFulfillers &&
+          !showingLeaderboard && (
+            <ButtonLink href={mineToggleLink()} variant={mineOnly ? "primary" : "outline"} size="sm" icon="list">
+              {mineOnly ? "Back to all orders" : "My queue"}
+            </ButtonLink>
+          )
+        }
+      />
 
-      {economy && <ShopEconomyCard economy={economy} />}
+      <Callout tone="info" icon="payment">
+        Every order shows a <strong>budget</strong>: what the player&apos;s pixels are worth at $
+        {config.economy.pixelValueUsd.toFixed(2)} per pixel. Buy it for that or less. If the cheapest you can find is
+        over budget, don&apos;t place the order: flag it with what you found and an owner picks it up from the Over
+        budget tab.
+      </Callout>
 
-      <div className="flex items-center gap-3 flex-wrap mb-4">
-        {!mineOnly && (
-          <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-card">
-            {tabs.map((t) => (
-              <Button
-                key={t.key}
-                asChild
-                variant="ghost"
-                size="sm"
-                className={active === t.key ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}
-              >
-                <Link href={linkFor(t.key)}>
-                  {t.label}
-                  {t.key === "pending" && pendingCount > 0 ? ` (${pendingCount})` : ""}
-                </Link>
-              </Button>
-            ))}
-          </div>
-        )}
-        {!showingFulfillers && !showingLeaderboard && (
-          <Button
-            asChild
-            variant={mineOnly ? "default" : "outline"}
-            size="sm"
-            className={mineOnly ? "bg-brand text-white hover:bg-brand/90 hover:text-white border-transparent" : ""}
-          >
-            <Link href={mineToggleLink()}>{mineOnly ? "My queue ✓" : "My queue"}</Link>
-          </Button>
-        )}
-      </div>
+      {economy && <ShopEconomy economy={economy} />}
+
+      {!mineOnly && (
+        <LinkTabs
+          active={active}
+          tabs={tabs.map((t) => ({ key: t.key, href: linkFor(t.key), label: t.label, count: t.count }))}
+        />
+      )}
 
       {showingFulfillers ? (
         <FulfillerManager />
       ) : showingLeaderboard ? (
         <FulfillmentLeaderboard />
       ) : orders.length === 0 ? (
-        <Card className="p-8 text-center text-muted-foreground text-sm">
-          {mineOnly
-            ? "Nothing in your queue here."
-            : active === "pending"
-              ? "No orders waiting to be claimed. Nice and clear."
-              : active === "flagged"
-                ? "Nothing over budget right now."
-                : "Nothing here yet."}
+        <Card>
+          <EmptyState title={emptyTitle} icon="package" />
         </Card>
       ) : (
-        <div className="grid gap-3">
-          {orders.map((o) => (
-            <OrderCard
-              key={o.id}
-              order={o}
-              handle={o.player_slack ? handles.get(o.player_slack) : undefined}
-              buyer={canSeeBuyerDetails(o, access) ? buyerDetails.get(o.user_id) : undefined}
-              country={canSeeBuyerDetails(o, access) ? undefined : (buyerCountries.get(o.user_id) ?? "")}
-              ownOrder={isOwnOrder(o, me)}
-              mine={o.claimed_by_slack === me}
-              canManage={access.isOwner}
-            />
-          ))}
+        <div className="flex flex-col gap-4">
+          {orders.map((o) => {
+            const canSee = canSeeBuyerDetails(o, access);
+            return (
+              <OrderCard
+                key={o.id}
+                order={o}
+                buyer={canSee ? buyerDetails.get(o.user_id) : undefined}
+                country={canSee ? undefined : (buyerCountries.get(o.user_id) ?? "")}
+                ownOrder={isOwnOrder(o, me)}
+                mine={o.claimed_by_slack === me}
+                canManage={access.isOwner}
+              />
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-// The four live stages as a stepper, current one lit. Cancelled orders skip it.
+// The live stages as a stepper, current one lit. Cancelled orders skip it.
 function StageSteps({ status }: { status: OrderStatus }) {
   if (status === "cancelled") return null;
   const idx = ORDER_STAGES.indexOf(status);
   return (
-    <div className="flex items-center gap-1.5 text-xs">
+    <ol className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
       {ORDER_STAGES.map((s, i) => (
-        <span key={s} className="flex items-center gap-1.5">
+        <li key={s} className="flex items-center gap-1.5">
           <span
-            className={
-              i < idx
-                ? "text-muted-foreground"
-                : i === idx
-                  ? "font-semibold text-brand"
-                  : "text-muted-foreground/40"
-            }
+            className={i === idx ? "font-bold text-[var(--primary)]" : i < idx ? "hc-muted" : "hc-muted opacity-40"}
           >
             {STAGE_LABEL[s]}
           </span>
-          {i < ORDER_STAGES.length - 1 && <span className="text-muted-foreground/30">→</span>}
-        </span>
+          {i < ORDER_STAGES.length - 1 && <span className="hc-muted opacity-40">/</span>}
+        </li>
       ))}
-    </div>
+    </ol>
   );
 }
 
-function fmtDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleDateString() : "";
+function OnFile({ value }: { value: ReactNode }) {
+  return value ? <>{value}</> : <Muted>Not available</Muted>;
 }
 
 function OrderCard({
   order: o,
-  handle,
   buyer,
   country,
   ownOrder,
@@ -412,7 +393,6 @@ function OrderCard({
   canManage,
 }: {
   order: ShopOrderRow;
-  handle?: string;
   buyer?: BuyerDetails;
   // Set (possibly "") when the viewer may not see buyer details: country only.
   country?: string;
@@ -422,213 +402,168 @@ function OrderCard({
 }) {
   // Terminal orders are read-only; everything else still has an action.
   const actionable = o.status !== "done" && o.status !== "cancelled";
+  const budget = usdBudget(o.price);
+  const overBudget = o.actual_cost_usd !== null && Number(o.actual_cost_usd) > Number(budget);
+
+  const facts: [ReactNode, ReactNode][] = [];
+  if (!buyer && country !== undefined) {
+    facts.push([
+      "Ships to",
+      <>
+        {country || <Muted>Country not on file</Muted>} <Muted>· full shipping info appears once you claim it</Muted>
+      </>,
+    ]);
+  }
+  if (o.item_source_url) facts.push(["Last bought from", <SafeLink key="src" url={o.item_source_url} />]);
+  if (o.claimed_by && o.status !== "pending") {
+    const verb = o.status === "cancelled" ? "Handled by" : o.status === "shipped" || o.status === "done" ? "Fulfilled by" : "Claimed by";
+    facts.push([
+      verb,
+      <>
+        {o.claimed_by}
+        {mine && actionable ? " (you)" : ""}
+        {o.shipped_at && <Muted> · shipped {formatDate(o.shipped_at)}</Muted>}
+        {o.status === "done" && o.done_at && <Muted> · done {formatDate(o.done_at)}</Muted>}
+      </>,
+    ]);
+  }
+  if ((o.status === "shipped" || o.status === "done") && o.tracking) {
+    facts.push([
+      "Tracking",
+      <>
+        <Mono>{o.tracking}</Mono> <Muted>· DM&apos;d to buyer</Muted>
+      </>,
+    ]);
+  }
+  if (o.status !== "pending" && o.status !== "cancelled" && o.hcb_link) {
+    facts.push(["HCB", <SafeLink key="hcb" url={o.hcb_link} />]);
+  }
+  if (o.status === "cancelled" && o.note) facts.push(["Note", o.note]);
+
   return (
-    <Card className="p-4 gap-3">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
+    <Card>
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold">
-              {o.quantity > 1 ? `${o.quantity}× ` : ""}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="hc-heading text-lg">
+              {o.quantity > 1 ? `${o.quantity}x ` : ""}
               {o.item_name || "(item removed)"}
             </span>
-            <Badge variant="success" className="tabular-nums">
-              {o.price} px
-            </Badge>
-            <Badge
-              variant="secondary"
-              className="tabular-nums"
-              title={`${o.price} px x $${config.economy.pixelValueUsd.toFixed(2)}. Source it at or under this, otherwise flag it instead of ordering.`}
-            >
-              ${usdBudget(o.price)} budget
-            </Badge>
+            <Badge tone={STAGE_TONE[o.status] ?? "neutral"}>{STAGE_LABEL[o.status] ?? o.status}</Badge>
+            <Badge tone="success">{o.price} px</Badge>
+            <Badge outline>${budget} budget</Badge>
             {o.actual_cost_usd !== null && (
-              <Badge
-                variant={Number(o.actual_cost_usd) > Number(usdBudget(o.price)) ? "destructive" : "success"}
-                className="tabular-nums"
-                title="What this order actually cost, recorded by the fulfiller who claimed it"
-              >
+              <Badge tone={overBudget ? "danger" : "success"} outline>
                 ${Number(o.actual_cost_usd).toFixed(2)} actual
               </Badge>
             )}
-            <Badge variant={STATUS_BADGE[o.status] ?? "secondary"} className="capitalize">
-              {STAGE_LABEL[o.status] ?? o.status}
-            </Badge>
-            {o.option && <Badge variant="secondary">{o.option}</Badge>}
+            {o.option && <Badge>{o.option}</Badge>}
           </div>
-          <div className="text-sm text-muted-foreground mt-1">
-            <Link href={`/players/${o.user_id}`} className="font-medium text-foreground hover:text-brand">
+          <p className="hc-caption mt-1 text-sm">
+            <TextLink href={`/players/${o.user_id}`} className="font-bold">
               {buyer ? o.player_name : o.player_display_name}
-            </Link>
+            </TextLink>
             {o.player_slack && (
               <>
                 {" · "}
-                <a href={slackLink(o.player_slack)} target="_blank" rel="noreferrer" className="hover:text-brand">
-                  {handle ?? o.player_slack}
-                </a>
+                <TextLink href={slackLink(o.player_slack)} external>
+                  <SlackHandle id={o.player_slack} />
+                </TextLink>
               </>
             )}
             {" · "}
-            {new Date(o.created_at).toLocaleString()}
-          </div>
-          {buyer && (
-            <Disclosure summary="Shipping info" className="mt-1">
-              <div className="text-sm rounded border border-border bg-muted/40 p-2.5 space-y-1">
-                <div>
-                  <span className="text-xs text-muted-foreground">Name: </span>
-                  {buyer.name || <span className="text-muted-foreground">not on file</span>}
-                </div>
-                <div>
-                  <span className="text-xs text-muted-foreground">Email: </span>
-                  {buyer.email ? (
-                    <a href={`mailto:${buyer.email}`} className="text-brand hover:underline">
-                      {buyer.email}
-                    </a>
-                  ) : (
-                    <span className="text-muted-foreground">not on file</span>
-                  )}
-                </div>
-                <div>
-                  <span className="text-xs text-muted-foreground">Phone: </span>
-                  {buyer.phone || <span className="text-muted-foreground">not on file</span>}
-                </div>
-                <div>
-                  <span className="text-xs text-muted-foreground">Address: </span>
-                  {buyer.addressLines.length > 0 ? (
-                    <span className="whitespace-pre-line">{buyer.addressLines.join("\n")}</span>
-                  ) : (
-                    <span className="text-muted-foreground">not on file</span>
-                  )}
-                </div>
-              </div>
-            </Disclosure>
-          )}
-          {!buyer && country !== undefined && (
-            <div className="text-xs text-muted-foreground mt-1">
-              Ships to: <span className="text-foreground">{country || "country not on file"}</span>
-              {" · "}full shipping info appears once you claim it
-            </div>
-          )}
-          {buyer && LABEL_ELIGIBLE_ITEMS.has(o.item_name) && o.status !== "cancelled" && (
-            <div className="text-xs mt-1">
-              <Link href={`/fulfillment/label/${o.id}`} target="_blank" className="text-brand hover:underline">
-                Print shipping label →
-              </Link>
-            </div>
-          )}
-          {o.item_source_url && (
-            <div className="text-xs mt-1">
-              <span className="text-muted-foreground">Last bought from: </span>
-              {isSafeUrl(o.item_source_url) ? (
-                <a
-                  href={o.item_source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-brand hover:underline break-all"
-                >
-                  {o.item_source_url}
-                </a>
-              ) : (
-                <span className="break-all">{o.item_source_url}</span>
-              )}
-            </div>
-          )}
-          {o.claimed_by && o.status !== "pending" && (
-            <div className="text-xs text-muted-foreground mt-1">
-              {o.status === "cancelled"
-                ? "Handled"
-                : o.status === "shipped" || o.status === "done"
-                  ? "Fulfilled"
-                  : "Claimed"}{" "}
-              by <span className="text-foreground">{o.claimed_by}</span>
-              {mine && actionable ? " (you)" : ""}
-              {o.shipped_at ? ` · shipped ${fmtDate(o.shipped_at)}` : ""}
-              {o.status === "done" && o.done_at ? ` · done ${fmtDate(o.done_at)}` : ""}
-            </div>
-          )}
-          {(o.status === "shipped" || o.status === "done") && o.tracking && (
-            <div className="text-xs text-muted-foreground mt-1">
-              Tracking: <span className="text-foreground font-mono">{o.tracking}</span> · DM&apos;d to buyer
-            </div>
-          )}
-          {o.status !== "pending" && o.status !== "cancelled" && o.hcb_link && (
-            <div className="text-xs text-muted-foreground mt-1">
-              HCB:{" "}
-              {isSafeUrl(o.hcb_link) ? (
-                <a href={o.hcb_link} target="_blank" rel="noreferrer" className="text-brand hover:underline break-all">
-                  {o.hcb_link}
-                </a>
-              ) : (
-                <span className="break-all">{o.hcb_link}</span>
-              )}
-            </div>
-          )}
-          {actionable && /robux/i.test(o.item_name ?? "") && (
-            <div className="text-xs mt-1">
-              <a
-                href="https://www.roblox.com/fr/shopgiftcards?location=us&locale=us_us"
-                target="_blank"
-                rel="noreferrer"
-                className="text-brand hover:underline"
-              >
-                Buy Robux here
-              </a>
-            </div>
-          )}
-          {o.buyer_note && (
-            <div className="text-xs mt-1 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1">
-              <span className="font-semibold">Note from buyer:</span> {o.buyer_note}
-            </div>
-          )}
-          {o.status === "cancelled" && o.note && (
-            <div className="text-xs text-muted-foreground mt-1">{o.note}</div>
-          )}
-          {o.flagged_at && (
-            <div className="text-xs mt-1 rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1">
-              <span className="font-semibold">Over budget:</span> {o.flag_note}
-              <span className="text-muted-foreground">
-                {" "}
-                (flagged by {o.flagged_by || "a fulfiller"} on {fmtDate(o.flagged_at)})
-              </span>
-            </div>
-          )}
+            {formatDateTime(o.created_at)}
+          </p>
         </div>
         <StageSteps status={o.status} />
       </div>
 
-      {actionable && <OrderActions order={o} mine={mine} ownOrder={ownOrder} canManage={canManage} />}
-      {actionable && o.status !== "shipped" && (mine || canManage) && (
-        <FlagControls order={o} canManage={canManage} />
+      {(buyer || facts.length > 0 || o.buyer_note || o.flagged_at) && (
+        <div className="mt-4 flex flex-col gap-3">
+          {buyer && (
+            <Details summary="Shipping info">
+              <DescriptionList
+                items={[
+                  ["Name", <OnFile key="n" value={buyer.name} />],
+                  [
+                    "Email",
+                    <OnFile
+                      key="e"
+                      value={buyer.email && <TextLink href={`mailto:${buyer.email}`} external>{buyer.email}</TextLink>}
+                    />,
+                  ],
+                  ["Phone", <OnFile key="p" value={buyer.phone} />],
+                  [
+                    "Address",
+                    <OnFile
+                      key="a"
+                      value={
+                        buyer.addressLines.length > 0 && (
+                          <span className="whitespace-pre-line">{buyer.addressLines.join("\n")}</span>
+                        )
+                      }
+                    />,
+                  ],
+                ]}
+              />
+              {LABEL_ELIGIBLE_ITEMS.has(o.item_name) && o.status !== "cancelled" && (
+                <div className="mt-3">
+                  <ButtonLink href={`/fulfillment/label/${o.id}`} variant="outline" size="sm" icon="post">
+                    Print shipping label
+                  </ButtonLink>
+                </div>
+              )}
+            </Details>
+          )}
+          {facts.length > 0 && <DescriptionList items={facts} />}
+          {o.buyer_note && (
+            <Callout tone="warning" icon="message">
+              <strong>Note from buyer:</strong> {o.buyer_note}
+            </Callout>
+          )}
+          {o.flagged_at && (
+            <Callout tone="danger" icon="important">
+              <strong>Over budget:</strong> {o.flag_note}{" "}
+              <Muted>
+                (flagged by {o.flagged_by || "a fulfiller"} on {formatDate(o.flagged_at)})
+              </Muted>
+            </Callout>
+          )}
+          {actionable && /robux/i.test(o.item_name ?? "") && (
+            <div>
+              <TextLink href="https://www.roblox.com/fr/shopgiftcards?location=us&locale=us_us" external className="text-sm">
+                Buy Robux here
+              </TextLink>
+            </div>
+          )}
+        </div>
       )}
-      {canManage && o.status !== "pending" && o.status !== "cancelled" && (
-        <EditFulfillmentInfo order={o} />
+
+      {(actionable || canManage) && (
+        <div className="mt-5 flex flex-col gap-3 border-t border-[var(--border)] pt-5 empty:hidden">
+          {actionable && <OrderActions order={o} mine={mine} ownOrder={ownOrder} canManage={canManage} />}
+          {actionable && o.status !== "shipped" && (mine || canManage) && (
+            <FlagControls order={o} canManage={canManage} budget={budget} />
+          )}
+          {canManage && o.status !== "pending" && o.status !== "cancelled" && <EditFulfillmentInfo order={o} />}
+        </div>
       )}
     </Card>
   );
 }
 
-// Corrects the HCB link / actual cost / tracking after the fact - deliberately
-// NOT gated by `actionable`, so it still works once an order is done (the
-// main pipeline actions disappear there on purpose, but a typo'd link or a
-// wrong cost still needs fixing after the fact). Owner-level only, same as
-// the rest of updateOrderFulfillmentInfo's gate.
+// Corrects the HCB link / actual cost / tracking after the fact. Deliberately
+// not gated by `actionable`: a typo'd link or a wrong cost still needs fixing
+// once an order is done. Owner-only, same as updateOrderFulfillmentInfo.
 function EditFulfillmentInfo({ order: o }: { order: ShopOrderRow }) {
   return (
-    <Disclosure summary="Edit HCB link / cost / tracking / source URL">
-      <form action={updateOrderFulfillmentInfo} className="flex items-end gap-2 flex-wrap pt-2">
+    <Details summary="Edit HCB link, cost, tracking or source URL">
+      <form action={updateOrderFulfillmentInfo} className="grid gap-3 sm:grid-cols-2">
         <input type="hidden" name="id" value={o.id} />
-        <label className="block flex-1 min-w-64">
-          <span className="block text-xs font-medium text-muted-foreground mb-1">HCB link</span>
-          <Input
-            name="hcbLink"
-            type="url"
-            maxLength={300}
-            required
-            defaultValue={o.hcb_link}
-            className="w-full text-sm"
-          />
-        </label>
-        <label className="block w-32 shrink-0">
-          <span className="block text-xs font-medium text-muted-foreground mb-1">Actual cost ($)</span>
+        <Field label="HCB link">
+          <Input name="hcbLink" type="url" maxLength={300} required defaultValue={o.hcb_link} />
+        </Field>
+        <Field label="Actual cost ($)">
           <Input
             name="actualCostUsd"
             type="number"
@@ -636,74 +571,57 @@ function EditFulfillmentInfo({ order: o }: { order: ShopOrderRow }) {
             step="0.01"
             required
             defaultValue={o.actual_cost_usd !== null ? Number(o.actual_cost_usd) : undefined}
-            className="w-full text-sm"
           />
-        </label>
-        <label className="block flex-1 min-w-48">
-          <span className="block text-xs font-medium text-muted-foreground mb-1">Tracking</span>
-          <Input name="tracking" maxLength={120} defaultValue={o.tracking} className="w-full text-sm" />
-        </label>
-        <label className="block flex-1 min-w-64">
-          <span className="block text-xs font-medium text-muted-foreground mb-1">
-            Bought from (saved onto the item for the next fulfiller)
-          </span>
+        </Field>
+        <Field label="Tracking">
+          <Input name="tracking" maxLength={120} defaultValue={o.tracking} />
+        </Field>
+        <Field label="Bought from" hint="Saved onto the item for the next fulfiller">
           <Input
             name="sourceUrl"
             type="url"
             maxLength={500}
             defaultValue={o.item_source_url ?? ""}
-            placeholder="https://…"
-            className="w-full text-sm"
+            placeholder="https://..."
           />
-        </label>
-        <PendingButton variant="outline" pendingText="Saving…">
-          Save
-        </PendingButton>
+        </Field>
+        <div>
+          <ActionButton variant="outline" pendingLabel="Saving...">
+            Save
+          </ActionButton>
+        </div>
       </form>
-    </Disclosure>
+    </Details>
   );
 }
 
 // Sourcing escalation. A fulfiller who can't buy the item for what the player's
 // pixels are worth flags it here instead of ordering it over budget; an owner
 // clears the flag once they've decided what to do about it.
-function FlagControls({ order: o, canManage }: { order: ShopOrderRow; canManage: boolean }) {
+function FlagControls({ order: o, canManage, budget }: { order: ShopOrderRow; canManage: boolean; budget: string }) {
   if (o.flagged_at) {
     if (!canManage) return null;
     return (
       <form action={clearOrderFlag}>
         <input type="hidden" name="id" value={o.id} />
-        <PendingButton variant="outline" pendingText="Clearing…">
+        <ActionButton variant="outline" size="sm" pendingLabel="Clearing..." icon="checkmark">
           Clear flag
-        </PendingButton>
+        </ActionButton>
       </form>
     );
   }
   return (
-    <Disclosure summary={`Can't source it for $${usdBudget(o.price)}?`}>
-      <form action={flagOrderOverBudget} className="flex items-end gap-2 flex-wrap pt-2">
+    <Details summary={`Can't source it for $${budget}?`}>
+      <form action={flagOrderOverBudget} className="flex flex-wrap items-end gap-2">
         <input type="hidden" name="id" value={o.id} />
-        <label className="block flex-1 min-w-64">
-          <span className="block text-xs font-medium text-muted-foreground mb-1">
-            What&apos;s the cheapest you found, and where?
-          </span>
-          <Input
-            name="flagNote"
-            maxLength={300}
-            required
-            placeholder="Cheapest is $95 on Amazon, $88 refurb on eBay"
-            className="w-full text-sm"
-          />
-        </label>
-        <PendingButton
-          variant="outline"
-          pendingText="Flagging…"
-          className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
-        >
+        <Field label="What's the cheapest you found, and where?" className="min-w-64 flex-1">
+          <Input name="flagNote" maxLength={300} required placeholder="Cheapest is $95 on Amazon, $88 refurb on eBay" />
+        </Field>
+        <ActionButton variant="danger" pendingLabel="Flagging..." icon="flag">
           Flag over budget
-        </PendingButton>
+        </ActionButton>
       </form>
-    </Disclosure>
+    </Details>
   );
 }
 
@@ -718,38 +636,34 @@ function OrderActions({
   ownOrder: boolean;
   canManage: boolean;
 }) {
-  // Reassign, cancel/refund, and the final "mark done" close stay owner-only ,
+  // Reassign, cancel/refund and the final "mark done" stay owner-only:
   // fulfillers can work a claimed order but not override or refund one. Cancel
-  // is also only available before anyone's claimed it - once a fulfiller
-  // claims it (pending -> ordered) it can't be cancelled/refunded this way
-  // anymore (see cancelOrder in app/actions.ts, which enforces the same rule
-  // server-side).
-  const cancelForm = canManage && o.status === "pending" ? (
-    <form action={cancelOrder}>
-      <input type="hidden" name="id" value={o.id} />
-      <PendingButton
-        variant="outline"
-        pendingText="Refunding…"
-        confirm={`Cancel this order and refund ${o.price} pixels to ${o.player_name}?`}
-        className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
-      >
-        Cancel &amp; refund
-      </PendingButton>
-    </form>
-  ) : null;
+  // is only offered before anyone has claimed it (cancelOrder in
+  // app/actions.ts enforces the same rule server-side).
+  const cancelForm =
+    canManage && o.status === "pending" ? (
+      <form action={cancelOrder}>
+        <input type="hidden" name="id" value={o.id} />
+        <ActionButton
+          variant="danger"
+          pendingLabel="Refunding..."
+          confirm={`Cancel this order and refund ${o.price} pixels to ${o.player_name}?`}
+        >
+          Cancel &amp; refund
+        </ActionButton>
+      </form>
+    ) : null;
 
-  // Shipped: the only thing left is the final close, which any super can do.
+  // Shipped: the only thing left is the final close.
   if (o.status === "shipped") {
     if (!canManage) return null;
     return (
-      <div className="flex items-end gap-2 flex-wrap">
-        <form action={markOrderDone}>
-          <input type="hidden" name="id" value={o.id} />
-          <PendingButton className="bg-brand text-white border-transparent" pendingText="Closing…">
-            Mark done
-          </PendingButton>
-        </form>
-      </div>
+      <form action={markOrderDone}>
+        <input type="hidden" name="id" value={o.id} />
+        <ActionButton variant="success" pendingLabel="Closing..." icon="checkmark">
+          Mark done
+        </ActionButton>
+      </form>
     );
   }
 
@@ -757,12 +671,12 @@ function OrderActions({
   if (!mine && o.status !== "pending") {
     if (!canManage) return null;
     return (
-      <div className="flex items-end gap-2 flex-wrap">
+      <div className="flex flex-wrap items-end gap-2">
         <form action={reassignOrder}>
           <input type="hidden" name="id" value={o.id} />
-          <PendingButton variant="outline" pendingText="Taking over…">
+          <ActionButton variant="outline" pendingLabel="Taking over..." icon="member-add">
             Reassign to me
-          </PendingButton>
+          </ActionButton>
         </form>
         {cancelForm}
       </div>
@@ -773,74 +687,50 @@ function OrderActions({
     // claimOrder refuses a fulfiller's own order server-side too.
     if (ownOrder) {
       return (
-        <div className="flex items-end gap-2 flex-wrap">
-          <span className="text-xs text-muted-foreground">This is your own order, someone else has to fulfill it.</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <Muted className="text-sm">This is your own order, so someone else has to fulfill it.</Muted>
           {cancelForm}
         </div>
       );
     }
     return (
-      <div className="flex items-end gap-2 flex-wrap">
+      <div className="flex flex-wrap items-end gap-2">
         <form action={claimOrder}>
           <input type="hidden" name="id" value={o.id} />
-          <PendingButton className="bg-brand text-white border-transparent" pendingText="Claiming…">
+          <ActionButton pendingLabel="Claiming..." icon="bag">
             Place order &amp; claim
-          </PendingButton>
+          </ActionButton>
         </form>
         {cancelForm}
       </div>
     );
   }
 
-  // Ordered -> credited requires the HCB link and actual cost - the
-  // transaction only exists once HCB has actually credited the card, so it
-  // belongs here rather than at claim time.
+  // Ordered -> credited needs the HCB link and actual cost: the transaction
+  // only exists once HCB has actually charged the card.
   if (o.status === "ordered") {
     return (
-      <div className="flex items-end gap-2 flex-wrap">
-        <form action={markOrderCredited} className="flex items-end gap-2 flex-1 min-w-64">
+      <div className="flex flex-wrap items-end gap-2">
+        <form action={markOrderCredited} className="grid flex-1 items-end gap-3 sm:grid-cols-[minmax(0,1fr)_8rem_minmax(0,1fr)_auto]">
           <input type="hidden" name="id" value={o.id} />
-          <label className="block flex-1 min-w-0">
-            <span className="block text-xs font-medium text-muted-foreground mb-1">
-              HCB link (the transaction or grant this was paid from)
-            </span>
-            <Input
-              name="hcbLink"
-              type="url"
-              maxLength={300}
-              required
-              placeholder="https://hcb.hackclub.com/…"
-              className="w-full text-sm"
-            />
-          </label>
-          <label className="block w-32 shrink-0">
-            <span className="block text-xs font-medium text-muted-foreground mb-1">Actual cost ($)</span>
-            <Input
-              name="actualCostUsd"
-              type="number"
-              min="0"
-              step="0.01"
-              required
-              placeholder={usdBudget(o.price)}
-              className="w-full text-sm"
-            />
-          </label>
-          <label className="block flex-1 min-w-0">
-            <span className="block text-xs font-medium text-muted-foreground mb-1">
-              Bought from (optional , saved onto the item for the next fulfiller)
-            </span>
+          <Field label="HCB link" hint="The transaction or grant this was paid from">
+            <Input name="hcbLink" type="url" maxLength={300} required placeholder="https://hcb.hackclub.com/..." />
+          </Field>
+          <Field label="Actual cost ($)">
+            <Input name="actualCostUsd" type="number" min="0" step="0.01" required placeholder={usdBudget(o.price)} />
+          </Field>
+          <Field label="Bought from" hint="Optional, saved onto the item">
             <Input
               name="sourceUrl"
               type="url"
               maxLength={500}
               defaultValue={o.item_source_url ?? ""}
-              placeholder="https://…"
-              className="w-full text-sm"
+              placeholder="https://..."
             />
-          </label>
-          <PendingButton className="bg-brand text-white border-transparent" pendingText="Saving…">
+          </Field>
+          <ActionButton pendingLabel="Saving..." icon="checkmark">
             Mark credited (receipt uploaded)
-          </PendingButton>
+          </ActionButton>
         </form>
         {cancelForm}
       </div>
@@ -849,18 +739,15 @@ function OrderActions({
 
   // credited -> ship with a required tracking number.
   return (
-    <div className="flex items-end gap-2 flex-wrap">
-      <form action={shipOrder} className="flex items-end gap-2 flex-1 min-w-64">
+    <div className="flex flex-wrap items-end gap-2">
+      <form action={shipOrder} className="flex flex-1 flex-wrap items-end gap-2">
         <input type="hidden" name="id" value={o.id} />
-        <label className="block flex-1 min-w-0">
-          <span className="block text-xs font-medium text-muted-foreground mb-1">
-            Tracking number (DM&apos;d to the buyer)
-          </span>
-          <Input name="tracking" maxLength={120} required placeholder="1Z…" className="w-full text-sm" />
-        </label>
-        <PendingButton className="bg-brand text-white border-transparent" pendingText="Shipping…">
+        <Field label="Tracking number" hint="DM'd to the buyer" className="min-w-64 flex-1">
+          <Input name="tracking" maxLength={120} required placeholder="1Z..." />
+        </Field>
+        <ActionButton pendingLabel="Shipping..." icon="send">
           Mark shipped
-        </PendingButton>
+        </ActionButton>
       </form>
       {cancelForm}
     </div>

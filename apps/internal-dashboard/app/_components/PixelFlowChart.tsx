@@ -1,72 +1,59 @@
 "use client";
 
-import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { PixelFlowPoint } from "@/lib/db";
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  ChartLegend,
-  ChartLegendContent,
-  type ChartConfig,
-} from "@/components/ui/chart";
+import { Muted } from "@/app/_ui/ui";
+import { CHART_AXIS_PROPS, CHART_TOOLTIP_STYLE, dateLabel, sparseTicks } from "./GrowthChart";
 
-function dateLabel(date: string): string {
-  return new Date(`${date}T00:00:00Z`).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
-}
-
-const config = {
-  given: { label: "Given out", color: "#22c55e" },
-  deducted: { label: "Deducted", color: "#f43f5e" },
-} satisfies ChartConfig;
+const SERIES = [
+  { key: "given", label: "Given out", color: "var(--hc-green)" },
+  { key: "deducted", label: "Deducted", color: "var(--hc-red)" },
+] as const;
 
 export function PixelFlowChart({ points }: { points: PixelFlowPoint[] }) {
-  const n = points.length;
-  const tickIdx = n > 1 ? [0, Math.floor((n - 1) / 2), n - 1] : [0];
-  const ticks = tickIdx.map((i) => points[i]?.date).filter(Boolean);
+  const ticks = sparseTicks(points.map((p) => p.date));
 
   return (
     <div>
-      <div className="flex items-baseline justify-between mb-1">
-        <div className="font-pixel text-xl text-foreground">Pixels</div>
-        <div className="text-xs text-muted-foreground">given out vs deducted, per day</div>
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <h3 className="hc-heading text-base">Pixels</h3>
+        <Muted className="text-xs">Given out vs deducted, per day</Muted>
       </div>
 
-      <ChartContainer config={config} className="aspect-auto h-[200px] w-full">
-        <AreaChart data={points} margin={{ left: 4, right: 8, top: 8 }}>
-          <defs>
-            <linearGradient id="fill-given" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="var(--color-given)" stopOpacity={0.28} />
-              <stop offset="95%" stopColor="var(--color-given)" stopOpacity={0.02} />
-            </linearGradient>
-            <linearGradient id="fill-deducted" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="var(--color-deducted)" stopOpacity={0.28} />
-              <stop offset="95%" stopColor="var(--color-deducted)" stopOpacity={0.02} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid vertical={false} />
-          <XAxis
-            dataKey="date"
-            ticks={ticks}
-            tickLine={false}
-            axisLine={false}
-            tickMargin={8}
-            tickFormatter={dateLabel}
-          />
-          <YAxis width={40} tickLine={false} axisLine={false} />
-          <ChartTooltip
-            cursor={{ stroke: "var(--chart-cross)" }}
-            content={<ChartTooltipContent labelFormatter={(v) => dateLabel(String(v))} />}
-          />
-          <ChartLegend content={<ChartLegendContent />} />
-          <Area dataKey="given" type="monotone" stroke="var(--color-given)" strokeWidth={2} fill="url(#fill-given)" />
-          <Area dataKey="deducted" type="monotone" stroke="var(--color-deducted)" strokeWidth={2} fill="url(#fill-deducted)" />
-        </AreaChart>
-      </ChartContainer>
+      <div className="h-[220px] w-full">
+        <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 200 }}>
+          <AreaChart data={points} margin={{ left: 4, right: 8, top: 8 }}>
+            <defs>
+              {SERIES.map((s) => (
+                <linearGradient key={s.key} id={`fill-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={s.color} stopOpacity={0.28} />
+                  <stop offset="95%" stopColor={s.color} stopOpacity={0.02} />
+                </linearGradient>
+              ))}
+            </defs>
+            <CartesianGrid vertical={false} stroke="var(--border)" />
+            <XAxis dataKey="date" ticks={ticks} tickMargin={8} tickFormatter={dateLabel} {...CHART_AXIS_PROPS} />
+            <YAxis width={40} {...CHART_AXIS_PROPS} />
+            <Tooltip
+              {...CHART_TOOLTIP_STYLE}
+              cursor={{ stroke: "var(--border-strong)" }}
+              labelFormatter={(v) => dateLabel(String(v))}
+            />
+            <Legend wrapperStyle={{ fontSize: 13, color: "var(--muted)" }} />
+            {SERIES.map((s) => (
+              <Area
+                key={s.key}
+                dataKey={s.key}
+                name={s.label}
+                type="monotone"
+                stroke={s.color}
+                strokeWidth={2}
+                fill={`url(#fill-${s.key})`}
+              />
+            ))}
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }

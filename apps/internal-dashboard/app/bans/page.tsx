@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { requirePage, can } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
@@ -6,19 +5,27 @@ import { liveName } from "@/lib/liveMode";
 import { listBans, listBanLog, listBanProposals, banIsActive } from "@/lib/db";
 import { LiftBanForm } from "@/app/_components/Moderate";
 import { confirmBanProposal, rejectBanProposal } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
 import {
+  ActionButton,
+  Badge,
+  Card,
+  EmptyRow,
+  LinkTabs,
+  Muted,
+  PageHeader,
   Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  TextLink,
+  formatDate,
+  formatDateTime,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
+
+const DESCRIPTIONS = {
+  bans: "Every ban ever issued, newest first. Lifting removes all active bans for that player.",
+  proposed: "Ban proposals from before moderators were removed, waiting on an owner to confirm or reject.",
+  logs: "Every ban and lift action with who did it, newest first.",
+};
 
 export default async function BansPage({
   searchParams,
@@ -36,177 +43,142 @@ export default async function BansPage({
     active === "logs" ? listBanLog() : Promise.resolve([]),
     listBanProposals("pending"),
   ]);
-  const pendingCount = proposals.length;
-
-  const tabs = [
-    { key: "bans", label: "Bans", href: "/bans" },
-    { key: "proposed", label: `Proposed${pendingCount ? ` (${pendingCount})` : ""}`, href: "/bans?tab=proposed" },
-    { key: "logs", label: "Ban log", href: "/bans?tab=logs" },
-  ];
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-1">Bans</h1>
-      <p className="text-sm text-muted-foreground mb-5">
-        {active === "bans"
-          ? "Every ban ever issued, newest first. Lifting removes all active bans for that player."
-          : active === "proposed"
-            ? "Ban proposals from before moderators were removed, waiting on an owner to confirm or reject."
-            : "Every ban and lift action with who did it, newest first."}
-      </p>
+    <div className="flex flex-col gap-6">
+      <PageHeader title="Bans" description={DESCRIPTIONS[active]} />
 
-      <div className="flex gap-1 rounded-md border border-border p-1 w-fit mb-6">
-        {tabs.map((t) => (
-          <Link
-            key={t.key}
-            href={t.href}
-            className={`px-3.5 py-1.5 text-sm rounded transition-colors ${
-              active === t.key
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {t.label}
-          </Link>
-        ))}
-      </div>
+      <Card padding="flush">
+        <LinkTabs
+          active={active}
+          tabs={[
+            { key: "bans", href: "/bans", label: "Bans" },
+            {
+              key: "proposed",
+              href: "/bans?tab=proposed",
+              label: "Proposed",
+              count: proposals.length || undefined,
+            },
+            { key: "logs", href: "/bans?tab=logs", label: "Ban log" },
+          ]}
+        />
 
-      {active === "bans" ? (
-        <Card className="overflow-hidden py-0">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="p-3">Player</TableHead>
-                  <TableHead className="p-3">Reason</TableHead>
-                  <TableHead className="p-3">Banned by</TableHead>
-                  <TableHead className="p-3">Expires</TableHead>
-                  <TableHead className="p-3">Status</TableHead>
-                  <TableHead className="p-3">Issued</TableHead>
-                  <TableHead className="p-3"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {bans.map((b) => {
-                  const isActive = banIsActive(b);
-                  return (
-                    <TableRow key={b.id}>
-                      <TableCell className="p-3">
-                        <Link href={`/players/${b.user_id}`} className="font-bold hover:text-brand">
-                          {liveName(live, b.users, b.users?.real_name || b.users?.display_name || b.user_id)}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="p-3 max-w-64">
-                        <div className="truncate">{b.reason || ","}</div>
-                      </TableCell>
-                      <TableCell className="p-3 text-foreground/70">{b.banned_by}</TableCell>
-                      <TableCell className="p-3 text-muted-foreground">
-                        {b.expires_at ? new Date(b.expires_at).toLocaleString() : "never"}
-                      </TableCell>
-                      <TableCell className="p-3">
-                        {isActive ? (
-                          <Badge className="bg-brand text-white">active</Badge>
-                        ) : b.lifted_at ? (
-                          <Badge variant="success">lifted</Badge>
-                        ) : (
-                          <Badge variant="secondary">expired</Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="p-3 text-muted-foreground">
-                        {new Date(b.created_at).toLocaleDateString()}
-                      </TableCell>
-                      <TableCell className="p-3">{isActive && <LiftBanForm userId={b.user_id} />}</TableCell>
-                    </TableRow>
-                  );
-                })}
-                {bans.length === 0 && (
-                  <TableRow className="hover:bg-transparent">
-                    <TableCell className="p-5 text-muted-foreground" colSpan={7}>
-                      No bans issued yet.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </Card>
-      ) : active === "proposed" ? (
-        <Card className="divide-y divide-border py-0">
-          {proposals.length === 0 && (
-            <div className="p-5 text-muted-foreground text-sm">No bans waiting on confirmation.</div>
-          )}
-          {proposals.map((p) => (
-            <div key={p.id} className="p-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-              <div className="flex-1 min-w-48">
-                <Link href={`/players/${p.user_id}`} className="font-bold hover:text-brand">
-                  {liveName(live, p.users, p.users?.real_name || p.users?.display_name || p.user_id)}
-                </Link>
-                <div className="text-foreground/70 break-words">{p.reason}</div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  {p.hours > 0 ? `${p.hours}h` : "permanent"} · proposed by {p.proposed_by} ·{" "}
-                  {new Date(p.created_at).toLocaleString()}
-                </div>
-              </div>
-              {canConfirm ? (
-                <div className="flex gap-2 shrink-0">
-                  <form action={confirmBanProposal}>
-                    <input type="hidden" name="id" value={p.id} />
-                    <PendingButton
-                      type="submit"
-                      size="sm"
-                      pendingText="Confirming…"
-                      confirm={`Confirm the ban on ${liveName(live, p.users, p.users?.real_name || p.users?.display_name || p.user_id)}?`}
-                      className="bg-brand text-white border-transparent"
-                    >
-                      Confirm ban
-                    </PendingButton>
-                  </form>
-                  <form action={rejectBanProposal}>
-                    <input type="hidden" name="id" value={p.id} />
-                    <PendingButton
-                      type="submit"
-                      size="sm"
-                      variant="outline"
-                      pendingText="Rejecting…"
-                      className="text-muted-foreground"
-                    >
-                      Reject
-                    </PendingButton>
-                  </form>
-                </div>
-              ) : (
-                <span className="text-xs text-muted-foreground shrink-0">
-                  Needs the &ldquo;ban&rdquo; permission to decide
-                </span>
-              )}
-            </div>
-          ))}
-        </Card>
-      ) : (
-        <Card className="divide-y divide-border py-0">
-          {log.length === 0 && (
-            <div className="p-5 text-muted-foreground text-sm">No ban actions yet.</div>
-          )}
-          {log.map((r) => (
-            <div key={r.id} className="p-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-              <Badge variant={r.action === "ban" ? "destructive" : "success"} className="shrink-0">
-                {r.action === "ban" ? "banned" : "lifted"}
-              </Badge>
-              <div className="flex-1 min-w-48">
-                <span className="font-bold">{r.actor}</span>
-                {" → "}
-                <Link href={`/players/${r.user_id}`} className="font-bold hover:text-brand">
-                  {r.player_name}
-                </Link>
-                <div className="text-foreground/70 break-words">{r.detail}</div>
-              </div>
-              <div className="text-xs text-muted-foreground shrink-0">
-                {new Date(r.created_at).toLocaleString()}
-              </div>
-            </div>
-          ))}
-        </Card>
-      )}
+        {active === "bans" && (
+          <Table headers={["Player", "Reason", "Banned by", "Expires", "Status", "Issued", ""]}>
+            {bans.map((b) => {
+              const isActive = banIsActive(b);
+              return (
+                <tr key={b.id}>
+                  <td>
+                    <TextLink href={`/players/${b.user_id}`} className="font-bold">
+                      {liveName(live, b.users, b.users?.real_name || b.users?.display_name || b.user_id)}
+                    </TextLink>
+                  </td>
+                  <td className="max-w-64">
+                    <div className="truncate">{b.reason || <Muted>-</Muted>}</div>
+                  </td>
+                  <td>{b.banned_by}</td>
+                  <td className="whitespace-nowrap">
+                    <Muted>{b.expires_at ? formatDateTime(b.expires_at) : "Never"}</Muted>
+                  </td>
+                  <td>
+                    {isActive ? (
+                      <Badge tone="danger">Active</Badge>
+                    ) : b.lifted_at ? (
+                      <Badge tone="success">Lifted</Badge>
+                    ) : (
+                      <Badge>Expired</Badge>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap">
+                    <Muted>{formatDate(b.created_at)}</Muted>
+                  </td>
+                  <td>{isActive && <LiftBanForm userId={b.user_id} />}</td>
+                </tr>
+              );
+            })}
+            {bans.length === 0 && <EmptyRow colSpan={7} title="No bans issued yet" icon="checkmark-all" />}
+          </Table>
+        )}
+
+        {active === "proposed" && (
+          <Table headers={["Player", "Reason", "Length", "Proposed", ""]}>
+            {proposals.map((p) => {
+              const name = liveName(live, p.users, p.users?.real_name || p.users?.display_name || p.user_id);
+              return (
+                <tr key={p.id}>
+                  <td>
+                    <TextLink href={`/players/${p.user_id}`} className="font-bold">
+                      {name}
+                    </TextLink>
+                  </td>
+                  <td className="max-w-md break-words">{p.reason}</td>
+                  <td className="whitespace-nowrap">{p.hours > 0 ? `${p.hours}h` : "Permanent"}</td>
+                  <td>
+                    {p.proposed_by}
+                    <div className="text-xs">
+                      <Muted>{formatDateTime(p.created_at)}</Muted>
+                    </div>
+                  </td>
+                  <td>
+                    {canConfirm ? (
+                      <div className="flex justify-end gap-2">
+                        <form action={confirmBanProposal}>
+                          <input type="hidden" name="id" value={p.id} />
+                          <ActionButton
+                            variant="danger"
+                            size="sm"
+                            pendingLabel="Confirming..."
+                            confirm={`Confirm the ban on ${name}?`}
+                          >
+                            Confirm ban
+                          </ActionButton>
+                        </form>
+                        <form action={rejectBanProposal}>
+                          <input type="hidden" name="id" value={p.id} />
+                          <ActionButton variant="outline" size="sm" pendingLabel="Rejecting...">
+                            Reject
+                          </ActionButton>
+                        </form>
+                      </div>
+                    ) : (
+                      <Muted className="text-xs">Only owners can decide</Muted>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {proposals.length === 0 && (
+              <EmptyRow colSpan={5} title="No bans waiting on confirmation" icon="checkmark-all" />
+            )}
+          </Table>
+        )}
+
+        {active === "logs" && (
+          <Table headers={["Action", "Who", "Player", "Detail", "When"]}>
+            {log.map((r) => (
+              <tr key={r.id}>
+                <td>
+                  <Badge tone={r.action === "ban" ? "danger" : "success"}>
+                    {r.action === "ban" ? "Banned" : "Lifted"}
+                  </Badge>
+                </td>
+                <td className="font-bold">{r.actor}</td>
+                <td>
+                  <TextLink href={`/players/${r.user_id}`} className="font-bold">
+                    {r.player_name}
+                  </TextLink>
+                </td>
+                <td className="max-w-md break-words">{r.detail}</td>
+                <td className="whitespace-nowrap">
+                  <Muted>{formatDateTime(r.created_at)}</Muted>
+                </td>
+              </tr>
+            ))}
+            {log.length === 0 && <EmptyRow colSpan={5} title="No ban actions yet" icon="history" />}
+          </Table>
+        )}
+      </Card>
     </div>
   );
 }

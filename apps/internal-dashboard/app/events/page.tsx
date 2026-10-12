@@ -1,4 +1,3 @@
-import { redirect } from "next/navigation";
 import { requirePage } from "@/lib/guard";
 import {
   listEvents,
@@ -10,14 +9,25 @@ import {
 } from "@/lib/db";
 import { createEvent, stopEvent, deleteEvent } from "@/app/actions";
 import { CreateEventForm } from "@/app/_components/CreateEventForm";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
+import {
+  ActionButton,
+  Badge,
+  Card,
+  CardHeader,
+  EmptyRow,
+  Flash,
+  Muted,
+  PageHeader,
+  Table,
+  type Tone,
+} from "@/app/_ui/ui";
+import Progress from "@/app/_ui/Progress";
 
 export const dynamic = "force-dynamic";
 
-function status(ev: DashEventRow): "live" | "upcoming" | "ended" | "stopped" {
+type EventStatus = "live" | "upcoming" | "ended" | "stopped";
+
+function status(ev: DashEventRow): EventStatus {
   const now = new Date().toISOString();
   if (ev.stopped_at) return "stopped";
   if (ev.starts_at > now) return "upcoming";
@@ -25,11 +35,11 @@ function status(ev: DashEventRow): "live" | "upcoming" | "ended" | "stopped" {
   return "live";
 }
 
-const STATUS_VARIANT: Record<string, "success" | "secondary" | "destructive"> = {
+const STATUS_TONE: Record<EventStatus, Tone> = {
   live: "success",
-  upcoming: "secondary",
-  ended: "secondary",
-  stopped: "destructive",
+  upcoming: "info",
+  ended: "neutral",
+  stopped: "danger",
 };
 
 function fmt(iso: string): string {
@@ -46,9 +56,9 @@ function configSummary(ev: DashEventRow): string {
   const c = ev.config;
   switch (ev.type) {
     case "bounty":
-      return `+${Number(c.reward) || 0} px per project${c.description ? ` , ${c.description}` : ""}`;
+      return `+${Number(c.reward) || 0} px per project${c.description ? `: ${c.description}` : ""}`;
     case "community_goal":
-      return `${Number(c.target) || 0} ships → +${Number(c.bonusPct) || 0}% for every shipper${c.projectType ? ` (${c.projectType} only)` : ""}`;
+      return `${Number(c.target) || 0} ships for +${Number(c.bonusPct) || 0}% to every shipper${c.projectType ? ` (${c.projectType} only)` : ""}`;
     case "mystery_merchant":
       return `items ${(Array.isArray(c.itemIds) ? c.itemIds : []).join(", ")}`;
     case "review_blitz":
@@ -63,49 +73,35 @@ export default async function EventsPage({
 }: {
   searchParams: Promise<{ error?: string; created?: string }>;
 }) {
-  const access = await requirePage("owner");
+  await requirePage("owner");
   const { error, created } = await searchParams;
 
   const [events, allShopItems] = await Promise.all([listEvents(), listShopItems()]);
-  // Trophies (unlock_xp > 0) are earned, not sold - never offer one as a
+  // Trophies (unlock_xp > 0) are earned, not sold, so never offer one as a
   // limited mystery-merchant item.
   const shopItems = allShopItems.filter((i) => i.unlock_xp === 0);
   const progress = new Map<number, number>();
   const claims = new Map<number, number>();
-  for (const ev of events) {
-    if (ev.type === "community_goal" && status(ev) !== "upcoming")
-      progress.set(ev.id, await communityGoalShipCount(ev));
-    if (ev.type === "bounty") claims.set(ev.id, await bountyClaimCount(ev.id));
-  }
+  await Promise.all(
+    events.map(async (ev) => {
+      if (ev.type === "community_goal" && status(ev) !== "upcoming")
+        progress.set(ev.id, await communityGoalShipCount(ev));
+      if (ev.type === "bounty") claims.set(ev.id, await bountyClaimCount(ev.id));
+    }),
+  );
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Events</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Weekend events players see in-game the moment they go live. All times are UTC. Bonus
-          math runs server-side , nothing here hands out free pixels.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Events"
+        count={events.length}
+        description="Weekend events players see in-game the moment they go live. All times are UTC. Bonus math runs server-side, so nothing here hands out free pixels."
+      />
+      <Flash error={error} ok={created ? "Event created." : null} />
 
-      {created && (
-        <Alert>
-          <AlertDescription className="font-medium text-emerald-600 dark:text-emerald-400">
-            Event created.
-          </AlertDescription>
-        </Alert>
-      )}
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription className="font-medium text-destructive">{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-1">Start an event</div>
-        <p className="text-xs text-muted-foreground mb-4">
-          Fill only the fields your event type uses , the rest are ignored.
-        </p>
+      <Card>
+        <CardHeader title="Start an event" icon="plus" />
+        <p className="hc-caption -mt-2 mb-4 text-sm">Fill only the fields your event type uses. The rest are ignored.</p>
         <CreateEventForm
           action={createEvent}
           types={EVENT_TYPES}
@@ -113,101 +109,101 @@ export default async function EventsPage({
         />
       </Card>
 
-      <div>
-        <div className="text-sm font-medium text-muted-foreground mb-3">All events</div>
-        <div className="space-y-3">
+      <Card padding="flush">
+        <CardHeader title="All events" icon="event-code" count={events.length} />
+        <Table headers={["Event", "Status", "Window (UTC)", ""]}>
           {events.map((ev) => {
             const st = status(ev);
+            const shipped = progress.get(ev.id) ?? 0;
+            const target = Number(ev.config.target) || 0;
+            const claimCount = claims.get(ev.id) ?? 0;
             return (
-              <Card key={ev.id} className="p-4 gap-0 flex-row items-start justify-between flex-wrap">
-                <div className="min-w-0">
-                  <div className="font-bold flex items-center gap-2 flex-wrap">
-                    {ev.name}
-                    <Badge variant="secondary" className="text-[0.65rem] uppercase tracking-wide">
+              <tr key={ev.id}>
+                <td>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold">{ev.name}</span>
+                    <Badge tone="neutral" outline>
                       {EVENT_TYPES[ev.type] ?? ev.type}
                     </Badge>
-                    <Badge variant={STATUS_VARIANT[st]} className="text-[0.65rem] uppercase tracking-wide">
-                      {st}
-                    </Badge>
                   </div>
-                  <div className="text-sm text-muted-foreground mt-1">{configSummary(ev)}</div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {fmt(ev.starts_at)} → {fmt(ev.ends_at)} UTC
-                    {ev.created_by ? ` · by ${ev.created_by.replace(/\s*\([^)]*\)\s*$/, "")}` : ""}
+                  <div className="mt-1 text-sm">
+                    <Muted>{configSummary(ev)}</Muted>
                   </div>
                   {ev.type === "community_goal" && progress.has(ev.id) && (
                     <div className="mt-2 max-w-sm">
-                      <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                        <span>
-                          {progress.get(ev.id)} / {Number(ev.config.target) || 0} ships
-                        </span>
-                        <span>
-                          {(progress.get(ev.id) ?? 0) >= (Number(ev.config.target) || Infinity)
-                            ? "GOAL HIT 🎉"
-                            : `+${Number(ev.config.bonusPct) || 0}% if hit`}
-                        </span>
+                      <div className="mb-1 flex justify-between text-xs">
+                        <Muted>
+                          {shipped} / {target} ships
+                        </Muted>
+                        <Muted>
+                          {shipped >= (target || Infinity) ? "Goal hit" : `+${Number(ev.config.bonusPct) || 0}% if hit`}
+                        </Muted>
                       </div>
-                      <div className="h-2 rounded-full bg-muted overflow-hidden">
-                        <div
-                          className="h-full bg-emerald-500"
-                          style={{
-                            width: `${Math.min(
-                              100,
-                              Math.round(
-                                ((progress.get(ev.id) ?? 0) / (Number(ev.config.target) || 1)) * 100,
-                              ),
-                            )}%`,
-                          }}
-                        />
-                      </div>
+                      <Progress value={shipped} max={target || 1} label="Ships toward the goal" />
                     </div>
                   )}
                   {ev.type === "bounty" && (
-                    <div className="text-xs text-muted-foreground mt-1">
-                      {claims.get(ev.id) ?? 0} project{(claims.get(ev.id) ?? 0) === 1 ? "" : "s"} claimed it
+                    <div className="mt-1 text-xs">
+                      <Muted>
+                        {claimCount} project{claimCount === 1 ? "" : "s"} claimed it
+                      </Muted>
                     </div>
                   )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {(st === "live" || st === "upcoming") && (
-                    <form action={stopEvent}>
-                      <input type="hidden" name="id" value={ev.id} />
-                      <PendingButton
-                        variant="outline"
-                        size="sm"
-                        pendingText="Stopping…"
-                        confirm={`Stop "${ev.name}" now? Players stop seeing it immediately.`}
-                        className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
-                      >
-                        Stop
-                      </PendingButton>
-                    </form>
+                </td>
+                <td>
+                  <Badge tone={STATUS_TONE[st]}>{st}</Badge>
+                </td>
+                <td className="text-sm">
+                  <div>
+                    {fmt(ev.starts_at)} to {fmt(ev.ends_at)}
+                  </div>
+                  {ev.created_by && (
+                    <div className="text-xs">
+                      <Muted>by {ev.created_by.replace(/\s*\([^)]*\)\s*$/, "")}</Muted>
+                    </div>
                   )}
-                  {st !== "live" && (
-                    <form action={deleteEvent}>
-                      <input type="hidden" name="id" value={ev.id} />
-                      <PendingButton
-                        variant="ghost"
-                        size="sm"
-                        pendingText="Deleting…"
-                        confirm={`Delete "${ev.name}"? This can't be undone.`}
-                        className="text-muted-foreground"
-                      >
-                        Delete
-                      </PendingButton>
-                    </form>
-                  )}
-                </div>
-              </Card>
+                </td>
+                <td>
+                  <div className="flex items-center justify-end gap-2">
+                    {(st === "live" || st === "upcoming") && (
+                      <form action={stopEvent}>
+                        <input type="hidden" name="id" value={ev.id} />
+                        <ActionButton
+                          variant="danger"
+                          size="sm"
+                          pendingLabel="Stopping..."
+                          confirm={`Stop "${ev.name}" now? Players stop seeing it immediately.`}
+                        >
+                          Stop
+                        </ActionButton>
+                      </form>
+                    )}
+                    {st !== "live" && (
+                      <form action={deleteEvent}>
+                        <input type="hidden" name="id" value={ev.id} />
+                        <ActionButton
+                          variant="ghost"
+                          size="sm"
+                          icon="delete"
+                          pendingLabel="Deleting..."
+                          confirm={`Delete "${ev.name}"? This can't be undone.`}
+                        >
+                          Delete
+                        </ActionButton>
+                      </form>
+                    )}
+                  </div>
+                </td>
+              </tr>
             );
           })}
           {events.length === 0 && (
-            <Card className="p-5 text-muted-foreground text-sm">
-              No events yet. Start one above , players see it in-game instantly.
-            </Card>
+            <EmptyRow colSpan={4} title="No events yet" icon="event-code">
+              Start one above. Players see it in-game instantly.
+            </EmptyRow>
           )}
-        </div>
-      </div>
+        </Table>
+      </Card>
     </div>
   );
 }

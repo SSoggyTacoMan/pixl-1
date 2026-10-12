@@ -1,15 +1,7 @@
 "use client";
 
-import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { ActivityPoint } from "@/lib/tickets";
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  ChartLegend,
-  ChartLegendContent,
-  type ChartConfig,
-} from "@/components/ui/chart";
 
 function dateLabel(date: string): string {
   return new Date(`${date}T00:00:00Z`).toLocaleDateString("en-US", {
@@ -19,10 +11,10 @@ function dateLabel(date: string): string {
   });
 }
 
-const config = {
-  created: { label: "Created", color: "#f59e0b" },
-  resolved: { label: "Resolved", color: "#22c55e" },
-} satisfies ChartConfig;
+const SERIES = [
+  { key: "created", label: "Created", color: "var(--hc-red)" },
+  { key: "resolved", label: "Resolved", color: "var(--hc-green)" },
+] as const;
 
 export function TicketsActivityChart({ points }: { points: ActivityPoint[] }) {
   const n = points.length;
@@ -30,25 +22,18 @@ export function TicketsActivityChart({ points }: { points: ActivityPoint[] }) {
   const ticks = tickIdx.map((i) => points[i]?.date).filter(Boolean);
 
   return (
-    <div>
-      <div className="flex items-baseline justify-between mb-1">
-        <div className="font-pixel text-xl text-foreground">Tickets, last 30 days</div>
-        <div className="text-xs text-muted-foreground">created vs resolved per day</div>
-      </div>
-
-      <ChartContainer config={config} className="aspect-auto h-[220px] w-full">
+    <div className="h-[220px] w-full">
+      <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={points} margin={{ left: 4, right: 8, top: 8 }}>
           <defs>
-            <linearGradient id="fill-created" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="var(--color-created)" stopOpacity={0.28} />
-              <stop offset="95%" stopColor="var(--color-created)" stopOpacity={0.02} />
-            </linearGradient>
-            <linearGradient id="fill-resolved" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="var(--color-resolved)" stopOpacity={0.28} />
-              <stop offset="95%" stopColor="var(--color-resolved)" stopOpacity={0.02} />
-            </linearGradient>
+            {SERIES.map((s) => (
+              <linearGradient key={s.key} id={`tickets-fill-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={s.color} stopOpacity={0.28} />
+                <stop offset="95%" stopColor={s.color} stopOpacity={0.02} />
+              </linearGradient>
+            ))}
           </defs>
-          <CartesianGrid vertical={false} />
+          <CartesianGrid vertical={false} stroke="var(--border)" />
           <XAxis
             dataKey="date"
             ticks={ticks}
@@ -56,29 +41,40 @@ export function TicketsActivityChart({ points }: { points: ActivityPoint[] }) {
             axisLine={false}
             tickMargin={8}
             tickFormatter={dateLabel}
+            tick={{ fill: "var(--muted)", fontSize: 12 }}
           />
-          <YAxis width={28} tickLine={false} axisLine={false} allowDecimals={false} />
-          <ChartTooltip
-            cursor={{ stroke: "var(--chart-cross)" }}
-            content={<ChartTooltipContent labelFormatter={(v) => dateLabel(String(v))} />}
+          <YAxis
+            width={28}
+            tickLine={false}
+            axisLine={false}
+            allowDecimals={false}
+            tick={{ fill: "var(--muted)", fontSize: 12 }}
           />
-          <ChartLegend content={<ChartLegendContent />} />
-          <Area
-            dataKey="created"
-            type="monotone"
-            stroke="var(--color-created)"
-            strokeWidth={2}
-            fill="url(#fill-created)"
+          <Tooltip
+            cursor={{ stroke: "var(--border-strong)" }}
+            labelFormatter={(v) => dateLabel(String(v))}
+            contentStyle={{
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              color: "var(--text)",
+              fontSize: 12,
+            }}
           />
-          <Area
-            dataKey="resolved"
-            type="monotone"
-            stroke="var(--color-resolved)"
-            strokeWidth={2}
-            fill="url(#fill-resolved)"
-          />
+          <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, color: "var(--muted)" }} />
+          {SERIES.map((s) => (
+            <Area
+              key={s.key}
+              dataKey={s.key}
+              name={s.label}
+              type="monotone"
+              stroke={s.color}
+              strokeWidth={2}
+              fill={`url(#tickets-fill-${s.key})`}
+            />
+          ))}
         </AreaChart>
-      </ChartContainer>
+      </ResponsiveContainer>
     </div>
   );
 }

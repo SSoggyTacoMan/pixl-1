@@ -1,43 +1,30 @@
+/* eslint-disable @next/next/no-img-element */
 import type { Metadata } from "next";
-import { cookies } from "next/headers";
-import { Geist, Geist_Mono, Inter, JetBrains_Mono } from "next/font/google";
+import Link from "next/link";
+import { JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import "./_ui/admin.css";
 import { getAccess } from "@/lib/guard";
 import { countPendingReviews, countOpenReports, countPendingOrders } from "@/lib/db";
 import { ticketStats } from "@/lib/tickets";
-import { Shell } from "@/app/_components/Shell";
-import { LiveModeProvider } from "@/app/_components/LiveMode";
-import { LiveModeToggle } from "@/app/_components/LiveModeToggle";
-import { ReviewCelebration } from "@/app/_components/ReviewCelebration";
 import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { cn } from "@/lib/utils";
+import { setLiveMode } from "@/app/actions";
+import { LiveModeProvider } from "@/app/_components/LiveMode";
+import { ReviewCelebration } from "@/app/_components/ReviewCelebration";
+import TopNav from "@/app/_ui/TopNav";
+import CommandPalette from "@/app/_ui/CommandPalette";
+import { buildNav } from "@/app/_ui/nav";
+import { ActionButton, Button, Mono } from "@/app/_ui/ui";
 
-const jetbrainsMonoHeading = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-heading",
-});
-
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
-
-const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
-const geistMono = Geist_Mono({
-  subsets: ["latin"],
-  variable: "--font-geist-mono",
-});
+const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains-mono" });
 
 export const metadata: Metadata = {
-  title: "Pixl HQ",
+  title: "Pixl",
   description: "The Pixl team's home for reviews, players, and pixels",
-  // Internal admin tool , keep it out of search entirely so it never competes
-  // with pixl.hackclub.com (the actual landing page) for "pixl hackclub".
-  // Deliberately not paired with a robots.txt disallow: that would stop
-  // Google from crawling the page at all, which means it can never see this
-  // noindex tag and drop an already-indexed URL from its results.
-  robots: {
-    index: false,
-    follow: false,
-  },
+  // Internal tool: keep it out of search entirely. Deliberately not paired
+  // with a robots.txt disallow, which would stop crawlers from ever seeing
+  // this noindex and dropping an already-indexed URL.
+  robots: { index: false, follow: false },
 };
 
 export const viewport = {
@@ -45,134 +32,88 @@ export const viewport = {
   initialScale: 1,
 };
 
-export default async function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+// Badge counts in the top bar. Each is best effort: a slow or failing count
+// must never take the whole dashboard down with it.
+async function navCounts(access: NonNullable<Awaited<ReturnType<typeof getAccess>>>, live: boolean) {
+  const owner = access.isOwner;
+  const safe = async (fn: () => Promise<number>) => {
+    try {
+      return await fn();
+    } catch (e) {
+      console.error("[layout] nav count failed", (e as Error).message);
+      return 0;
+    }
+  };
+  const [review, reports, tickets, orders] = await Promise.all([
+    owner || access.isReviewer ? safe(() => countPendingReviews({ viewer: access.session.slackId })) : 0,
+    !live && owner ? safe(countOpenReports) : 0,
+    access.isHelper ? safe(async () => (await ticketStats()).open) : 0,
+    !live && access.isFulfiller ? safe(countPendingOrders) : 0,
+  ]);
+  return { "/review": review, "/reports": reports, "/tickets": tickets, "/fulfillment": orders };
+}
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const access = await getAccess();
-  const session = access?.session ?? null;
-  // SidebarProvider writes this cookie on every toggle but never reads it
-  // back itself (components/ui/sidebar.tsx) - without passing it in as
-  // defaultOpen, the sidebar silently reopened on every fresh page load.
-  const sidebarOpen = (await cookies()).get("sidebar_state")?.value !== "false";
+
+  if (!access) {
+    return (
+      <html lang="en" className={jetbrainsMono.variable}>
+        <body>
+          <div className="admin-shell">{children}</div>
+        </body>
+      </html>
+    );
+  }
+
+  const session = access.session;
   const live = await getLiveMode();
   const hideReviewers = await getHideReviewers();
-  // Owners see everything; reviewers the review area; helpers tickets;
-  // fulfillers the order queue. Each page re-checks with requirePage().
-  const owner = !!access?.isOwner;
-  const helper = !!access?.isHelper;
-  const fulfiller = !!access?.isFulfiller;
-  const nav = access
-    ? {
-        overview: owner,
-        players: owner,
-        projects: owner || access.isReviewer,
-        review: owner || access.isReviewer,
-        pixels: !live && owner,
-        moderation: !live && owner,
-        ideas: owner,
-        reports: !live && owner,
-        tickets: helper,
-        notify: owner,
-        admins: owner,
-        reviewers: owner,
-        slackLookup: !live && owner,
-        referrals: !live && owner,
-        online: owner,
-        shop: owner,
-        events: owner,
-        operations: owner,
-        sidequests: owner,
-        story: owner,
-        goals: owner,
-        news: owner,
-        showNTell: owner,
-        fulfillment: !live && fulfiller,
-        forms: owner,
-        audit: owner,
-      }
-    : null;
-  const reviewCount =
-    nav?.review && access
-      ? await countPendingReviews({ viewer: access.session.slackId })
-      : 0;
-  const reportCount = nav?.reports ? await countOpenReports() : 0;
-  const ticketCount = helper ? (await ticketStats()).open : 0;
-  const orderCount = nav?.fulfillment ? await countPendingOrders() : 0;
-  return (
-    <html
-      lang="en"
-      suppressHydrationWarning
-      className={cn(
-        geist.variable,
-        geistMono.variable,
-        "font-sans",
-        inter.variable,
-        jetbrainsMonoHeading.variable,
-      )}
-    >
-      <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-(function() {
-  var html = document.documentElement;
-  try {
-    var t = localStorage.getItem("theme");
-    if (t !== "light") {
-      html.classList.add("dark");
-    }
-  } catch(e) {}
-  document.addEventListener("click", function(e) {
-    var themeBtn = e.target.closest("[data-theme-toggle]");
-    if (themeBtn) {
-      html.classList.toggle("dark");
-      var dark = html.classList.contains("dark");
-      document.querySelectorAll("[data-theme-toggle]").forEach(function(b) {
-        b.textContent = dark ? "☀" : "☾";
-      });
-      try { localStorage.setItem("theme", dark ? "dark" : "light"); } catch(e) {}
-    }
-  });
-})();
-`,
-          }}
-        />
-      </head>
-      <body className="min-h-screen">
-        {session && <ReviewCelebration />}
-        {session && nav ? (
-          // <Shell
-          //   session={{ name: session.name, slackId: session.slackId }}
-          //   nav={nav}
-          //   reviewCount={reviewCount}
-          // >
-          //   {children}
-          // </Shell>
-          <LiveModeProvider live={live} hideReviewers={hideReviewers} viewer={session?.slackId ?? ""}>
-          <SidebarProvider defaultOpen={sidebarOpen}>
-            <Shell
-              session={{ name: session.name, slackId: session.slackId }}
-              nav={nav}
-              reviewCount={reviewCount}
-              reportCount={reportCount}
-              ticketCount={ticketCount}
-              orderCount={orderCount}
-            />
+  const nav = buildNav(access, live);
+  const counts = await navCounts(access, live);
+  const firstName = session.name.split(" ")[0] || "Staff";
 
-            <main className="flex-1 min-w-0 overflow-x-clip flex flex-col gap-4">
-              <div className="bg-command-background/40 backdrop-blur-xl backdrop-saturate-150 shadow-2xl shadow-black/30 w-full h-10 sticky top-0 z-100 p-2 flex items-center justify-between">
-                <SidebarTrigger />
-                <LiveModeToggle live={live} />
+  return (
+    <html lang="en" className={jetbrainsMono.variable}>
+      <body>
+        <LiveModeProvider live={live} hideReviewers={hideReviewers} viewer={session.slackId}>
+          <div className="admin-shell">
+            <ReviewCelebration />
+            <header className="hc-topbar sticky top-0 z-20">
+              <div className="hc-topbar-inner mx-auto flex min-h-14 max-w-[1840px] flex-wrap items-center gap-x-6 gap-y-2 px-6 py-2">
+                <Link href="/" className="flex shrink-0 items-center gap-2">
+                  <img src="/logo.png" alt="Pixl" width={28} height={28} />
+                  <span className="hc-heading">Pixl</span>
+                </Link>
+                <div className="min-w-0 flex-1">
+                  <TopNav nav={nav} counts={counts} />
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <CommandPalette nav={nav} />
+                  <form action={setLiveMode} className="flex items-center gap-2">
+                    <input type="hidden" name="on" value={live ? "0" : "1"} />
+                    {live && <span className="hc-live-pill">LIVE, PII hidden</span>}
+                    <ActionButton variant={live ? "primary" : "ghost"} size="sm" icon="view" pendingLabel="Switching...">
+                      {live ? "Exit live mode" : "Live mode"}
+                    </ActionButton>
+                  </form>
+                  <span className="hidden text-sm 2xl:inline">
+                    <span className="font-bold">{firstName}</span>{" "}
+                    <span className="hc-muted">
+                      (<Mono>{session.slackId}</Mono>)
+                    </span>
+                  </span>
+                  <form action="/api/auth/logout" method="post">
+                    <Button type="submit" variant="ghost" size="sm" icon="door-leave">
+                      Log out
+                    </Button>
+                  </form>
+                </div>
               </div>
-              <div className="px-10">{children}</div>
-            </main>
-          </SidebarProvider>
-          </LiveModeProvider>
-        ) : (
-          children
-        )}
+            </header>
+            <main className="hc-main mx-auto max-w-[1840px] px-6 py-8">{children}</main>
+          </div>
+        </LiveModeProvider>
       </body>
     </html>
   );

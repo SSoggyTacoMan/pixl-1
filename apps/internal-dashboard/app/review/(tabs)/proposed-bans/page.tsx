@@ -3,17 +3,16 @@ import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { listProposedBanProjects } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
 import { ReviewTable } from "@/app/_components/ReviewTable";
+import { Card, CardHeader } from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
 // Super-admin-only view of projects where a first-pass reviewer's verdict was
-// "ban" - reviewProject's first-pass branch never bans outright, it parks the
+// "ban". reviewProject's first-pass branch never bans outright: it parks the
 // project in second_review with first_pass_verdict='banned' for a different,
-// final reviewer to confirm or overturn (same as any other second-pass
-// decision). This just makes those easy to find instead of scrolling the
-// general second-pass queue for one - the actual confirm/overturn still
-// happens on the project's own review page, with the same required
-// audit-note fields as any other second-pass verdict.
+// final reviewer to confirm or overturn. This just makes those easy to find;
+// the decision still happens on the project's own review page, with the same
+// required audit-note fields as any other second-pass verdict.
 export default async function ProposedBansPage() {
   const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
@@ -23,18 +22,16 @@ export default async function ProposedBansPage() {
   const handles = await slackHandles(rows.map((p) => p.users?.slack_id));
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-3">Proposed bans</h1>
-      <p className="text-sm text-muted-foreground mb-4 max-w-2xl">
+    <div className="flex flex-col gap-6">
+      <p className="hc-caption max-w-2xl text-sm">
         Projects a first-pass reviewer proposed banning, waiting on a final reviewer to confirm or
-        overturn it, oldest first. Open one to decide , confirming or overturning still needs the
-        same audit notes as any other second-pass verdict.
+        overturn it, oldest first. Either way still needs the same audit notes as any other second-pass
+        verdict.
       </p>
-      <ReviewTable
-        rows={rows}
-        handles={handles}
-        emptyLabel="Nothing waiting on a ban decision right now."
-      />
+      <Card padding="flush">
+        <CardHeader title="Proposed bans" icon="flag" count={rows.length} />
+        <ReviewTable rows={rows} handles={handles} emptyLabel="Nothing waiting on a ban decision right now." />
+      </Card>
     </div>
   );
 }

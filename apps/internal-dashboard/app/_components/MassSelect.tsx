@@ -1,28 +1,28 @@
 "use client";
 
-import { Checkbox } from "@/components/ui/checkbox";
+// Native checkboxes for the players table's mass action form. RowSelect
+// submits as userIds; SelectAllBox ticks every row on the current page.
 
 export function SelectAllBox() {
   return (
-    <Checkbox
-      aria-label="Select all on this page"
-      onCheckedChange={(checked) => {
-        for (const el of document.querySelectorAll<HTMLElement>("[data-row-select]")) {
-          const isChecked = el.getAttribute("aria-checked") === "true";
-          if (isChecked !== Boolean(checked)) el.click();
-        }
-      }}
-    />
+    <label className="hc-check">
+      <input
+        type="checkbox"
+        aria-label="Select all on this page"
+        onChange={(e) => {
+          for (const el of document.querySelectorAll<HTMLInputElement>("input[data-row-select]")) {
+            el.checked = e.currentTarget.checked;
+          }
+        }}
+      />
+    </label>
   );
 }
 
 export function RowSelect({ id, label }: { id: string; label: string }) {
   return (
-    <Checkbox
-      name="userIds"
-      value={id}
-      aria-label={label}
-      data-row-select
-    />
+    <label className="hc-check">
+      <input type="checkbox" name="userIds" value={id} aria-label={label} data-row-select />
+    </label>
   );
 }

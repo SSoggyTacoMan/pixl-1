@@ -1,6 +1,5 @@
 "use client";
 
-import { useFormStatus } from "react-dom";
 import {
   banIdea,
   banPlayer,
@@ -12,47 +11,19 @@ import {
   updatePlayerInfo,
   warnPlayer,
 } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { ActionButton, Field, Input, NativeSelect } from "@/app/_ui/ui";
 
-function SubmitBtn({
-  children,
-  className,
-  disabled,
-}: {
-  children: React.ReactNode;
-  className?: string;
-  disabled?: boolean;
-}) {
-  const { pending } = useFormStatus();
-  return (
-    <Button type="submit" size="sm" className={className} disabled={pending || disabled}>
-      {pending ? "..." : children}
-    </Button>
-  );
-}
+// Player and idea moderation forms, shared by the player, violations, bans,
+// reports and ideas pages.
 
 export function WarnForm({ userId, compact = false }: { userId: string; compact?: boolean }) {
   return (
-    <form action={warnPlayer} className="flex gap-2 items-center">
+    <form action={warnPlayer} className="flex items-center gap-2">
       <input type="hidden" name="userId" value={userId} />
-      {!compact && (
-        <Input
-          name="message"
-          placeholder="Custom warning (optional)"
-          className="text-sm flex-1"
-        />
-      )}
-      <SubmitBtn className="bg-tang text-white hover:bg-tang/90">Warn</SubmitBtn>
+      {!compact && <Input name="message" placeholder="Custom warning (optional)" className="min-w-0 flex-1" />}
+      <ActionButton variant="outline" size="sm" icon="important" pendingLabel="Warning...">
+        Warn
+      </ActionButton>
     </form>
   );
 }
@@ -67,54 +38,39 @@ export function BanForm({
   isBanned?: boolean;
 }) {
   return (
-    <form action={banPlayer} className="flex gap-2 items-center flex-wrap">
+    <form action={banPlayer} className="flex flex-wrap items-center gap-2">
       <input type="hidden" name="userId" value={userId} />
       <Input
         name="reason"
         placeholder="Reason"
         maxLength={1000}
-        className={compact ? "text-sm w-32" : "text-sm flex-1 min-w-32"}
+        className={compact ? "w-32" : "min-w-32 flex-1"}
         required
         disabled={isBanned}
       />
-      <Select name="hours" defaultValue="24" disabled={isBanned}>
-        <SelectTrigger size="sm" className="text-sm">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="1">1 hour</SelectItem>
-          <SelectItem value="24">1 day</SelectItem>
-          <SelectItem value="168">7 days</SelectItem>
-          <SelectItem value="720">30 days</SelectItem>
-          <SelectItem value="0">Permanent</SelectItem>
-        </SelectContent>
-      </Select>
-      <SubmitBtn className="bg-brand text-white hover:bg-brand/90" disabled={isBanned}>
+      <NativeSelect name="hours" defaultValue="24" disabled={isBanned} className="w-auto">
+        <option value="1">1 hour</option>
+        <option value="24">1 day</option>
+        <option value="168">7 days</option>
+        <option value="720">30 days</option>
+        <option value="0">Permanent</option>
+      </NativeSelect>
+      <ActionButton variant="danger" size="sm" icon="private" pendingLabel="Banning..." disabled={isBanned}>
         {isBanned ? "Already banned" : "Ban"}
-      </SubmitBtn>
+      </ActionButton>
     </form>
   );
 }
 
 export function NotifyForm({ userId }: { userId: string }) {
   return (
-    <form action={sendNotification} className="flex gap-2 items-center flex-wrap">
+    <form action={sendNotification} className="flex flex-wrap items-center gap-2">
       <input type="hidden" name="userId" value={userId} />
-      <Input
-        name="title"
-        placeholder="Title"
-        maxLength={100}
-        className="text-sm w-40"
-        required
-      />
-      <Input
-        name="body"
-        placeholder="Message"
-        maxLength={500}
-        className="text-sm flex-1 min-w-40"
-        required
-      />
-      <SubmitBtn className="bg-mint text-ink hover:bg-mint/90">Notify</SubmitBtn>
+      <Input name="title" placeholder="Title" maxLength={100} className="w-40" required />
+      <Input name="body" placeholder="Message" maxLength={500} className="min-w-40 flex-1" required />
+      <ActionButton variant="outline" size="sm" icon="send" pendingLabel="Sending...">
+        Notify
+      </ActionButton>
     </form>
   );
 }
@@ -123,24 +79,22 @@ export function LiftBanForm({ userId }: { userId: string }) {
   return (
     <form action={liftBan}>
       <input type="hidden" name="userId" value={userId} />
-      <SubmitBtn className="bg-mint text-ink hover:bg-mint/90">Lift ban</SubmitBtn>
+      <ActionButton variant="success" size="sm" pendingLabel="Lifting...">
+        Lift ban
+      </ActionButton>
     </form>
   );
 }
 
 export function IdeaBanForm({ ideaId }: { ideaId: number }) {
   return (
-    <form action={banIdea} className="flex gap-2 items-center flex-wrap">
+    <form action={banIdea} className="flex flex-wrap items-center gap-2">
       <input type="hidden" name="ideaId" value={ideaId} />
       <input type="hidden" name="returnTo" value="/ideas" />
-      <Input
-        name="reason"
-        placeholder="Reason"
-        maxLength={1000}
-        className="text-sm w-40"
-        required
-      />
-      <SubmitBtn className="bg-rose-800 text-white hover:bg-rose-900">Remove</SubmitBtn>
+      <Input name="reason" placeholder="Reason" maxLength={1000} className="w-40" required />
+      <ActionButton variant="danger" size="sm" pendingLabel="Removing...">
+        Remove
+      </ActionButton>
     </form>
   );
 }
@@ -149,24 +103,28 @@ export function IdeaUnbanForm({ ideaId }: { ideaId: number }) {
   return (
     <form action={unbanIdea}>
       <input type="hidden" name="ideaId" value={ideaId} />
-      <SubmitBtn className="bg-mint text-ink hover:bg-mint/90">Restore</SubmitBtn>
+      <ActionButton variant="success" size="sm" pendingLabel="Restoring...">
+        Restore
+      </ActionButton>
     </form>
   );
 }
 
-// Clears saved (scene) positions , they'll spawn at each scene's default
+// Clears saved scene positions, so they spawn at each scene's default the
 // next time they connect.
 export function ResetPositionForm({ userId }: { userId: string }) {
   return (
     <form action={resetPlayerPosition}>
       <input type="hidden" name="userId" value={userId} />
-      <PendingButton
+      <ActionButton
         variant="outline"
-        pendingText="Resetting…"
+        size="sm"
+        icon="map-pin"
+        pendingLabel="Resetting..."
         confirm="Clear this player's saved position? They'll spawn at the default next time they log in."
       >
         Reset position
-      </PendingButton>
+      </ActionButton>
     </form>
   );
 }
@@ -183,51 +141,50 @@ export function EditInfoForm({
   email: string;
 }) {
   return (
-    <form action={updatePlayerInfo} className="flex flex-col gap-3">
+    <form action={updatePlayerInfo} className="flex flex-col gap-4">
       <input type="hidden" name="userId" value={userId} />
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div>
-          <Label className="block text-xs font-medium text-muted-foreground mb-1">In-game name</Label>
-          <Input name="displayName" defaultValue={displayName} maxLength={60} required className="text-sm" />
-        </div>
-        <div>
-          <Label className="block text-xs font-medium text-muted-foreground mb-1">Real name</Label>
-          <Input name="realName" defaultValue={realName} maxLength={100} className="text-sm" />
-        </div>
-        <div>
-          <Label className="block text-xs font-medium text-muted-foreground mb-1">Email</Label>
-          <Input name="email" type="email" defaultValue={email} maxLength={200} className="text-sm" />
-        </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Field label="In-game name">
+          <Input name="displayName" defaultValue={displayName} maxLength={60} required />
+        </Field>
+        <Field label="Real name">
+          <Input name="realName" defaultValue={realName} maxLength={100} />
+        </Field>
+        <Field label="Email">
+          <Input name="email" type="email" defaultValue={email} maxLength={200} />
+        </Field>
       </div>
       <div>
-        <PendingButton pendingText="Saving…" className="bg-brand text-white hover:bg-brand/90">
+        <ActionButton size="sm" pendingLabel="Saving...">
           Save info
-        </PendingButton>
+        </ActionButton>
       </div>
     </form>
   );
 }
 
-// Owners only , the account and everything tied to it (projects, bans,
-// violations, mod log…) is gone for good once this submits.
+// Owners only. The account and everything tied to it (projects, bans,
+// violations, mod log) is gone for good once this submits.
 export function DeleteAccountForm({ userId }: { userId: string }) {
   return (
-    <form action={deletePlayerAccount} className="flex gap-2 items-center flex-wrap">
+    <form action={deletePlayerAccount} className="flex flex-wrap items-center gap-2">
       <input type="hidden" name="userId" value={userId} />
       <Input
         name="reason"
         placeholder="Reason (sent to them before deletion)"
         maxLength={1000}
-        className="text-sm flex-1 min-w-48"
+        className="min-w-48 flex-1"
         required
       />
-      <PendingButton
-        pendingText="Deleting…"
-        confirm="Permanently delete this player's account? This can't be undone , their projects, bans, and history all go with it."
-        className="bg-rose-600 text-white hover:bg-rose-700"
+      <ActionButton
+        variant="danger"
+        size="sm"
+        icon="delete"
+        pendingLabel="Deleting..."
+        confirm="Permanently delete this player's account? This can't be undone. Their projects, bans and history all go with it."
       >
         Delete account
-      </PendingButton>
+      </ActionButton>
     </form>
   );
 }

@@ -1,213 +1,180 @@
-import { redirect } from "next/navigation";
 import { requirePage } from "@/lib/guard";
 import { listVaultLevels, type VaultLevelRow } from "@/lib/db";
+import { addVaultLevel, updateVaultLevel, toggleVaultLevel, deleteVaultLevel } from "@/app/actions";
 import {
-  addVaultLevel,
-  updateVaultLevel,
-  toggleVaultLevel,
-  deleteVaultLevel,
-} from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+  ActionButton,
+  Badge,
+  Card,
+  CardHeader,
+  EmptyState,
+  Field,
+  Flash,
+  Input,
+  Muted,
+  PageHeader,
+  Textarea,
+  formatDate,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
+// Round-trips through parseRewards in app/actions.ts, which uses the same
+// gift fallback when a line has no icon.
 function rewardsText(level: VaultLevelRow): string {
   return (level.rewards ?? []).map((r) => `${r.icon ?? "🎁"} ${r.label ?? ""}`.trim()).join("\n");
 }
 
-const REWARDS_HINT = "One per line, emoji first , e.g. 🦊 Pixel fox pet";
+const REWARDS_HINT = "One per line: an icon (an emoji) first, then a space and the label.";
 
 export default async function CommunityGoalsPage({
   searchParams,
 }: {
   searchParams: Promise<{ error?: string; saved?: string }>;
 }) {
-  const access = await requirePage("owner");
+  await requirePage("owner");
   const { error, saved } = await searchParams;
   const levels = await listVaultLevels();
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Community Goals</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          The Core Vault levels. The whole community&apos;s Restoration Energy (approved hours)
-          unlocks each level for everyone once it crosses that energy threshold. Rewards are
-          shown in-game as the equipment the Core recovers.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Community Goals"
+        count={levels.length}
+        description="The Core Vault levels. The whole community's Restoration Energy (approved hours) unlocks each level for everyone once it crosses that energy threshold. Rewards are shown in-game as the equipment the Core recovers."
+      />
+      <Flash error={error} ok={saved ? "Saved." : null} />
 
-      {saved && (
-        <Alert>
-          <AlertDescription className="font-medium text-emerald-600 dark:text-emerald-400">
-            Saved.
-          </AlertDescription>
-        </Alert>
-      )}
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription className="font-medium text-destructive">{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-4">Add a vault level</div>
-        <form action={addVaultLevel} className="space-y-4">
-          <div className="grid sm:grid-cols-4 gap-4">
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Level #</span>
-              <Input name="level" type="number" min={1} required placeholder="6" className="w-full text-sm" />
-            </Label>
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Energy required</span>
-              <Input name="energy_required" type="number" min={0} required placeholder="8000" className="w-full text-sm" />
-            </Label>
-            <Label className="block font-normal sm:col-span-2">
-              <span className="block text-sm font-medium mb-1.5">Title</span>
-              <Input name="title" required maxLength={80} placeholder="The Deep Archive" className="w-full text-sm" />
-            </Label>
+      <Card>
+        <CardHeader title="Add a vault level" icon="plus" />
+        <form action={addVaultLevel} className="flex flex-col gap-3">
+          <LevelFields />
+          <div>
+            <ActionButton pendingLabel="Adding...">Add level</ActionButton>
           </div>
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Blurb (shown in-game)</span>
-            <Input name="blurb" maxLength={400} placeholder="A sealed vault of pre-Crash secrets reopens." className="w-full text-sm" />
-          </Label>
-          <div className="grid sm:grid-cols-[1fr_auto] gap-4 items-start">
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Rewards</span>
-              <Textarea name="rewards" rows={3} placeholder={REWARDS_HINT} className="w-full text-sm" />
-              <span className="block text-xs text-muted-foreground mt-1">{REWARDS_HINT}</span>
-            </Label>
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Sort position</span>
-              <Input name="position" type="number" placeholder="6" className="w-full text-sm sm:w-28" />
-            </Label>
-          </div>
-          <div className="grid sm:grid-cols-3 gap-4">
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Top 1 chapter RE bonus</span>
-              <Input name="top1_re" type="number" min={0} placeholder="200" className="w-full text-sm" />
-            </Label>
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Top 2 chapter RE bonus</span>
-              <Input name="top2_re" type="number" min={0} placeholder="100" className="w-full text-sm" />
-            </Label>
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Top 3 chapter RE bonus</span>
-              <Input name="top3_re" type="number" min={0} placeholder="50" className="w-full text-sm" />
-            </Label>
-          </div>
-          <span className="block text-xs text-muted-foreground -mt-2">
-            Paid once, automatically, to whoever contributed the most RE this chapter when this level unlocks. Leave at 0 for no leaderboard prize.
-          </span>
-          <PendingButton className="bg-brand text-white border-transparent" pendingText="Adding…">
-            Add level
-          </PendingButton>
         </form>
       </Card>
 
-      <div className="space-y-4">
+      <div className="flex flex-col gap-4">
         {levels.map((l) => (
-          <Card key={l.id} className={`p-4 md:p-5 gap-0 ${l.active ? "" : "opacity-60"}`}>
-            <form action={updateVaultLevel} className="space-y-3">
+          <Card key={l.id} className={l.active ? "" : "opacity-60"}>
+            <form action={updateVaultLevel} className="flex flex-col gap-3">
               <input type="hidden" name="id" value={l.id} />
-              <div className="flex items-center gap-2 flex-wrap mb-1">
-                <Badge variant="secondary">LV {l.level}</Badge>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="info">LV {l.level}</Badge>
                 <span className="font-bold">{l.title}</span>
-                <Badge variant="warning">⚡ {l.energy_required.toLocaleString()}</Badge>
-                {!l.active && <Badge variant="secondary">hidden</Badge>}
-                <div className="ml-auto flex items-center gap-2">
-                  <PendingButton variant="outline" size="sm" pendingText="Saving…">
+                <Badge tone="warning" icon="bolt-circle">
+                  {l.energy_required.toLocaleString()}
+                </Badge>
+                {!l.active && <Badge tone="neutral">hidden</Badge>}
+                <div className="ml-auto">
+                  <ActionButton variant="outline" size="sm" pendingLabel="Saving...">
                     Save
-                  </PendingButton>
+                  </ActionButton>
                 </div>
               </div>
-              <div className="grid sm:grid-cols-4 gap-3">
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Level #</span>
-                  <Input name="level" type="number" defaultValue={l.level} className="w-full text-sm" />
-                </Label>
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Energy</span>
-                  <Input name="energy_required" type="number" defaultValue={l.energy_required} className="w-full text-sm" />
-                </Label>
-                <Label className="block font-normal sm:col-span-2">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Title</span>
-                  <Input name="title" defaultValue={l.title} maxLength={80} className="w-full text-sm" />
-                </Label>
-              </div>
-              <Label className="block font-normal">
-                <span className="block text-xs font-medium mb-1 text-muted-foreground">Blurb</span>
-                <Input name="blurb" defaultValue={l.blurb} maxLength={400} className="w-full text-sm" />
-              </Label>
-              <div className="grid sm:grid-cols-[1fr_auto] gap-3 items-start">
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Rewards</span>
-                  <Textarea name="rewards" rows={3} defaultValue={rewardsText(l)} className="w-full text-sm" />
-                </Label>
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Position</span>
-                  <Input name="position" type="number" defaultValue={l.position} className="w-full text-sm sm:w-24" />
-                </Label>
-              </div>
-              <div className="grid sm:grid-cols-3 gap-3">
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Top 1 chapter RE bonus</span>
-                  <Input name="top1_re" type="number" min={0} defaultValue={l.top1_re ?? 0} className="w-full text-sm" />
-                </Label>
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Top 2 chapter RE bonus</span>
-                  <Input name="top2_re" type="number" min={0} defaultValue={l.top2_re ?? 0} className="w-full text-sm" />
-                </Label>
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Top 3 chapter RE bonus</span>
-                  <Input name="top3_re" type="number" min={0} defaultValue={l.top3_re ?? 0} className="w-full text-sm" />
-                </Label>
-              </div>
+              <LevelFields level={l} />
               {l.unlocked_at && (
-                <div className="text-xs text-muted-foreground">
-                  Chapter closed {new Date(l.unlocked_at).toLocaleDateString()} , its leaderboard prize is already settled and won&apos;t change if you edit the numbers above.
-                </div>
+                <Muted className="text-xs">
+                  Chapter closed {formatDate(l.unlocked_at)}. Its leaderboard prize is already settled and won&apos;t
+                  change if you edit the numbers above.
+                </Muted>
               )}
             </form>
-            <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">
+            <div className="mt-4 flex items-center gap-2 border-t pt-4" style={{ borderColor: "var(--border)" }}>
               <form action={toggleVaultLevel}>
                 <input type="hidden" name="id" value={l.id} />
                 <input type="hidden" name="active" value={l.active ? "0" : "1"} />
-                <PendingButton
+                <ActionButton
                   variant="outline"
                   size="sm"
-                  pendingText={l.active ? "Hiding…" : "Showing…"}
+                  icon={l.active ? "view-hide" : "view"}
+                  pendingLabel={l.active ? "Hiding..." : "Showing..."}
                 >
                   {l.active ? "Hide" : "Show"}
-                </PendingButton>
+                </ActionButton>
               </form>
               <form action={deleteVaultLevel}>
                 <input type="hidden" name="id" value={l.id} />
-                <PendingButton
-                  variant="outline"
+                <ActionButton
+                  variant="danger"
                   size="sm"
-                  pendingText="Deleting…"
+                  icon="delete"
+                  pendingLabel="Deleting..."
                   confirm={`Delete level ${l.level} "${l.title}"? This can't be undone.`}
-                  className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
                 >
                   Delete
-                </PendingButton>
+                </ActionButton>
               </form>
             </div>
           </Card>
         ))}
         {levels.length === 0 && (
-          <Card className="p-8 text-center text-muted-foreground text-sm">
-            No vault levels yet. Add the first community goal above.
+          <Card>
+            <EmptyState title="No vault levels yet" icon="trophy">
+              Add the first community goal above.
+            </EmptyState>
           </Card>
         )}
       </div>
     </div>
+  );
+}
+
+// Shared by the add and edit forms; the field names are what the actions read.
+function LevelFields({ level: l }: { level?: VaultLevelRow }) {
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-4">
+        <Field label="Level #">
+          <Input name="level" type="number" min={l ? undefined : 1} required={!l} defaultValue={l?.level} placeholder="6" />
+        </Field>
+        <Field label="Energy required">
+          <Input
+            name="energy_required"
+            type="number"
+            min={l ? undefined : 0}
+            required={!l}
+            defaultValue={l?.energy_required}
+            placeholder="8000"
+          />
+        </Field>
+        <Field label="Title" className="sm:col-span-2">
+          <Input name="title" required={!l} maxLength={80} defaultValue={l?.title} placeholder="The Deep Archive" />
+        </Field>
+      </div>
+      <Field label="Blurb (shown in-game)">
+        <Input
+          name="blurb"
+          maxLength={400}
+          defaultValue={l?.blurb}
+          placeholder="A sealed vault of pre-Crash secrets reopens."
+        />
+      </Field>
+      <div className="grid items-start gap-3 sm:grid-cols-[1fr_auto]">
+        <Field label="Rewards" hint={REWARDS_HINT}>
+          <Textarea name="rewards" rows={3} defaultValue={l ? rewardsText(l) : undefined} />
+        </Field>
+        <Field label="Sort position">
+          <Input name="position" type="number" defaultValue={l?.position} placeholder="6" className="sm:w-28" />
+        </Field>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label="Top 1 chapter RE bonus">
+          <Input name="top1_re" type="number" min={0} defaultValue={l ? (l.top1_re ?? 0) : undefined} placeholder="200" />
+        </Field>
+        <Field label="Top 2 chapter RE bonus">
+          <Input name="top2_re" type="number" min={0} defaultValue={l ? (l.top2_re ?? 0) : undefined} placeholder="100" />
+        </Field>
+        <Field label="Top 3 chapter RE bonus">
+          <Input name="top3_re" type="number" min={0} defaultValue={l ? (l.top3_re ?? 0) : undefined} placeholder="50" />
+        </Field>
+      </div>
+      {!l && (
+        <Muted className="text-xs">
+          Paid once, automatically, to whoever contributed the most RE this chapter when this level unlocks. Leave at 0
+          for no leaderboard prize.
+        </Muted>
+      )}
+    </>
   );
 }

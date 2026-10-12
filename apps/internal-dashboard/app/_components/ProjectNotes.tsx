@@ -1,13 +1,11 @@
+/* eslint-disable @next/next/no-img-element */
 import { addProjectNote } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Card } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
+import { ActionButton, Card, CardHeader, Field, Muted, Textarea, formatDateTime } from "@/app/_ui/ui";
 import type { ProjectNoteRow } from "@/lib/db";
 
-// Free-form internal notes any reviewer can leave on a project - not tied to
-// a verdict, just context for whoever looks at this project next. Shared
-// between the project detail page and the review page, since reviewers work
-// from both.
+// Free-form internal notes any reviewer can leave on a project. Not tied to a
+// verdict, just context for whoever looks at this project next. Shared between
+// the project detail page and the review page, since reviewers work from both.
 export function ProjectNotes({
   projectId,
   notes,
@@ -19,56 +17,48 @@ export function ProjectNotes({
 }) {
   return (
     <div className={className}>
-      <h2 className="text-lg font-semibold text-foreground tracking-tight mb-3">Reviewer notes</h2>
-      <Card className="p-4">
-        <form action={addProjectNote} className="flex flex-col gap-2 mb-4">
+      <Card>
+        <CardHeader title="Reviewer notes" icon="message" count={notes.length} />
+        <form action={addProjectNote} className="mb-4 flex flex-col gap-3">
           <input type="hidden" name="projectId" value={projectId} />
           <Textarea
             name="body"
             required
             maxLength={2000}
             rows={2}
-            placeholder="Leave a note for whoever looks at this project next…"
-            className="text-sm"
+            placeholder="Leave a note for whoever looks at this project next..."
           />
-          <label className="block font-normal">
-            <span className="block text-xs font-medium text-muted-foreground mb-1">
-              Screenshot (optional)
-            </span>
-            <input
-              name="image"
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
-            />
-          </label>
-          <PendingButton variant="secondary" pendingText="Adding…" className="self-start">
-            Add note
-          </PendingButton>
+          <Field label="Screenshot" hint="Optional. PNG, JPEG or WebP.">
+            <input name="image" type="file" accept="image/png,image/jpeg,image/webp" className="hc-file" />
+          </Field>
+          <div>
+            <ActionButton variant="outline" size="sm" pendingLabel="Adding...">
+              Add note
+            </ActionButton>
+          </div>
         </form>
         {notes.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No notes yet.</div>
+          <Muted className="text-sm">No notes yet.</Muted>
         ) : (
-          <div className="flex flex-col gap-3">
+          <ul className="flex flex-col">
             {notes.map((n) => (
-              <div key={n.id} className="text-sm border-t border-border pt-3 first:border-t-0 first:pt-0">
-                <div className="whitespace-pre-wrap break-words">{n.body}</div>
+              <li key={n.id} className="border-t border-[var(--border)] py-3 text-sm last:pb-0">
+                <p className="whitespace-pre-wrap break-words">{n.body}</p>
                 {n.image_url && (
-                  <a href={n.image_url} target="_blank" rel="noreferrer" className="inline-block mt-2">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <a href={n.image_url} target="_blank" rel="noreferrer" className="mt-2 inline-block">
                     <img
                       src={n.image_url}
                       alt=""
-                      className="max-h-48 rounded border border-border object-cover"
+                      className="max-h-48 rounded border border-[var(--border)] object-cover"
                     />
                   </a>
                 )}
-                <div className="text-xs text-muted-foreground mt-1">
-                  {n.author} · {new Date(n.created_at).toLocaleString()}
-                </div>
-              </div>
+                <p className="hc-caption mt-1 text-xs">
+                  {n.author} · {formatDateTime(n.created_at)}
+                </p>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </Card>
     </div>

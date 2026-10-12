@@ -1,29 +1,25 @@
-import Link from "next/link";
-import { redirect } from "next/navigation";
 import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { listPixelTransactions, totalWalletPixels } from "@/lib/db";
 import { config } from "@/app/_generated/config";
 import { PixelAdjustForm } from "@/app/_components/PixelAdjustForm";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
+  ButtonLink,
+  Card,
+  EmptyRow,
+  Flash,
+  LinkTabs,
+  Mono,
+  Muted,
+  PageHeader,
   Pagination,
-  PaginationContent,
-  PaginationItem,
-  PaginationLink,
-} from "@/components/ui/pagination";
-import {
+  Stat,
+  StatGrid,
   Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  TextLink,
+  formatDateTime,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -41,18 +37,27 @@ const REASON_LABEL: Record<string, string> = {
 const MANUAL_REASONS = new Set(["manual_grant", "manual_deduction"]);
 
 // Manual grants/deductions pack their justification into created_by as
-// "actor , note". Split it so the note names the transaction and the By
-// column shows just who did it.
+// "actor , note" (adjustPixels in app/actions.ts). Older rows used an em dash
+// as the separator, so both are split. The note names the transaction and the
+// By column shows just who did it.
+const BY_SEPARATORS = [" , ", ` ${String.fromCharCode(0x2014)} `];
+
 function splitBy(reason: string, createdBy: string): { actor: string; note: string } {
   if (MANUAL_REASONS.has(reason)) {
-    const i = createdBy.indexOf(" , ");
-    if (i !== -1) return { actor: createdBy.slice(0, i), note: createdBy.slice(i + 3) };
+    for (const sep of BY_SEPARATORS) {
+      const i = createdBy.indexOf(sep);
+      if (i !== -1) return { actor: createdBy.slice(0, i), note: createdBy.slice(i + sep.length) };
+    }
   }
   return { actor: createdBy, note: "" };
 }
 
 function fmt(n: number): string {
-  return String(Math.round(n));
+  return Math.round(n).toLocaleString("en-US");
+}
+
+function usd(px: number): string {
+  return `About $${(px * config.economy.pixelValueUsd).toFixed(2)}`;
 }
 
 export default async function PixelsPage({
@@ -67,24 +72,19 @@ export default async function PixelsPage({
   }>;
 }) {
   const access = await requirePage("owner");
-  if (await getLiveMode())
-    return <LiveBlocked what="Pixels" reason="This page is the internal pixel ledger" />;
+  if (await getLiveMode()) return <LiveBlocked what="Pixels" reason="This page is the internal pixel ledger" />;
   const { page, filter, user, error, adjusted } = await searchParams;
   const [all, net] = await Promise.all([listPixelTransactions(1000), totalWalletPixels()]);
 
-  // amount is bigint in Postgres, which the driver hands back as a string , summing
-  // it with plain `+` silently does string concatenation instead of addition.
-  const issued = all
-    .filter((t) => Number(t.amount) > 0)
-    .reduce((s, t) => s + Number(t.amount), 0);
-  const spent = all
-    .filter((t) => Number(t.amount) < 0)
-    .reduce((s, t) => s + Number(t.amount), 0);
+  // amount is bigint in Postgres, which the driver hands back as a string.
+  // Summing it with plain `+` would silently concatenate strings.
+  const issued = all.filter((t) => Number(t.amount) > 0).reduce((s, t) => s + Number(t.amount), 0);
+  const spent = all.filter((t) => Number(t.amount) < 0).reduce((s, t) => s + Number(t.amount), 0);
 
   const activeFilter = filter === "given" || filter === "spent" ? filter : "all";
   let rows = all;
-  if (activeFilter === "given") rows = rows.filter((t) => t.amount > 0);
-  else if (activeFilter === "spent") rows = rows.filter((t) => t.amount < 0);
+  if (activeFilter === "given") rows = rows.filter((t) => Number(t.amount) > 0);
+  else if (activeFilter === "spent") rows = rows.filter((t) => Number(t.amount) < 0);
   if (user) rows = rows.filter((t) => t.user_id === user);
   const userName = user ? (rows[0]?.player_name ?? "player") : null;
 
@@ -111,174 +111,98 @@ export default async function PixelsPage({
   ];
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-1">Pixels log</h1>
-      <p className="text-sm text-muted-foreground mb-5">
-        Every pixel movement , who it went to, how many, why, and who granted it. 1 pixel = $
-        {config.economy.pixelValueUsd.toFixed(2)} · whole pixels only.
-      </p>
-
-      {error && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription className="font-medium text-destructive">{error}</AlertDescription>
-        </Alert>
-      )}
-      {adjusted && (
-        <Alert className="mb-4">
-          <AlertDescription className="font-medium text-hc-green">
-            Balance adjusted , it&apos;s in the ledger below.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <div className="grid grid-cols-3 gap-3 mb-6">
-        <Link href={qp({ filter: "given" })} className="block">
-          <Card className="p-4 gap-0 h-full transition-[box-shadow] hover:ring-hc-green/50">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Given out</div>
-            <div className="text-2xl font-bold mt-1 tabular-nums text-hc-green">{fmt(issued)}</div>
-            <div className="text-xs text-muted-foreground mt-0.5">≈ ${(issued * config.economy.pixelValueUsd).toFixed(2)}</div>
-          </Card>
-        </Link>
-        <Link href={qp({ filter: "spent" })} className="block">
-          <Card className="p-4 gap-0 h-full transition-[box-shadow] hover:ring-brand/50">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Spent / removed</div>
-            <div className="text-2xl font-bold mt-1 tabular-nums text-brand">{fmt(-spent)}</div>
-            <div className="text-xs text-muted-foreground mt-0.5">≈ ${(-spent * config.economy.pixelValueUsd).toFixed(2)}</div>
-          </Card>
-        </Link>
-        <Link href={qp({ filter: "all" })} className="block">
-          <Card className="p-4 gap-0 h-full transition-[box-shadow] hover:ring-foreground/25">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Net in wallets</div>
-            <div className="text-2xl font-bold mt-1 tabular-nums">{fmt(net)}</div>
-            <div className="text-xs text-muted-foreground mt-0.5">≈ ${(net * config.economy.pixelValueUsd).toFixed(2)}</div>
-          </Card>
-        </Link>
+    <div className="flex flex-col gap-6">
+      <div>
+        <PageHeader
+          title="Pixels log"
+          description={`Every pixel movement: who it went to, how many, why, and who granted it. 1 pixel = $${config.economy.pixelValueUsd.toFixed(2)}, whole pixels only.`}
+        />
+        <Flash error={error} ok={adjusted ? "Balance adjusted. It's in the ledger below." : null} />
       </div>
+
+      <StatGrid>
+        <Stat label="Given out" value={fmt(issued)} tone="success" icon="up-caret" href={qp({ filter: "given" })} hint={usd(issued)} />
+        <Stat label="Spent / removed" value={fmt(-spent)} tone="danger" icon="down-caret" href={qp({ filter: "spent" })} hint={usd(-spent)} />
+        <Stat label="Net in wallets" value={fmt(net)} icon="purse-fill" href={qp({ filter: "all" })} hint={usd(net)} />
+      </StatGrid>
 
       {access.isOwner && <PixelAdjustForm />}
 
-      <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
-        <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-card">
-          {filters.map((f) => (
-            <Button
-              key={f.key}
-              asChild
-              variant="ghost"
+      <div>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <LinkTabs active={activeFilter} tabs={filters.map((f) => ({ key: f.key, label: f.label, href: qp({ filter: f.key }) }))} />
+          {user && (
+            <ButtonLink
+              href={activeFilter !== "all" ? `/pixels?filter=${activeFilter}` : "/pixels"}
+              variant="outline"
               size="sm"
-              className={activeFilter === f.key ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground" : ""}
+              icon="view-close-small"
             >
-              <Link href={qp({ filter: f.key })}>{f.label}</Link>
-            </Button>
-          ))}
+              {userName}
+            </ButtonLink>
+          )}
         </div>
-        {user && (
-          <Badge asChild variant="destructive">
-            <Link href={activeFilter !== "all" ? `/pixels?filter=${activeFilter}` : "/pixels"}>
-              {userName} ✕
-            </Link>
-          </Badge>
-        )}
-      </div>
 
-      <Card className="overflow-hidden py-0">
-        <Table>
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <TableHead className="p-3 font-medium">Player</TableHead>
-              <TableHead className="p-3 font-medium">Amount</TableHead>
-              <TableHead className="p-3 font-medium">Reason</TableHead>
-              <TableHead className="p-3 font-medium">Project</TableHead>
-              <TableHead className="p-3 font-medium">By</TableHead>
-              <TableHead className="p-3 font-medium">When</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+        <Card padding="flush">
+          <Table headers={["Player", "Amount", "Reason", "Project", "By", "When"]}>
             {slice.map((t) => {
               const { actor, note } = splitBy(t.reason, t.created_by);
+              const amount = Number(t.amount);
               return (
-              <TableRow key={t.id}>
-                <TableCell className="p-3">
-                  <Link href={`/pixels?user=${t.user_id}`} className="font-medium hover:text-brand">
-                    {t.player_name}
-                  </Link>
-                </TableCell>
-                <TableCell
-                  className={`p-3 tabular-nums font-semibold ${
-                    t.amount >= 0 ? "text-hc-green" : "text-brand"
-                  }`}
-                >
-                  {t.amount >= 0 ? "+" : "−"}
-                  {fmt(Math.abs(t.amount))}
-                </TableCell>
-                <TableCell className="p-3">
-                  {note ? (
-                    <>
-                      <div className="text-foreground font-medium">{note}</div>
-                      <div className="text-xs text-muted-foreground">{REASON_LABEL[t.reason] ?? t.reason}</div>
-                    </>
-                  ) : (
-                    <span className="text-foreground/70">{REASON_LABEL[t.reason] ?? (t.reason || ",")}</span>
-                  )}
-                </TableCell>
-                <TableCell className="p-3">
-                  {t.project_id != null ? (
-                    <Link href={`/projects/${t.project_id}`} className="hover:text-brand">
-                      {t.project_name}
-                    </Link>
-                  ) : (
-                    <span className="text-muted-foreground">-</span>
-                  )}
-                </TableCell>
-                <TableCell className="p-3 text-muted-foreground">{actor || ","}</TableCell>
-                <TableCell className="p-3 text-muted-foreground">{new Date(t.created_at).toLocaleString()}</TableCell>
-              </TableRow>
+                <tr key={t.id}>
+                  <td>
+                    <TextLink href={`/pixels?user=${t.user_id}`} className="font-bold">
+                      {t.player_name}
+                    </TextLink>
+                  </td>
+                  <td>
+                    <span
+                      className="font-bold tabular-nums"
+                      style={{ color: amount >= 0 ? "var(--hc-green)" : "var(--hc-red)" }}
+                    >
+                      {amount >= 0 ? "+" : "-"}
+                      {fmt(Math.abs(amount))}
+                    </span>
+                  </td>
+                  <td>
+                    {note ? (
+                      <>
+                        <div className="font-bold">{note}</div>
+                        <div className="text-xs hc-muted">{REASON_LABEL[t.reason] ?? t.reason}</div>
+                      </>
+                    ) : (
+                      REASON_LABEL[t.reason] ?? (t.reason || <Muted>-</Muted>)
+                    )}
+                  </td>
+                  <td>
+                    {t.project_id != null ? (
+                      <TextLink href={`/projects/${t.project_id}`}>{t.project_name}</TextLink>
+                    ) : (
+                      <Muted>-</Muted>
+                    )}
+                  </td>
+                  <td>
+                    <Muted>{actor || "-"}</Muted>
+                  </td>
+                  <td>
+                    <Muted className="text-xs">
+                      <Mono>{formatDateTime(t.created_at)}</Mono>
+                    </Muted>
+                  </td>
+                </tr>
               );
             })}
-            {slice.length === 0 && (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={6} className="p-5 text-muted-foreground">
-                  No pixel activity matches.
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </Card>
+            {slice.length === 0 && <EmptyRow colSpan={6} title="No pixel activity matches" icon="search" />}
+          </Table>
+        </Card>
 
-      {total > 0 && (
-        <div className="flex items-center justify-between gap-3 mt-4 text-sm">
-          <span className="text-muted-foreground">
-            Showing {start + 1}–{Math.min(start + PER, total)} of {total}
-          </span>
-          <Pagination className="mx-0 w-auto justify-end">
-            <PaginationContent>
-              <PaginationItem>
-                <PaginationLink
-                  href={qp({ page: cur - 1 })}
-                  aria-label="Previous page"
-                  className={cur <= 1 ? "pointer-events-none opacity-40" : ""}
-                >
-                  ←
-                </PaginationLink>
-              </PaginationItem>
-              <PaginationItem>
-                <span className="px-2 text-muted-foreground tabular-nums">
-                  {cur} / {pages}
-                </span>
-              </PaginationItem>
-              <PaginationItem>
-                <PaginationLink
-                  href={qp({ page: cur + 1 })}
-                  aria-label="Next page"
-                  className={cur >= pages ? "pointer-events-none opacity-40" : ""}
-                >
-                  →
-                </PaginationLink>
-              </PaginationItem>
-            </PaginationContent>
-          </Pagination>
-        </div>
-      )}
+        {total > 0 && (
+          <p className="hc-caption mt-3 text-sm">
+            Showing {start + 1} to {Math.min(start + PER, total)} of {total}
+          </p>
+        )}
+        <Pagination page={cur} totalPages={pages} hrefFor={(n) => qp({ page: n })} />
+      </div>
     </div>
   );
 }

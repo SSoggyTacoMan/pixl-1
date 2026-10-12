@@ -1,12 +1,12 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { canSeeBuilderPII } from "@/lib/reviewAccess";
 import { getHideReviewers } from "@/lib/liveModeServer";
 import { reviewerName } from "@/lib/liveMode";
 import { listReviewAudits } from "@/lib/db";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
+import { Badge, Card, CardHeader, EmptyRow, Muted, Table, TextLink, formatDateTime, type Tone } from "@/app/_ui/ui";
+
+import { reviewerPlayerId, reviewerPlayerIds } from "../reviewerLinks";
 
 export const dynamic = "force-dynamic";
 
@@ -16,20 +16,16 @@ function fmtSeconds(s: number): string {
 }
 
 // reviewProject (app/actions.ts) writes six distinct verdict strings via
-// insertReviewAudit: "approved", "first_pass_approved", "needs_changes",
-// "banned", "first_pass_banned", and "reverted" (from the separate revoke
-// action). This used to only special-case "approved"/"reverted" and dumped
-// everything else - including every first-pass approval proposal - into
-// "sent back", which is why an approval note could show a red "sent back"
-// badge. An unrecognized verdict falls back to its raw value instead of
-// silently mislabeling it as "sent back" again.
-const VERDICT_BADGE: Record<string, { label: string; variant: "success" | "info" | "destructive" }> = {
-  approved: { label: "approved", variant: "success" },
-  first_pass_approved: { label: "approved (1st pass)", variant: "success" },
-  reverted: { label: "reverted", variant: "info" },
-  needs_changes: { label: "sent back", variant: "destructive" },
-  banned: { label: "banned", variant: "destructive" },
-  first_pass_banned: { label: "ban proposed", variant: "destructive" },
+// insertReviewAudit, plus "reverted" from the separate revoke action. Each
+// gets its own label so a first-pass approval never reads as "sent back"; an
+// unrecognized verdict falls back to its raw value.
+const VERDICT_BADGE: Record<string, { label: string; tone: Tone }> = {
+  approved: { label: "approved", tone: "success" },
+  first_pass_approved: { label: "approved (1st pass)", tone: "success" },
+  reverted: { label: "reverted", tone: "info" },
+  needs_changes: { label: "sent back", tone: "danger" },
+  banned: { label: "banned", tone: "danger" },
+  first_pass_banned: { label: "ban proposed", tone: "danger" },
 };
 
 export default async function ReviewLogPage() {
@@ -39,56 +35,62 @@ export default async function ReviewLogPage() {
   if (!access.isOwner) redirect("/review");
   // Legal names only for owners/final reviewers.
   const log = await listReviewAudits(undefined, undefined, { realNames: canSeeBuilderPII(access) });
+  const reviewerIds = await reviewerPlayerIds(log.map((r) => r.reviewer));
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-3">Review log</h1>
-      <p className="text-sm text-muted-foreground mb-4">
-        Owners only , every verdict with whether the reviewer opened the repo and
-        demo, how long they spent in each, and any hour adjustments.
+    <div className="flex flex-col gap-6">
+      <p className="hc-caption max-w-2xl text-sm">
+        Owners only. Every verdict with whether the reviewer opened the repo and demo, how long they spent
+        in each, and any hour adjustments.
       </p>
-      <Card className="divide-y divide-border py-0">
-        {log.length === 0 && (
-          <div className="p-5 text-muted-foreground text-sm">No verdicts yet.</div>
-        )}
-        {log.map((r) => {
-          const badge = VERDICT_BADGE[r.verdict] ?? { label: r.verdict, variant: "destructive" as const };
-          return (
-          <div key={r.id} className="p-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-            <Badge variant={badge.variant} className="shrink-0">
-              {badge.label}
-            </Badge>
-            <div className="flex-1 min-w-48">
-              <span className="font-bold">{reviewerName(r.reviewer, access.session.slackId, hideReviewers)}</span>
-              {" → "}
-              <Link href={`/players/${r.user_id}`} className="font-bold hover:text-brand">
-                {r.player_name}
-              </Link>
-              {" · "}
-              <Link href={`/projects/${r.project_id}`} className="font-bold hover:text-brand">
-                {r.project_name}
-              </Link>
-              <div className="text-foreground/70 break-words">{r.note}</div>
-              {r.verdict !== "reverted" && (
-                <div className="text-xs text-muted-foreground mt-1">
-                  repo {r.repo_opened ? `✓ ${fmtSeconds(r.repo_seconds)}` : "✗ never opened"}
-                  {" · "}
-                  demo {r.demo_opened ? `✓ ${fmtSeconds(r.demo_seconds)}` : "✗ never opened"}
-                  {" · "}
-                  {fmtSeconds(r.total_seconds)} on review
-                  {" · "}
-                  {r.approved_hours !== null && r.approved_hours !== r.claimed_hours
-                    ? `hours ${r.claimed_hours}h → ${r.approved_hours}h`
-                    : `${r.claimed_hours}h credited as logged`}
-                </div>
-              )}
-            </div>
-            <div className="text-xs text-muted-foreground shrink-0">
-              {new Date(r.created_at).toLocaleString()}
-            </div>
-          </div>
-          );
-        })}
+      <Card padding="flush">
+        <CardHeader title="Reviewer log" icon="history" count={log.length} />
+        <Table headers={["Verdict", "Reviewer", "Project", "Checks", "When"]}>
+          {log.map((r) => {
+            const badge = VERDICT_BADGE[r.verdict] ?? { label: r.verdict, tone: "danger" as const };
+            const reviewer = reviewerName(r.reviewer, access.session.slackId, hideReviewers);
+            // No link while the name is masked: the URL would give it away.
+            const reviewerId = reviewer === "Reviewer" ? null : reviewerPlayerId(reviewerIds, r.reviewer);
+            return (
+              <tr key={r.id} className="align-top">
+                <td>
+                  <Badge tone={badge.tone}>{badge.label}</Badge>
+                </td>
+                <td className="whitespace-nowrap font-bold">
+                  {reviewerId ? <TextLink href={`/players/${reviewerId}`}>{reviewer}</TextLink> : reviewer}
+                </td>
+                <td className="w-full min-w-64 whitespace-normal">
+                  <TextLink href={`/projects/${r.project_id}`} className="font-bold">
+                    {r.project_name}
+                  </TextLink>
+                  <div className="hc-caption text-xs">
+                    by{" "}
+                    <TextLink href={`/players/${r.user_id}`}>{r.player_name}</TextLink>
+                  </div>
+                  {r.note && <div className="mt-1 break-words">{r.note}</div>}
+                </td>
+                <td className="hc-caption whitespace-nowrap text-xs">
+                  {r.verdict !== "reverted" && (
+                    <div className="flex flex-col gap-0.5">
+                      <span>repo {r.repo_opened ? `opened, ${fmtSeconds(r.repo_seconds)}` : "never opened"}</span>
+                      <span>demo {r.demo_opened ? `opened, ${fmtSeconds(r.demo_seconds)}` : "never opened"}</span>
+                      <span>{fmtSeconds(r.total_seconds)} on review</span>
+                      <span>
+                        {r.approved_hours !== null && r.approved_hours !== r.claimed_hours
+                          ? `hours ${r.claimed_hours}h to ${r.approved_hours}h`
+                          : `${r.claimed_hours}h credited as logged`}
+                      </span>
+                    </div>
+                  )}
+                </td>
+                <td className="whitespace-nowrap">
+                  <Muted>{formatDateTime(r.created_at)}</Muted>
+                </td>
+              </tr>
+            );
+          })}
+          {log.length === 0 && <EmptyRow colSpan={5} title="No verdicts yet" icon="history" />}
+        </Table>
       </Card>
     </div>
   );

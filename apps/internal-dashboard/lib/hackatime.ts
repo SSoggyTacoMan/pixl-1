@@ -374,32 +374,52 @@ export async function fetchHackatimeReport(
 // queue list. Empty when unavailable - never guess or fall back to a
 // different id (Slack id, Pixl user id, project id), since the whole point
 // is a link that opens the right person's real Hackatime data.
+//
+// Results are memoized per process: a Hackatime user id never changes, so a
+// hit is kept for hours, and a miss (timeout, error, unknown user) for a couple
+// of minutes so a slow or down Hackatime costs one short timeout per user
+// instead of one per queue render.
+const USER_ID_HIT_TTL_MS = 6 * 60 * 60 * 1000;
+const USER_ID_MISS_TTL_MS = 2 * 60 * 1000;
+const USER_ID_TIMEOUT_MS = 4000;
+const userIdCache = new Map<string, { id: string; expires: number }>();
+
 export async function fetchHackatimeUserId(
   slackId: string | null | undefined,
   token: string | null,
 ): Promise<string> {
   const id = (slackId ?? "").trim();
   if (!id) return "";
+  const cached = userIdCache.get(id);
+  if (cached && cached.expires > Date.now()) return cached.id;
+  const remember = (value: string) => {
+    userIdCache.set(id, {
+      id: value,
+      expires: Date.now() + (value ? USER_ID_HIT_TTL_MS : USER_ID_MISS_TTL_MS),
+    });
+    return value;
+  };
   const headers: Record<string, string> = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
   try {
     const r = await fetch(`${BASE}/api/v1/users/${encodeURIComponent(id)}/stats`, {
       headers,
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(USER_ID_TIMEOUT_MS),
       next: { revalidate: 300 },
     });
-    if (!r.ok) return "";
+    if (!r.ok) return remember("");
     const data = ((await r.json()) as { data?: Record<string, unknown> }).data ?? {};
-    return data.user_id != null ? String(data.user_id) : "";
+    return remember(data.user_id != null ? String(data.user_id) : "");
   } catch (e) {
     console.error("hackatime user id fetch failed", (e as Error).message);
-    return "";
+    return remember("");
   }
 }
 
 // Batched Telescreen ids for a review queue (second-pass list pages) - one
 // token lookup across every relevant owner, then one lightweight /stats call
-// per project with linked Hackatime projects, all in parallel. Projects with
+// per owner with linked Hackatime projects, all in parallel. Pages render this
+// behind Suspense so a slow Hackatime never holds up the queue itself. Projects with
 // no linked Hackatime projects are skipped rather than making a call that
 // can never resolve to anything. Returns project id -> Hackatime user id,
 // omitting any project the id couldn't be resolved for.
@@ -412,9 +432,17 @@ export async function hackatimeUserIdsFor(rows: ShippedProject[]): Promise<Map<n
   const tokenByUser = new Map(
     (tokenRows ?? []).map((u) => [u.id as string, (u.hackatime_token as string | null) ?? null]),
   );
+  // One lookup per owner, not per project: a maker with several projects in
+  // the queue shares the same Hackatime id.
+  const byOwner = new Map<string, Promise<string>>();
+  for (const p of withHackatime) {
+    if (!byOwner.has(p.user_id)) {
+      byOwner.set(p.user_id, fetchHackatimeUserId(p.users?.slack_id, tokenByUser.get(p.user_id) ?? null));
+    }
+  }
   await Promise.all(
     withHackatime.map(async (p) => {
-      const hid = await fetchHackatimeUserId(p.users?.slack_id, tokenByUser.get(p.user_id) ?? null);
+      const hid = await byOwner.get(p.user_id)!;
       if (hid) out.set(p.id, hid);
     }),
   );

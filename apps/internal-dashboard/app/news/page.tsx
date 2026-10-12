@@ -1,13 +1,19 @@
 import { requirePage } from "@/lib/guard";
 import { listNews } from "@/lib/db";
 import { addNews, updateNews, toggleNews, deleteNews } from "@/app/actions";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  ActionButton,
+  Badge,
+  Card,
+  CardHeader,
+  EmptyState,
+  Field,
+  Flash,
+  Input,
+  PageHeader,
+  Textarea,
+  formatDate,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -17,17 +23,6 @@ function localInputValue(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return "";
   return at.toISOString().slice(0, 16);
-}
-
-function dateLabel(iso: string): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return "";
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(at);
 }
 
 export default async function NewsPage({
@@ -40,142 +35,100 @@ export default async function NewsPage({
   const posts = await listNews();
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">News</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          The news feed on the players&apos; projects page. One short line per post,
-          newest first. Hidden posts stay here but drop out of the feed.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="News"
+        count={posts.length}
+        description="The news feed on the players' projects page. One short line per post, newest first. Hidden posts stay here but drop out of the feed."
+      />
+      <Flash error={error} ok={saved ? "Saved." : null} />
 
-      {saved && (
-        <Alert>
-          <AlertDescription className="font-medium text-emerald-600 dark:text-emerald-400">
-            Saved.
-          </AlertDescription>
-        </Alert>
-      )}
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription className="font-medium text-destructive">{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <Card className="p-5 md:p-6 gap-0">
-        <div className="text-base font-semibold mb-4">Post news</div>
-        <form action={addNews} className="space-y-4">
-          <Label className="block font-normal">
-            <span className="block text-sm font-medium mb-1.5">Post</span>
-            <Textarea
-              name="body"
-              rows={2}
-              required
-              maxLength={500}
-              placeholder="New items added to the shop!"
-              className="w-full text-sm"
-            />
-          </Label>
-          <div className="grid sm:grid-cols-[1fr_auto] gap-4 items-start">
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Link (optional)</span>
-              <Input
-                name="link_url"
-                type="url"
-                maxLength={500}
-                placeholder="https://pixl.hackclub.com/shop"
-                className="w-full text-sm"
-              />
-            </Label>
-            <Label className="block font-normal">
-              <span className="block text-sm font-medium mb-1.5">Date (optional, UTC)</span>
-              <Input name="posted_at" type="datetime-local" className="w-full text-sm sm:w-56" />
-            </Label>
+      <Card>
+        <CardHeader title="Post news" icon="announcement" />
+        <form action={addNews} className="flex flex-col gap-3">
+          <Field label="Post">
+            <Textarea name="body" rows={2} required maxLength={500} placeholder="New items added to the shop!" />
+          </Field>
+          <div className="grid items-start gap-3 sm:grid-cols-[1fr_auto]">
+            <Field label="Link (optional)">
+              <Input name="link_url" type="url" maxLength={500} placeholder="https://pixl.hackclub.com/shop" />
+            </Field>
+            <Field label="Date (optional, UTC)">
+              <Input name="posted_at" type="datetime-local" className="sm:w-56" />
+            </Field>
           </div>
-          <PendingButton className="bg-brand text-white border-transparent" pendingText="Posting…">
-            Post
-          </PendingButton>
+          <div>
+            <ActionButton icon="send" pendingLabel="Posting...">
+              Post
+            </ActionButton>
+          </div>
         </form>
       </Card>
 
-      <div className="space-y-4">
+      <div className="flex flex-col gap-4">
         {posts.map((p) => (
-          <Card key={p.id} className={`p-4 md:p-5 gap-0 ${p.active ? "" : "opacity-60"}`}>
-            <form action={updateNews} className="space-y-3">
+          <Card key={p.id} className={p.active ? "" : "opacity-60"}>
+            <form action={updateNews} className="flex flex-col gap-3">
               <input type="hidden" name="id" value={p.id} />
-              <div className="flex items-center gap-2 flex-wrap mb-1">
-                <Badge variant="secondary">{dateLabel(p.posted_at)}</Badge>
-                {!p.active && <Badge variant="secondary">hidden</Badge>}
-                <div className="ml-auto flex items-center gap-2">
-                  <PendingButton variant="outline" size="sm" pendingText="Saving…">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="info">{formatDate(p.posted_at)}</Badge>
+                {!p.active && <Badge tone="neutral">hidden</Badge>}
+                <div className="ml-auto">
+                  <ActionButton variant="outline" size="sm" pendingLabel="Saving...">
                     Save
-                  </PendingButton>
+                  </ActionButton>
                 </div>
               </div>
-              <Label className="block font-normal">
-                <span className="block text-xs font-medium mb-1 text-muted-foreground">Post</span>
-                <Textarea
-                  name="body"
-                  rows={2}
-                  defaultValue={p.body}
-                  maxLength={500}
-                  className="w-full text-sm"
-                />
-              </Label>
-              <div className="grid sm:grid-cols-[1fr_auto] gap-3 items-start">
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">Link</span>
-                  <Input
-                    name="link_url"
-                    type="url"
-                    defaultValue={p.link_url ?? ""}
-                    maxLength={500}
-                    className="w-full text-sm"
-                  />
-                </Label>
-                <Label className="block font-normal">
-                  <span className="block text-xs font-medium mb-1 text-muted-foreground">
-                    Date (UTC)
-                  </span>
+              <Field label="Post">
+                <Textarea name="body" rows={2} defaultValue={p.body} maxLength={500} />
+              </Field>
+              <div className="grid items-start gap-3 sm:grid-cols-[1fr_auto]">
+                <Field label="Link">
+                  <Input name="link_url" type="url" defaultValue={p.link_url ?? ""} maxLength={500} />
+                </Field>
+                <Field label="Date (UTC)">
                   <Input
                     name="posted_at"
                     type="datetime-local"
                     defaultValue={localInputValue(p.posted_at)}
-                    className="w-full text-sm sm:w-56"
+                    className="sm:w-56"
                   />
-                </Label>
+                </Field>
               </div>
             </form>
-            <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">
+            <div className="mt-4 flex items-center gap-2 border-t pt-4" style={{ borderColor: "var(--border)" }}>
               <form action={toggleNews}>
                 <input type="hidden" name="id" value={p.id} />
                 <input type="hidden" name="active" value={p.active ? "0" : "1"} />
-                <PendingButton
+                <ActionButton
                   variant="outline"
                   size="sm"
-                  pendingText={p.active ? "Hiding…" : "Showing…"}
+                  icon={p.active ? "view-hide" : "view"}
+                  pendingLabel={p.active ? "Hiding..." : "Showing..."}
                 >
                   {p.active ? "Hide" : "Show"}
-                </PendingButton>
+                </ActionButton>
               </form>
               <form action={deleteNews}>
                 <input type="hidden" name="id" value={p.id} />
-                <PendingButton
-                  variant="outline"
+                <ActionButton
+                  variant="danger"
                   size="sm"
-                  pendingText="Deleting…"
+                  icon="delete"
+                  pendingLabel="Deleting..."
                   confirm="Delete this post? This can't be undone."
-                  className="text-rose-600 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 hover:text-rose-600"
                 >
                   Delete
-                </PendingButton>
+                </ActionButton>
               </form>
             </div>
           </Card>
         ))}
         {posts.length === 0 && (
-          <Card className="p-8 text-center text-muted-foreground text-sm">
-            Nothing posted yet. Write the first one above.
+          <Card>
+            <EmptyState title="Nothing posted yet" icon="announcement">
+              Write the first one above.
+            </EmptyState>
           </Card>
         )}
       </div>

@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { Suspense } from "react";
 import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { liveName } from "@/lib/liveMode";
@@ -6,38 +6,42 @@ import { listPlayers } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
 import { massPlayerAction, syncSlackAvatars } from "@/app/actions";
 import { SelectAllBox, RowSelect } from "@/app/_components/MassSelect";
-import { PendingButton } from "@/app/_components/PendingButton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
+  ActionButton,
+  Badge,
+  Card,
+  CardHeader,
+  EmptyRow,
+  FilterBar,
+  Field,
+  Flash,
+  Input,
+  Mono,
+  Muted,
+  NativeSelect,
+  PageHeader,
   Pagination,
-  PaginationContent,
-  PaginationItem,
-  PaginationLink,
-} from "@/components/ui/pagination";
-import {
   Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  TextLink,
+  formatDate,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
 const PER = 25;
+
+type Player = Awaited<ReturnType<typeof listPlayers>>[number];
+
+function playerName(live: boolean, p: Player, handle?: string | null): string {
+  return liveName(live, p, p.real_name || handle || p.display_name || "Unknown");
+}
+
+// Slack handles stream in after the table renders, so a slow Slack never
+// holds the page.
+async function PlayerName({ p, handles }: { p: Player; handles: Promise<Map<string, string>> }) {
+  const map = await handles;
+  return <>{playerName(false, p, p.slack_id ? map.get(p.slack_id) : null)}</>;
+}
 
 export default async function PlayersPage({
   searchParams,
@@ -55,9 +59,8 @@ export default async function PlayersPage({
   const start = (cur - 1) * PER;
   const players = all.slice(start, start + PER);
   // Live mode never shows real names or Slack identities, so skip the lookup.
-  const handles = live ? new Map<string, string>() : await slackHandles(players.map((p) => p.slack_id));
-  const qp = (n: number) =>
-    `/players?page=${n}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
+  const handles = live ? Promise.resolve(new Map<string, string>()) : slackHandles(players.map((p) => p.slack_id));
+  const qp = (n: number) => `/players?page=${n}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
 
   const canWarn = access.isOwner;
   const canNotify = access.isOwner;
@@ -65,193 +68,111 @@ export default async function PlayersPage({
   const defaultAction = canWarn ? "warn" : canNotify ? "notify" : "ban";
 
   return (
-    <div>
-      <h1 className="text-2xl font-semibold text-foreground tracking-tight mb-6">Players</h1>
-
-      {done && (
-        <Alert className="mb-4">
-          <AlertDescription className="font-medium text-emerald-600 dark:text-emerald-400">{done}</AlertDescription>
-        </Alert>
-      )}
-      {error && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription className="font-medium text-destructive">{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="mb-5 flex gap-2 items-center flex-wrap">
-        <form className="flex gap-2 flex-1 min-w-64">
-          <Input
-            name="q"
-            defaultValue={q ?? ""}
-            placeholder="Search display names…"
-            className="flex-1 min-w-0 max-w-72"
-          />
-          <Button type="submit">Search</Button>
-        </form>
-        {access.isOwner && (
-          <form action={syncSlackAvatars}>
-            <PendingButton variant="outline" pendingText="Syncing…">
-              Sync Slack photos
-            </PendingButton>
-          </form>
-        )}
+    <div className="flex flex-col gap-6">
+      <div>
+        <PageHeader
+          title="Players"
+          count={total}
+          actions={
+            access.isOwner && (
+              <form action={syncSlackAvatars}>
+                <ActionButton variant="outline" size="sm" icon="slack-fill" pendingLabel="Syncing...">
+                  Sync Slack photos
+                </ActionButton>
+              </form>
+            )
+          }
+        />
+        <Flash error={error} ok={done} />
+        <FilterBar q={q} placeholder="Search display names" />
       </div>
 
-      <form action={massPlayerAction}>
+      <form action={massPlayerAction} className="flex flex-col gap-6">
         <input type="hidden" name="back" value={qp(cur)} />
 
-        <Card className="p-4 mb-4 gap-0">
-          <div className="text-sm font-semibold mb-3">
-            Mass action , tick players below, then apply to all of them at once
-          </div>
+        <Card>
+          <CardHeader title="Mass action" icon="people-3" />
+          <p className="hc-caption mb-4 text-sm">Tick players below, then apply the action to all of them at once.</p>
           <div className="flex flex-wrap items-end gap-3">
-            <div className="block">
-              <Label className="block text-xs font-medium text-muted-foreground mb-1">Action</Label>
-              <Select name="massAction" defaultValue={defaultAction}>
-                <SelectTrigger className="text-sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {canWarn && <SelectItem value="warn">Warn</SelectItem>}
-                  {canNotify && <SelectItem value="notify">Notify</SelectItem>}
-                  {canBan && <SelectItem value="ban">Ban</SelectItem>}
-                  {canBan && <SelectItem value="unban">Lift bans</SelectItem>}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="block flex-1 min-w-56">
-              <Label className="block text-xs font-medium text-muted-foreground mb-1">
-                Message / reason (required for ban &amp; notify)
-              </Label>
-              <Input
-                name="message"
-                maxLength={1000}
-                placeholder="Sent to every selected player"
-                className="w-full text-sm"
-              />
-            </div>
-            <div className="block w-44">
-              <Label className="block text-xs font-medium text-muted-foreground mb-1">Title (notify only)</Label>
-              <Input
-                name="title"
-                maxLength={100}
-                placeholder="Message from the Pixl team"
-                className="w-full text-sm"
-              />
-            </div>
-            <div className="block w-32">
-              <Label className="block text-xs font-medium text-muted-foreground mb-1">Ban hours (blank = permanent)</Label>
-              <Input
-                name="hours"
-                type="number"
-                min={0}
-                placeholder="∞"
-                className="w-full text-sm"
-              />
-            </div>
-            <PendingButton
-              className="bg-brand text-white border-transparent"
-              pendingText="Applying…"
+            <Field label="Action">
+              <NativeSelect name="massAction" defaultValue={defaultAction}>
+                {canWarn && <option value="warn">Warn</option>}
+                {canNotify && <option value="notify">Notify</option>}
+                {canBan && <option value="ban">Ban</option>}
+                {canBan && <option value="unban">Lift bans</option>}
+              </NativeSelect>
+            </Field>
+            <Field label="Message / reason" hint="Required for ban and notify" className="min-w-56 flex-1">
+              <Input name="message" maxLength={1000} placeholder="Sent to every selected player" />
+            </Field>
+            <Field label="Title" hint="Notify only" className="w-44">
+              <Input name="title" maxLength={100} placeholder="Message from the Pixl team" />
+            </Field>
+            <Field label="Ban hours" hint="Blank = permanent" className="w-36">
+              <Input name="hours" type="number" min={0} placeholder="Permanent" />
+            </Field>
+            <ActionButton
+              variant="danger"
+              pendingLabel="Applying..."
               confirm="Apply this action to every selected player?"
             >
               Apply to selected
-            </PendingButton>
+            </ActionButton>
           </div>
         </Card>
 
-        <Card className="overflow-hidden py-0">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="p-3 w-8">
-                  <SelectAllBox />
-                </TableHead>
-                <TableHead className="p-3">Player</TableHead>
-                <TableHead className="p-3">Projects</TableHead>
-                <TableHead className="p-3">Violations</TableHead>
-                <TableHead className="p-3">Status</TableHead>
-                <TableHead className="p-3">Joined</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
+        <div>
+          <Card padding="flush">
+            <Table headers={[<SelectAllBox key="all" />, "Player", "Projects", "Violations", "Status", "Joined"]}>
               {players.map((p) => (
-                <TableRow key={p.id}>
-                  <TableCell className="p-3">
+                <tr key={p.id}>
+                  <td className="w-8">
                     <RowSelect id={p.id} label={`Select ${liveName(live, p, p.real_name || p.display_name || p.id)}`} />
-                  </TableCell>
-                  <TableCell className="p-3">
-                    <Link href={`/players/${p.id}`} className="font-bold hover:text-brand">
-                      {liveName(live, p, p.real_name || (p.slack_id && handles.get(p.slack_id)) || p.display_name || "Unknown")}
-                    </Link>
+                  </td>
+                  <td>
+                    <TextLink href={`/players/${p.id}`} className="font-bold">
+                      {live ? (
+                        playerName(true, p)
+                      ) : (
+                        <Suspense fallback={playerName(false, p)}>
+                          <PlayerName p={p} handles={handles} />
+                        </Suspense>
+                      )}
+                    </TextLink>
                     {!live && (
-                      <div className="text-xs text-muted-foreground">
-                        {p.slack_id ?? "no slack id"} · {p.oauth_provider}
+                      <div className="text-xs hc-muted">
+                        <Mono>{p.slack_id ?? "no Slack id"}</Mono> · {p.oauth_provider}
                       </div>
                     )}
-                  </TableCell>
-                  <TableCell className="p-3">{p.projectCount}</TableCell>
-                  <TableCell className={`p-3 ${p.violationCount > 0 ? "text-tang font-bold" : ""}`}>
-                    {p.violationCount}
-                  </TableCell>
-                  <TableCell className="p-3">
-                    {p.activeBan ? (
-                      <Badge className="bg-brand text-white">banned</Badge>
-                    ) : (
-                      <Badge variant="success">ok</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="p-3 text-muted-foreground">
-                    {new Date(p.created_at).toLocaleDateString()}
-                  </TableCell>
-                </TableRow>
+                  </td>
+                  <td className="tabular-nums">{p.projectCount}</td>
+                  <td className="tabular-nums">
+                    {p.violationCount > 0 ? <Badge tone="warning">{p.violationCount}</Badge> : <Muted>0</Muted>}
+                  </td>
+                  <td>{p.activeBan ? <Badge tone="danger">Banned</Badge> : <Badge tone="success">OK</Badge>}</td>
+                  <td>
+                    <Muted>
+                      <Mono>{formatDate(p.created_at)}</Mono>
+                    </Muted>
+                  </td>
+                </tr>
               ))}
               {players.length === 0 && (
-                <TableRow className="hover:bg-transparent">
-                  <TableCell className="p-5 text-muted-foreground" colSpan={6}>
-                    No players found.
-                  </TableCell>
-                </TableRow>
+                <EmptyRow colSpan={6} title="No players found" icon="search">
+                  Try a different name.
+                </EmptyRow>
               )}
-            </TableBody>
-          </Table>
-        </Card>
+            </Table>
+          </Card>
+          {total > 0 && (
+            <p className="hc-caption mt-3 text-sm">
+              Showing {start + 1} to {Math.min(start + PER, total)} of {total}
+            </p>
+          )}
+        </div>
       </form>
 
-      {total > 0 && (
-        <div className="flex items-center justify-between gap-3 mt-4 text-sm">
-          <span className="text-muted-foreground">
-            Showing {start + 1}–{Math.min(start + PER, total)} of {total}
-          </span>
-          <Pagination className="mx-0 w-auto justify-end">
-            <PaginationContent>
-              <PaginationItem>
-                <PaginationLink
-                  href={qp(cur - 1)}
-                  aria-label="Previous page"
-                  className={cur <= 1 ? "pointer-events-none opacity-40" : ""}
-                >
-                  ←
-                </PaginationLink>
-              </PaginationItem>
-              <PaginationItem>
-                <span className="px-2 text-muted-foreground tabular-nums">
-                  {cur} / {pages}
-                </span>
-              </PaginationItem>
-              <PaginationItem>
-                <PaginationLink
-                  href={qp(cur + 1)}
-                  aria-label="Next page"
-                  className={cur >= pages ? "pointer-events-none opacity-40" : ""}
-                >
-                  →
-                </PaginationLink>
-              </PaginationItem>
-            </PaginationContent>
-          </Pagination>
-        </div>
-      )}
+      <Pagination page={cur} totalPages={pages} hrefFor={qp} />
     </div>
   );
 }

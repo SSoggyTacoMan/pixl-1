@@ -6,7 +6,7 @@ import { REVIEW_REWARD_COOKIE, parseReviewReward, rewardLabel } from "@/lib/revi
 
 // The little party after a verdict: confetti, a short celebratory sound and a
 // "+6 pixels" card. reviewProject sets a one-shot cookie with the pixels the
-// reviewer was paid just before it redirects (see lib/reviewReward.ts), this
+// reviewer was paid just before it redirects (see lib/reviewReward.ts). This
 // component sits in the root layout, which survives client navigations, so it
 // checks for that cookie every time the path changes.
 //
@@ -15,7 +15,8 @@ import { REVIEW_REWARD_COOKIE, parseReviewReward, rewardLabel } from "@/lib/revi
 // Honours prefers-reduced-motion (no confetti, the card still shows) and a
 // localStorage switch: localStorage.setItem("pixl-review-celebrate", "off").
 
-const COLORS = ["#f5c542", "#ff6b6b", "#4ecdc4", "#a78bfa", "#60a5fa", "#fb923c", "#34d399"];
+// The Hack Club palette (admin.css --hc-*). Canvas can't read CSS vars.
+const COLORS = ["#f1c40f", "#ec3750", "#5bc0de", "#a633d6", "#338eda", "#ff8c37", "#33d6a6"];
 const CARD_MS = 2400;
 const CONFETTI_MS = 3600;
 
@@ -229,11 +230,11 @@ export function ReviewCelebration() {
         transform: "translate(-50%, -50%)",
         padding: "18px 34px",
         borderRadius: 18,
-        background: "rgba(20, 20, 28, 0.88)",
-        border: "2px solid #f5c542",
+        background: "color-mix(in srgb, var(--hc-darker) 90%, transparent)",
+        border: "2px solid var(--hc-yellow)",
         boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
-        color: "#f5c542",
-        fontFamily: "var(--font-heading), monospace",
+        color: "var(--hc-yellow)",
+        fontFamily: "var(--font-monospace)",
         fontSize: reward.px > 0 ? 44 : 26,
         fontWeight: 800,
         letterSpacing: 1,

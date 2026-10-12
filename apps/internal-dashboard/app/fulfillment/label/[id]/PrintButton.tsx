@@ -1,19 +1,19 @@
 "use client";
 
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { Button, TextLink } from "@/app/_ui/ui";
 
-// Split out as a Client Component only for the window.print() call - the
-// label itself (page.tsx) stays a Server Component that does the data
-// fetching. Wrapped in .no-print so it never shows up in the actual
-// printout, just on screen.
+// A Client Component only for the window.print() call; the label itself
+// (page.tsx) stays a Server Component. Wrapped in .no-print so it only shows
+// on screen, never in the printout.
 export function PrintButton() {
   return (
-    <div className="no-print flex items-center gap-3 p-4">
-      <Button onClick={() => window.print()}>Print label</Button>
-      <Link href="/fulfillment" className="text-sm text-muted-foreground hover:text-foreground">
-        ← Back to fulfillment
-      </Link>
+    <div className="no-print mb-4 flex items-center gap-3">
+      <Button onClick={() => window.print()} icon="post">
+        Print label
+      </Button>
+      <TextLink href="/fulfillment" className="text-sm">
+        Back to fulfillment
+      </TextLink>
     </div>
   );
 }

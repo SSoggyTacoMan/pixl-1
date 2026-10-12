@@ -1,32 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useFormStatus } from "react-dom";
 import { adjustPixels, searchPlayers, type PlayerHit } from "@/app/actions";
 import { config } from "@/app/_generated/config";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-
-function SubmitButton({ mode }: { mode: "deduct" | "grant" }) {
-  const { pending } = useFormStatus();
-  return (
-    <Button
-      disabled={pending}
-      className={`text-white border-transparent ${
-        mode === "deduct" ? "bg-brand hover:bg-brand/90" : "bg-hc-green hover:bg-hc-green/90"
-      }`}
-    >
-      {pending
-        ? mode === "deduct"
-          ? "Deducting…"
-          : "Granting…"
-        : mode === "deduct"
-          ? "Deduct pixels"
-          : "Grant pixels"}
-    </Button>
-  );
-}
+import { ActionButton, Details, Field, Input, Textarea } from "@/app/_ui/ui";
 
 // Matches the rate everywhere else pixels get converted to dollars (see
 // actions.ts, lib/db.ts).
@@ -80,112 +57,113 @@ export function PixelAdjustForm() {
   }, []);
 
   return (
-    <details className="rounded-xl border border-border bg-card p-4 mb-6">
-      <summary className="cursor-pointer text-sm font-semibold select-none">
-        Adjust a player&apos;s pixels (owners only)
-      </summary>
-      <form action={adjustPixels} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto_auto] items-start">
-        <div ref={boxRef} className="relative">
-          {selected && <input type="hidden" name="userId" value={selected.id} />}
-          <Input
-            autoComplete="off"
-            value={player}
-            onChange={(e) => {
-              setPlayer(e.target.value);
-              setSelected(null);
-            }}
-            onFocus={() => hits.length > 0 && setOpen(true)}
-            placeholder="Search player…"
-            required
-            className="w-full text-sm"
-          />
-          {open && (
-            <div className="absolute z-20 mt-1 w-full rounded-lg border border-border bg-popover shadow-lg overflow-hidden">
-              {searching && hits.length === 0 && (
-                <div className="px-3 py-2 text-sm text-muted-foreground">Searching…</div>
-              )}
-              {hits.map((h) => (
-                <button
-                  key={h.id}
-                  type="button"
-                  onClick={() => {
-                    setSelected(h);
-                    setPlayer(h.name);
-                    setOpen(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-sm hover:bg-muted"
-                >
-                  {h.name}
-                </button>
-              ))}
-              {!searching && hits.length === 0 && (
-                <div className="px-3 py-2 text-sm text-muted-foreground">No players found.</div>
+    <Details summary="Adjust a player's pixels (owners only)">
+      <form action={adjustPixels} className="flex flex-col gap-4">
+        <div className="grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+          <Field label="Player">
+            <div ref={boxRef} className="relative">
+              {selected && <input type="hidden" name="userId" value={selected.id} />}
+              <Input
+                autoComplete="off"
+                value={player}
+                onChange={(e) => {
+                  setPlayer(e.target.value);
+                  setSelected(null);
+                }}
+                onFocus={() => hits.length > 0 && setOpen(true)}
+                placeholder="Search player"
+                required
+                className="w-full"
+              />
+              {open && (
+                <ul className="hc-select-menu">
+                  {searching && hits.length === 0 && <li className="hc-select-option hc-muted">Searching...</li>}
+                  {hits.map((h) => (
+                    <li key={h.id}>
+                      <button
+                        type="button"
+                        className="hc-select-option"
+                        onClick={() => {
+                          setSelected(h);
+                          setPlayer(h.name);
+                          setOpen(false);
+                        }}
+                      >
+                        <span className="truncate">{h.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                  {!searching && hits.length === 0 && <li className="hc-select-option hc-muted">No players found.</li>}
+                </ul>
               )}
             </div>
-          )}
+          </Field>
+
+          <div className="hc-segmented" role="tablist" aria-label="Direction">
+            <input type="hidden" name="mode" value={mode} />
+            {(["deduct", "grant"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                role="tab"
+                aria-selected={mode === m}
+                className="hc-segmented-item px-3"
+                onClick={() => setMode(m)}
+              >
+                {m === "deduct" ? "Deduct" : "Grant"}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Input
+              name="amount"
+              type="number"
+              min="1"
+              step="1"
+              required
+              placeholder="Pixels"
+              aria-label="Pixels"
+              value={amount}
+              onChange={(e) => {
+                setAmount(e.target.value);
+                setDollars("");
+              }}
+              className="w-24"
+            />
+            <span className="hc-muted text-xs">=</span>
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="$"
+              title="Convert dollars to pixels"
+              aria-label="Dollars"
+              value={dollars}
+              onChange={(e) => {
+                const v = e.target.value;
+                setDollars(v);
+                const n = Number(v);
+                setAmount(v && Number.isFinite(n) && n >= 0 ? String(Math.round(n * PX_PER_DOLLAR)) : "");
+              }}
+              className="w-20"
+            />
+          </div>
         </div>
-        <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-card">
-          <input type="hidden" name="mode" value={mode} />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setMode("deduct")}
-            className={mode === "deduct" ? "bg-brand text-white hover:bg-brand/90" : ""}
+
+        <Field label="Reason" hint="Required. Names the transaction in the log and is shown to the player.">
+          <Textarea name="reason" required rows={2} placeholder="e.g. Logo design, contract work" />
+        </Field>
+
+        <div>
+          <ActionButton
+            variant={mode === "deduct" ? "danger" : "success"}
+            pendingLabel={mode === "deduct" ? "Deducting..." : "Granting..."}
           >
-            Deduct
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setMode("grant")}
-            className={mode === "grant" ? "bg-hc-green text-white hover:bg-hc-green/90" : ""}
-          >
-            Grant
-          </Button>
+            {mode === "deduct" ? "Deduct pixels" : "Grant pixels"}
+          </ActionButton>
         </div>
-        <div className="flex items-center gap-1.5">
-          <Input
-            name="amount"
-            type="number"
-            min="1"
-            step="1"
-            required
-            placeholder="Pixels"
-            value={amount}
-            onChange={(e) => {
-              setAmount(e.target.value);
-              setDollars("");
-            }}
-            className="w-24 text-sm"
-          />
-          <span className="text-xs text-muted-foreground">=</span>
-          <Input
-            type="number"
-            min="0"
-            step="0.01"
-            placeholder="$"
-            title="Convert dollars to pixels"
-            value={dollars}
-            onChange={(e) => {
-              const v = e.target.value;
-              setDollars(v);
-              const n = Number(v);
-              setAmount(v && Number.isFinite(n) && n >= 0 ? String(Math.round(n * PX_PER_DOLLAR)) : "");
-            }}
-            className="w-20 text-sm"
-          />
-        </div>
-        <Textarea
-          name="reason"
-          required
-          rows={2}
-          placeholder="What's this for? (required , names the transaction in the log, e.g. “Logo design , contract work”. Shown to the player.)"
-          className="text-sm resize-y sm:col-span-2"
-        />
-        <SubmitButton mode={mode} />
       </form>
-    </details>
+    </Details>
   );
 }

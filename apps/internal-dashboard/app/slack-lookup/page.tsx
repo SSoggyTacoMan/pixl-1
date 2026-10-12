@@ -1,25 +1,124 @@
-import Link from "next/link";
-import { redirect } from "next/navigation";
+/* eslint-disable @next/next/no-img-element */
+import { Suspense } from "react";
 import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { getPlayerBySlackId, playerLabel, searchPlayerHandles } from "@/lib/db";
 import { getSlackUserProfile } from "@/lib/slack";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import {
+  Badge,
+  Button,
+  ButtonLink,
+  Callout,
+  Card,
+  CardHeader,
+  Code,
+  DescriptionList,
+  EmptyState,
+  Icon,
+  Input,
+  Mono,
+  Muted,
+  PageHeader,
+  Table,
+  TextLink,
+  formatDateTime,
+} from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
-  if (value === null || value === undefined || value === "") return null;
+// The Slack call streams in behind Suspense so the search forms render
+// straight away even when Slack is slow.
+async function ProfileResult({ query }: { query: string }) {
+  const profile = await getSlackUserProfile(query);
+  if (!profile) {
+    return (
+      <Callout tone="danger" icon="important">
+        Couldn&apos;t find a Slack user for <Code>{query}</Code>. Double-check the ID. This needs the
+        exact <Code>U0...</Code> id, not a display name.
+      </Callout>
+    );
+  }
+  const player = profile.deleted ? null : await getPlayerBySlackId(profile.id);
+
   return (
-    <div className="min-w-0">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="text-sm mt-0.5 break-words">{value}</div>
-    </div>
+    <Card>
+      <div className="mb-5 flex flex-wrap items-start gap-4">
+        {profile.image512 && (
+          <img src={profile.image512} alt="" width={80} height={80} className="hc-avatar shrink-0" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="hc-heading text-lg">{profile.displayName || profile.realName || profile.name}</h2>
+            {profile.deleted && <Badge tone="danger">Deactivated</Badge>}
+            {profile.isPrimaryOwner && <Badge tone="warning">Primary owner</Badge>}
+            {!profile.isPrimaryOwner && profile.isOwner && <Badge tone="warning">Owner</Badge>}
+            {profile.isAdmin && !profile.isOwner && <Badge tone="info">Admin</Badge>}
+            {profile.isBot && <Badge>Bot</Badge>}
+            {profile.isUltraRestricted && <Badge outline>Single-channel guest</Badge>}
+            {!profile.isUltraRestricted && profile.isRestricted && <Badge outline>Multi-channel guest</Badge>}
+          </div>
+          {profile.realName && profile.realName !== profile.displayName && (
+            <Muted className="text-sm">{profile.realName}</Muted>
+          )}
+          {(profile.statusEmoji || profile.statusText) && (
+            <div className="mt-1 text-sm">
+              {profile.statusEmoji ? `${profile.statusEmoji} ` : ""}
+              {profile.statusText}
+            </div>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <ButtonLink
+              href={`https://hackclub.slack.com/team/${profile.id}`}
+              external
+              variant="outline"
+              size="sm"
+              icon="slack-fill"
+            >
+              Open in Slack
+            </ButtonLink>
+            {player && (
+              <ButtonLink href={`/players/${player.id}`} variant="outline" size="sm" icon="person">
+                Pixl profile: {playerLabel(player)}
+              </ButtonLink>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <DescriptionList
+        items={[
+          ["Slack ID", <Mono key="id">{profile.id}</Mono>],
+          ["Username", profile.name ? `@${profile.name}` : null],
+          ["Team ID", profile.teamId ? <Mono key="team">{profile.teamId}</Mono> : null],
+          ["Email", profile.email],
+          ["Phone", profile.phone],
+          ["Title", profile.title],
+          ["Skype", profile.skype],
+          [
+            "Timezone",
+            profile.timezone
+              ? `${profile.timezoneLabel ? `${profile.timezoneLabel}, ` : ""}${profile.timezone}`
+              : null,
+          ],
+          ["Profile last updated", profile.updated ? formatDateTime(profile.updated * 1000) : null],
+        ]}
+      />
+
+      {!process.env.SLACK_BOT_TOKEN?.length && (
+        <div className="mt-4">
+          <Callout tone="warning" icon="important">
+            SLACK_BOT_TOKEN is not set.
+          </Callout>
+        </div>
+      )}
+      {!profile.email && (
+        <p className="hc-caption mt-4 text-xs">
+          No email shown. The dashboard&apos;s Slack app doesn&apos;t have the <Code>users:read.email</Code>{" "}
+          scope.
+        </p>
+      )}
+    </Card>
   );
 }
 
@@ -28,176 +127,96 @@ export default async function SlackLookupPage({
 }: {
   searchParams: Promise<{ q?: string; name?: string }>;
 }) {
-  const access = await requirePage("owner");
+  await requirePage("owner");
   if (await getLiveMode()) return <LiveBlocked what="Slack lookup" />;
   const { q, name } = await searchParams;
   const query = q?.trim() ?? "";
   const nameQuery = name?.trim() ?? "";
 
-  const [profile, matches] = await Promise.all([
-    query ? getSlackUserProfile(query) : null,
-    nameQuery ? searchPlayerHandles(nameQuery) : Promise.resolve([]),
-  ]);
-  const player = profile && !profile.deleted ? await getPlayerBySlackId(profile.id) : null;
+  const matches = nameQuery ? await searchPlayerHandles(nameQuery) : [];
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Slack lookup</h1>
-        <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-          Paste a Slack user ID (the <code>U0…</code> id, not an @handle) to pull everything Slack
-          will hand back about that account.
-        </p>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Slack lookup"
+        description={
+          <>
+            Paste a Slack user ID (the <Code>U0...</Code> id, not an @handle) to pull everything Slack
+            hands back about that account.
+          </>
+        }
+      />
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader title="Look up a Slack ID" icon="slack-fill" />
+          <form className="flex flex-wrap gap-2">
+            <Input name="q" defaultValue={query} placeholder="Slack user ID (U0...)" className="hc-mono min-w-60 flex-1" />
+            <Button type="submit" icon="search">
+              Look up
+            </Button>
+          </form>
+        </Card>
+
+        <Card>
+          <CardHeader title="Find a player by name" icon="person" />
+          <form className="flex flex-wrap gap-2">
+            <Input
+              name="name"
+              defaultValue={nameQuery}
+              placeholder="Search Pixl display or real name"
+              className="min-w-60 flex-1"
+            />
+            <Button type="submit" variant="outline">
+              Search
+            </Button>
+          </form>
+        </Card>
       </div>
 
-      <Card className="p-5 md:p-6 gap-4">
-        <form className="flex gap-2 flex-wrap">
-          <Input
-            name="q"
-            defaultValue={query}
-            placeholder="Slack user ID (U0…)"
-            className="flex-1 min-w-64 font-mono text-sm"
-          />
-          <Button type="submit">Look up</Button>
-        </form>
-
-        {query && !profile && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              Couldn&apos;t find a Slack user for <code>{query}</code>. Double-check the ID , this
-              needs the exact <code>U0…</code> id, not a display name.
-            </AlertDescription>
-          </Alert>
-        )}
-      </Card>
-
-      <Card className="p-5 md:p-6 gap-3">
-        <div className="text-sm font-semibold">Or find a player by name</div>
-        <form className="flex gap-2 flex-wrap">
-          <Input
-            name="name"
-            defaultValue={nameQuery}
-            placeholder="Search Pixl display or real name…"
-            className="flex-1 min-w-64 text-sm"
-          />
-          <Button type="submit" variant="outline">
-            Search
-          </Button>
-        </form>
-
-        {nameQuery && matches.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            No Pixl players with a linked Slack account match &quot;{nameQuery}&quot;.
-          </p>
-        )}
-
-        {matches.length > 0 && (
-          <ul className="flex flex-col divide-y divide-border rounded-md border border-border overflow-hidden">
+      {nameQuery && (
+        <Card padding="flush">
+          <CardHeader title={`Players matching "${nameQuery}"`} icon="search" count={matches.length} />
+          <Table headers={["Player", "Slack ID", ""]}>
             {matches.map((m) => (
-              <li key={m.id}>
-                <Link
-                  href={`/slack-lookup?q=${encodeURIComponent(m.slack_id ?? "")}`}
-                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm hover:bg-muted/50 transition-colors"
-                >
-                  <span className="truncate">{playerLabel(m)}</span>
-                  <span className="font-mono text-xs text-muted-foreground shrink-0">
-                    {m.slack_id}
-                  </span>
-                </Link>
-              </li>
+              <tr key={m.id}>
+                <td className="font-bold">{playerLabel(m)}</td>
+                <td>
+                  <Mono>{m.slack_id}</Mono>
+                </td>
+                <td className="text-right">
+                  <TextLink href={`/slack-lookup?q=${encodeURIComponent(m.slack_id ?? "")}`}>
+                    <span className="inline-flex items-center gap-1">
+                      Look up <Icon glyph="view-forward" size={16} />
+                    </span>
+                  </TextLink>
+                </td>
+              </tr>
             ))}
-          </ul>
-        )}
-      </Card>
-
-      {profile && (
-        <Card className="p-5 md:p-6 gap-5">
-          <div className="flex items-start gap-4 flex-wrap">
-            {profile.image512 && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={profile.image512}
-                alt=""
-                className="w-20 h-20 rounded-xl border border-border shrink-0"
-              />
+            {matches.length === 0 && (
+              <tr>
+                <td colSpan={3}>
+                  <EmptyState title="No matches" icon="search">
+                    No Pixl players with a linked Slack account match that name.
+                  </EmptyState>
+                </td>
+              </tr>
             )}
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="text-lg font-semibold">
-                  {profile.displayName || profile.realName || profile.name}
-                </div>
-                {profile.deleted && <Badge variant="destructive">Deactivated</Badge>}
-                {profile.isPrimaryOwner && <Badge variant="warning">Primary owner</Badge>}
-                {!profile.isPrimaryOwner && profile.isOwner && <Badge variant="warning">Owner</Badge>}
-                {profile.isAdmin && !profile.isOwner && <Badge variant="info">Admin</Badge>}
-                {profile.isBot && <Badge variant="secondary">Bot</Badge>}
-                {profile.isUltraRestricted && <Badge variant="outline">Single-channel guest</Badge>}
-                {!profile.isUltraRestricted && profile.isRestricted && (
-                  <Badge variant="outline">Multi-channel guest</Badge>
-                )}
-              </div>
-              {profile.realName && profile.realName !== profile.displayName && (
-                <div className="text-sm text-muted-foreground">{profile.realName}</div>
-              )}
-              {(profile.statusEmoji || profile.statusText) && (
-                <div className="text-sm mt-1">
-                  {profile.statusEmoji ? `${profile.statusEmoji} ` : ""}
-                  {profile.statusText}
-                </div>
-              )}
-              <a
-                href={`https://hackclub.slack.com/team/${profile.id}`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-brand underline inline-block mt-2"
-              >
-                Open in Slack
-              </a>
-              {player && (
-                <Link
-                  href={`/players/${player.id}`}
-                  className="text-xs text-brand underline inline-block mt-2 ml-3"
-                >
-                  View Pixl profile: {playerLabel(player)}
-                </Link>
-              )}
-            </div>
-          </div>
-
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-2 border-t border-border">
-            <Field label="Slack ID" value={<span className="font-mono">{profile.id}</span>} />
-            <Field label="Username" value={profile.name ? `@${profile.name}` : null} />
-            <Field label="Team ID" value={<span className="font-mono">{profile.teamId}</span>} />
-            <Field label="Email" value={profile.email} />
-            <Field label="Phone" value={profile.phone} />
-            <Field label="Title" value={profile.title} />
-            <Field label="Skype" value={profile.skype} />
-            <Field
-              label="Timezone"
-              value={
-                profile.timezone
-                  ? `${profile.timezoneLabel ? profile.timezoneLabel + " · " : ""}${profile.timezone}`
-                  : null
-              }
-            />
-            <Field
-              label="Profile last updated"
-              value={profile.updated ? new Date(profile.updated * 1000).toLocaleString() : null}
-            />
-          </div>
-
-          {!process.env.SLACK_BOT_TOKEN?.length && (
-            <Alert>
-              <AlertDescription>SLACK_BOT_TOKEN is not set.</AlertDescription>
-            </Alert>
-          )}
-          {!profile.email && (
-            <p className="text-xs text-muted-foreground">
-              No email shown , the dashboard&apos;s Slack app doesn&apos;t have the{" "}
-              <code>users:read.email</code> scope.
-            </p>
-          )}
+          </Table>
         </Card>
+      )}
+
+      {query && (
+        <Suspense
+          key={query}
+          fallback={
+            <Card>
+              <EmptyState title="Asking Slack..." icon="slack-fill" />
+            </Card>
+          }
+        >
+          <ProfileResult query={query} />
+        </Suspense>
       )}
     </div>
   );

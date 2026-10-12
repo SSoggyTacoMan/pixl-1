@@ -46,7 +46,7 @@ export function ShopItemEditConfigurator({
       />
       <input type="hidden" name="apply_groups_all_regions" value={staged.join("|")} />
       {staged.length > 0 && (
-        <p className="text-xs text-muted-foreground">
+        <p className="hc-caption mt-2 text-xs">
           Will push &quot;{staged.join('", "')}&quot; to every other region&apos;s copy of this item on save.
         </p>
       )}

@@ -2,6 +2,7 @@ import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { listReviewedProjects } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
 import { ReviewTable } from "@/app/_components/ReviewTable";
+import { Card, CardHeader } from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +13,9 @@ export default async function ReviewedPage() {
   const handles = await slackHandles(rows.map((p) => p.users?.slack_id));
 
   return (
-    <div>
-      <div className="text-sm text-muted-foreground mb-4">{rows.length} reviewed</div>
+    <Card padding="flush">
+      <CardHeader title="Reviewed" icon="history" count={rows.length} />
       <ReviewTable rows={rows} handles={handles} emptyLabel="No projects reviewed yet." />
-    </div>
+    </Card>
   );
 }
