@@ -175,13 +175,13 @@ if (!adminUrl) {
       expect((await replica.call(token)).status).toBe(401);
     });
 
-    test("a database that predates the migration keeps working and reports revocation as unavailable", async () => {
+    test("a database that predates the migration refuses the request and reports revocation as unavailable", async () => {
       const user = await createUser();
       const token = issueAt(user, Date.now() - 30_000);
       await db`alter table users drop column sessions_revoked_at`;
       try {
         const replica = await startReplica({ now: 0 });
-        expect((await replica.call(token)).status).toBe(200);
+        expect((await replica.call(token)).status).toBe(503);
         expect(await rev.revokeUserSessions(user)).toBe("not_migrated");
       } finally {
         await db`alter table users add column sessions_revoked_at timestamptz`;
