@@ -635,6 +635,29 @@ export default async function ReviewDetail({
 
   // ---- Right column tabs.
 
+  // Beacon sits next to the verdict: reviewers decide it while grading.
+  // toggleProjectPeak re-checks the reviewer role and own-project rule.
+  const beaconCard = !isOwn && (
+    <Card padding="compact">
+      <form action={toggleProjectPeak} className="flex items-center justify-between gap-3">
+        <input type="hidden" name="projectId" value={p.id} />
+        {!p.is_peak && <input type="hidden" name="isPeak" value="1" />}
+        <div>
+          <p className="hc-heading text-sm">Beacon</p>
+          <p className="hc-caption text-xs">Nominate a standout project. Cosmetic only, never affects payout.</p>
+        </div>
+        <ActionButton
+          size="sm"
+          variant={p.is_peak ? "outline" : "cream"}
+          icon={p.is_peak ? undefined : "rep"}
+          pendingLabel={p.is_peak ? "Removing..." : "Marking..."}
+        >
+          {p.is_peak ? "Remove" : "Mark"}
+        </ActionButton>
+      </form>
+    </Card>
+  );
+
   const reviewTab = (
     <div className="flex flex-col gap-4 pt-4">
       {blackoutEntry && !blackoutForReview && blackoutEntry.status !== "entered" && (
@@ -750,47 +773,30 @@ export default async function ReviewDetail({
           </p>
         </Callout>
       )}
+      {beaconCard}
     </div>
   );
 
   const actionsTab = (
     <div className="flex flex-col gap-4 pt-4">
-      <Card padding="compact">
-        <div className="flex flex-col gap-4">
-          {!isOwn && (
-            <form action={setProjectLevel} className="flex items-end gap-2">
-              <input type="hidden" name="projectId" value={p.id} />
-              <Field label="Re-grade tier" className="flex-1">
-                <NativeSelect name="level" defaultValue={p.level ?? 1}>
-                  <option value={1}>T1 · Spark</option>
-                  <option value={2}>T2 · Signal</option>
-                  <option value={3}>T3 · Grid</option>
-                  <option value={4}>T4 · Nexus</option>
-                </NativeSelect>
-              </Field>
-              <ActionButton variant="outline" pendingLabel="Saving...">
-                Set
-              </ActionButton>
-            </form>
-          )}
-          <form action={toggleProjectPeak} className="flex items-center justify-between gap-3">
+      {!isOwn && (
+        <Card padding="compact">
+          <form action={setProjectLevel} className="flex items-end gap-2">
             <input type="hidden" name="projectId" value={p.id} />
-            {!p.is_peak && <input type="hidden" name="isPeak" value="1" />}
-            <div>
-              <p className="hc-heading text-sm">Beacon</p>
-              <p className="hc-caption text-xs">Nominate a standout project. Cosmetic only, never affects payout.</p>
-            </div>
-            <ActionButton
-              size="sm"
-              variant={p.is_peak ? "outline" : "cream"}
-              icon={p.is_peak ? undefined : "rep"}
-              pendingLabel={p.is_peak ? "Removing..." : "Marking..."}
-            >
-              {p.is_peak ? "Remove" : "Mark"}
+            <Field label="Re-grade tier" className="flex-1">
+              <NativeSelect name="level" defaultValue={p.level ?? 1}>
+                <option value={1}>T1 · Spark</option>
+                <option value={2}>T2 · Signal</option>
+                <option value={3}>T3 · Grid</option>
+                <option value={4}>T4 · Nexus</option>
+              </NativeSelect>
+            </Field>
+            <ActionButton variant="outline" pendingLabel="Saving...">
+              Set
             </ActionButton>
           </form>
-        </div>
-      </Card>
+        </Card>
+      )}
 
       {!isHeld && (
         <Details summary="Put this review on hold">
