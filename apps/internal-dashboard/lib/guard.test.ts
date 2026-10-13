@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
+  AI_DRAFT,
   EDIT_SUBMISSION,
   FRAUD_REVIEW,
   NO_REVIEW,
@@ -124,6 +125,26 @@ describe("fraud reviewers only reach the Fraud reviews tab", () => {
     const plain = resolveAccess(session("UREV"), inputs({ adminPermissions: [REVIEW] }))!;
     expect(plain.canFraudReview).toBe(false);
     expect(satisfies(plain, { review: "fraud" })).toBe(false);
+  });
+});
+
+describe("ai_draft marker", () => {
+  test("a reviewer needs the marker, an owner always has it", () => {
+    const plain = resolveAccess(session("UREV"), inputs({ adminPermissions: [REVIEW] }))!;
+    const granted = resolveAccess(session("UREV"), inputs({ adminPermissions: [REVIEW, AI_DRAFT] }))!;
+    const owner = resolveAccess(session("UOWNER1"), inputs())!;
+    expect(plain.canAiDraft).toBe(false);
+    expect(satisfies(plain, { review: "ai_draft" })).toBe(false);
+    expect(granted.canAiDraft).toBe(true);
+    expect(satisfies(granted, { review: "ai_draft" })).toBe(true);
+    expect(satisfies(granted, "owner")).toBe(false);
+    expect(owner.canAiDraft).toBe(true);
+  });
+
+  test("the marker alone, or with no_review, gives nothing", () => {
+    expect(resolveAccess(session("UREV"), inputs({ adminPermissions: [AI_DRAFT] }))).toBeNull();
+    const blocked = resolveAccess(session("UREV"), inputs({ adminPermissions: [REVIEW, AI_DRAFT, NO_REVIEW] }));
+    expect(blocked?.canAiDraft ?? false).toBe(false);
   });
 });
 

@@ -22,6 +22,8 @@ export const NO_REVIEW = "no_review";
 export const SECOND_PASS = "second_pass";
 // Lets a reviewer edit a submission's title/image/links/description.
 export const EDIT_SUBMISSION = "edit_submission";
+// Lets a reviewer generate the AI draft of review notes (owners always can).
+export const AI_DRAFT = "ai_draft";
 // Restrict a reviewer to one queue. Neither marker = both queues.
 export const REVIEW_HARDWARE_ONLY = "review_hardware_only";
 export const REVIEW_SOFTWARE_ONLY = "review_software_only";
@@ -36,6 +38,7 @@ export const REVIEWER_PERMISSIONS = [
   REVIEW_HARDWARE_ONLY,
   REVIEW_SOFTWARE_ONLY,
   EDIT_SUBMISSION,
+  AI_DRAFT,
   NO_REVIEW,
   FRAUD_REVIEW,
 ] as const;
@@ -83,6 +86,7 @@ export interface AdminAccess {
   canSecondPass: boolean;
   canEditSubmission: boolean;
   canFraudReview: boolean;
+  canAiDraft: boolean;
   reviewQueues: ReviewQueueScope;
 }
 
@@ -99,6 +103,7 @@ export function resolveAccess(session: Session, input: RoleInputs): AdminAccess 
   const canSecondPass = isReviewer && (perms.includes(SECOND_PASS) || secondPassByEnv);
   const canEditSubmission =
     isOwner || canSecondPass || (isReviewer && perms.includes(EDIT_SUBMISSION));
+  const canAiDraft = isOwner || (isReviewer && perms.includes(AI_DRAFT));
   const access: AdminAccess = {
     session,
     isOwner,
@@ -108,6 +113,7 @@ export function resolveAccess(session: Session, input: RoleInputs): AdminAccess 
     canSecondPass,
     canEditSubmission,
     canFraudReview: isOwner || canSecondPass || perms.includes(FRAUD_REVIEW),
+    canAiDraft,
     reviewQueues: reviewQueueScopeFor(perms),
   };
   return isOwner || isReviewer || access.canFraudReview || input.isHelper || input.isFulfiller ? access : null;
@@ -122,7 +128,8 @@ export type Requirement =
   | "staff"
   | { review: "second_pass" }
   | { review: "edit_submission" }
-  | { review: "fraud" };
+  | { review: "fraud" }
+  | { review: "ai_draft" };
 
 // Owners pass every gate ("everything" per the spec). NO_REVIEW on an owner
 // only takes them out of review-queue listings; finer checks inside an action
@@ -135,6 +142,7 @@ export function satisfies(access: AdminAccess, req: Requirement): boolean {
   if (req === "fulfiller") return access.isFulfiller;
   if (req.review === "second_pass") return access.canSecondPass;
   if (req.review === "fraud") return access.canFraudReview;
+  if (req.review === "ai_draft") return access.canAiDraft;
   return access.canEditSubmission;
 }
 
@@ -142,5 +150,6 @@ export function describeRequirement(req: Requirement): string {
   if (typeof req === "string") return req;
   if (req.review === "second_pass") return "final reviewer";
   if (req.review === "fraud") return "fraud reviewer";
+  if (req.review === "ai_draft") return "AI draft";
   return "edit submission";
 }

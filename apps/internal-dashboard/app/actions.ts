@@ -99,6 +99,7 @@ import {
   NO_REVIEW,
   SECOND_PASS,
   EDIT_SUBMISSION,
+  AI_DRAFT,
   REVIEW_HARDWARE_ONLY,
   REVIEW_SOFTWARE_ONLY,
   FRAUD_REVIEW,
@@ -933,15 +934,15 @@ async function creditBeneficiary(
   return { totalPx, deltaPx, pxRate, xpBefore, goalNote, referralNote, alreadyPx, projectRe, goalMult, fundingPx, baseUsdRate };
 }
 
-// Admin-only: drafts review notes with AI (Claude Sonnet via OpenRouter, see
+// Drafts review notes with AI (Claude Sonnet via OpenRouter, see
 // lib/aiReview.ts) from the same objective facts a reviewer already has open
 // on the page - commits, journals, Hackatime numbers, trust factor, cross-YSWS
 // duplicate check. The button is visible to every reviewer (so they know the
-// feature exists and can ask an admin to run it), but only owners
-// actually generate a draft - this never proposes a verdict or
+// feature exists), but only owners and reviewers an owner granted the
+// AI_DRAFT permission (reviewer page) actually generate a draft - this never proposes a verdict or
 // credited hours, and nothing it returns is saved/submitted on its own, the
 // reviewer copies whatever they want into the real form fields themselves.
-export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftAction", "owner", async (access, projectId: number,
+export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftAction", { review: "ai_draft" }, async (access, projectId: number,
   reviewerHours?: number,): Promise<AiReviewDraft> => {
   if (!projectId) throw new Error("Missing project id");
 
@@ -3808,6 +3809,50 @@ export const setEditSubmission = guardedAction("team.setEditSubmission", "owner"
         ].join("\n\n")
       : "Your access to edit submission details on the Pixl review dashboard has been removed. You can still review as usual. Contact the team if you think this is a mistake.",
   );
+});
+
+// Let a reviewer generate the AI draft of review notes (see
+// generateAiReviewDraftAction): an AI_DRAFT marker in their admins row. They
+// have to be on the team already.
+export const setAiDraft = guardedAction("team.setAiDraft", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const enable = formData.get("enable") === "1";
+  if (!slackId) return;
+  const existing = await getAdmin(slackId);
+  if (!existing) return;
+  const already = existing.permissions.includes(AI_DRAFT);
+  if (enable === already) return;
+  const kept = existing.permissions.filter((p) => p !== AI_DRAFT);
+  await setTeamPerms(
+    access,
+    slackId,
+    name,
+    enable ? [...kept, AI_DRAFT] : kept,
+    enable ? "AI draft access granted" : "AI draft access removed",
+  );
+  await dmTeam(
+    slackId,
+    enable
+      ? "You can now generate AI drafts on the Pixl review dashboard. On a project's review page, step 2 has a \"Generate AI draft\" button: it drafts the notes for you to check and edit. It never picks a verdict or hours."
+      : "Your access to the AI draft on the Pixl review dashboard has been removed. You can still review as usual.",
+  );
+});
+
+// A direct message from the team to one reviewer, sent from their page. Only
+// to someone on the team (an admins row or an owner), so it can't be used to
+// DM arbitrary Slack ids. The text isn't stored in the audit log, only that it
+// was sent.
+export const messageReviewer = guardedAction("team.messageReviewer", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const message = String(formData.get("message") ?? "").trim().slice(0, 1500);
+  if (!slackId || !message) return;
+  const back = `/reviewers/${encodeURIComponent(slackId)}`;
+  const fail = (text: string): never => redirect(`${back}?error=${encodeURIComponent(text)}`);
+  if (!(await getAdmin(slackId)) && !ownerSlackIds().includes(slackId)) fail("That person isn't on the review team.");
+  const sent = await dmUser(slackId, `Message from ${access.session.name} on the Pixl team:\n\n${message}`);
+  if (!sent) fail("The DM couldn't be sent (Slack or Pixo is unreachable). Nothing was delivered.");
+  redirect(`${back}?ok=${encodeURIComponent("Message sent.")}`);
 });
 
 // Restrict a reviewer to one queue (software/hardware), or clear the
