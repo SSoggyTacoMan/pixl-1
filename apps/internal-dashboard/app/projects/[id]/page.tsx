@@ -124,7 +124,8 @@ async function OwnerHandleName({
 }
 
 async function CommitCount({ commits }: { commits: Promise<CommitResult> }) {
-  return <>{(await commits).commits.length}</>;
+  const c = await commits;
+  return <>{c.commits.length}{c.hasMore ? "+" : ""}</>;
 }
 
 async function Commits({ commits, projectId }: { commits: Promise<CommitResult>; projectId: number }) {

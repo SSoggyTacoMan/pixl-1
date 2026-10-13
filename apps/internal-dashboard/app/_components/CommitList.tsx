@@ -274,8 +274,58 @@ function CommitRow({
 }
 
 // Pass projectId to let reviewers read each commit's diff in place.
-export function CommitList({ result, projectId }: { result: CommitResult; projectId?: number }) {
+export function CommitList({
+  result,
+  projectId,
+  onCommitsChange,
+}: {
+  result: CommitResult;
+  projectId?: number;
+  onCommitsChange?: (result: CommitResult) => void;
+}) {
+  const [commits, setCommits] = useState(result.commits);
+  const [hasMore, setHasMore] = useState(Boolean(result.hasMore));
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [nextPage, setNextPage] = useState(2);
   const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    setCommits(result.commits);
+    setHasMore(Boolean(result.hasMore));
+    setNextPage(2);
+    setPage(0);
+    setLoadError(null);
+  }, [result]);
+
+  async function handleLoadMore() {
+    if (!projectId || loadingMore) return;
+    setLoadingMore(true);
+    setLoadError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/commits?page=${nextPage}`);
+      if (!res.ok) {
+        setLoadError(`Failed to load more commits (HTTP ${res.status})`);
+        return;
+      }
+      const data = (await res.json()) as CommitResult;
+      if (data.error) {
+        setLoadError(data.error);
+        return;
+      }
+      if (data.commits.length > 0) {
+        const updated = [...commits, ...data.commits];
+        setCommits(updated);
+        setNextPage((p) => p + 1);
+        onCommitsChange?.({ ...result, commits: updated, hasMore: Boolean(data.hasMore) });
+      }
+      setHasMore(Boolean(data.hasMore));
+    } catch {
+      setLoadError("Network error loading commits");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   // Not a repo url, or a host that answers neither the Forgejo (Gitea/Codeberg)
   // nor the GitLab API. The ship can still be valid; we just can't list commits.
@@ -312,19 +362,19 @@ export function CommitList({ result, projectId }: { result: CommitResult; projec
         {result.error}
       </EmptyState>
     );
-  if (result.commits.length === 0) return <EmptyState title="No commits" icon="github" />;
+  if (result.commits.length === 0 && commits.length === 0) return <EmptyState title="No commits" icon="github" />;
 
-  const total = result.commits.length;
+  const total = commits.length;
   const pages = Math.ceil(total / PER_PAGE);
   const start = page * PER_PAGE;
-  const shown = result.commits.slice(start, start + PER_PAGE);
-  const hasTracking = result.commits.some((c) => c.tracked !== undefined);
-  const hasStats = result.commits.some((c) => c.additions !== undefined);
+  const shown = commits.slice(start, start + PER_PAGE);
+  const hasTracking = commits.some((c) => c.tracked !== undefined);
+  const hasStats = commits.some((c) => c.additions !== undefined);
   const headers = ["When", "Commit", "Message", ...(hasStats ? ["Lines"] : []), ...(hasTracking ? ["Coded"] : []), "Author"];
 
   // Wall-clock gap to the previous commit, in date order.
   const gaps = new Map<string, number>();
-  const asc = result.commits.filter((c) => c.date).sort((a, b) => a.date.localeCompare(b.date));
+  const asc = commits.filter((c) => c.date).sort((a, b) => a.date.localeCompare(b.date));
   for (let i = 1; i < asc.length; i++) {
     const s = (new Date(asc[i].date).getTime() - new Date(asc[i - 1].date).getTime()) / 1000;
     if (Number.isFinite(s) && s >= 0) gaps.set(asc[i].sha, s);
@@ -333,7 +383,7 @@ export function CommitList({ result, projectId }: { result: CommitResult; projec
   return (
     <div>
       <p className="hc-caption border-b border-[var(--border)] px-4 py-3 text-sm">
-        <Mono>{result.repo}</Mono> · {total} commits
+        <Mono>{result.repo}</Mono> · {total} commits{hasMore ? "+" : ""}
         {asc.length > 0 && (
           <>
             {" "}
@@ -381,12 +431,12 @@ export function CommitList({ result, projectId }: { result: CommitResult; projec
         </table>
       </div>
 
-      {pages > 1 && (
+      {(pages > 1 || (projectId && hasMore)) && (
         <nav className="flex items-center justify-between gap-4 border-t border-[var(--border)] px-4 py-3">
           <span className="hc-caption text-sm">
-            Page {page + 1} of {pages}
+            Page {page + 1} of {Math.max(1, pages)}
           </span>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             {page > 0 && (
               <Button type="button" variant="outline" size="sm" onClick={() => setPage(page - 1)}>
                 Previous
@@ -397,8 +447,24 @@ export function CommitList({ result, projectId }: { result: CommitResult; projec
                 Next
               </Button>
             )}
+            {projectId && hasMore && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={loadingMore}
+                onClick={handleLoadMore}
+              >
+                {loadingMore ? "Loading..." : "Load 100 more"}
+              </Button>
+            )}
           </div>
         </nav>
+      )}
+      {loadError && (
+        <div className="px-4 py-2 text-sm text-[var(--hc-red)] border-t border-[var(--border)]">
+          {loadError}
+        </div>
       )}
     </div>
   );

@@ -187,6 +187,12 @@ export function ReviewDetailTabs({
   const live = useLiveMode();
   const reviewerName = useReviewerName();
   const [tab, setTab] = useState<TabKey>("commits");
+  const [commitsState, setCommitsState] = useState(commits);
+
+  useEffect(() => {
+    setCommitsState(commits);
+  }, [commits]);
+
   // Don't load a third-party app on every review page: mount the frame the
   // first time the tab is opened, then keep it mounted.
   const [fraudOpened, setFraudOpened] = useState(false);
@@ -210,8 +216,12 @@ export function ReviewDetailTabs({
   const yswsMatches = yswsShips.filter((s) => s.urlMatch);
   const multipleContributors = Object.keys(contributorNames).length > 1;
 
-  const tabs: { key: TabKey; label: string; count?: number }[] = [
-    { key: "commits", label: "Commits", count: commits.commits.length },
+  const tabs: { key: TabKey; label: string; count?: number | string }[] = [
+    {
+      key: "commits",
+      label: "Commits",
+      count: commitsState.hasMore ? `${commitsState.commits.length}+` : commitsState.commits.length,
+    },
     ...(repoUrl ? [{ key: "readme" as const, label: "README" }] : []),
     { key: "journals", label: "Journals", count: journals.length },
     ...(hackatime?.ok
@@ -252,7 +262,7 @@ export function ReviewDetailTabs({
       </div>
 
       <div role="tabpanel" hidden={tab !== "commits"}>
-        <CommitList result={commits} projectId={projectId} />
+        <CommitList result={commitsState} projectId={projectId} onCommitsChange={setCommitsState} />
       </div>
 
       <div role="tabpanel" hidden={tab !== "readme"}>
