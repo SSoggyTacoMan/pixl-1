@@ -1,6 +1,6 @@
 import { requirePage } from "@/lib/guard";
 import { listVaultLevels, type VaultLevelRow } from "@/lib/db";
-import { addVaultLevel, updateVaultLevel, toggleVaultLevel, deleteVaultLevel } from "@/app/actions";
+import { addVaultLevel, updateVaultLevel, toggleVaultLevel, closeVaultLevel, deleteVaultLevel } from "@/app/actions";
 import {
   ActionButton,
   Badge,
@@ -34,6 +34,8 @@ export default async function CommunityGoalsPage({
   await requirePage("owner");
   const { error, saved } = await searchParams;
   const levels = await listVaultLevels();
+  // The chapter in progress - same pick as the server's /api/admin/vault/close.
+  const openId = levels.find((l) => l.active && !l.unlocked_at)?.id ?? null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -93,6 +95,20 @@ export default async function CommunityGoalsPage({
                   {l.active ? "Hide" : "Show"}
                 </ActionButton>
               </form>
+              {l.id === openId && (
+                <form action={closeVaultLevel}>
+                  <input type="hidden" name="id" value={l.id} />
+                  <ActionButton
+                    variant="outline"
+                    size="sm"
+                    icon="trophy"
+                    pendingLabel="Closing..."
+                    confirm={`Close "${l.title}" now? The top 3 contributors this chapter get +${l.top1_re}/+${l.top2_re}/+${l.top3_re} RE, the level unlocks in-game, and the next chapter starts. This can't be undone.`}
+                  >
+                    Close goal
+                  </ActionButton>
+                </form>
+              )}
               <form action={deleteVaultLevel}>
                 <input type="hidden" name="id" value={l.id} />
                 <ActionButton

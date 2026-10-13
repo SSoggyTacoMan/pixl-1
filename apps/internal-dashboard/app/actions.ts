@@ -72,7 +72,7 @@ import { generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
 import { serializeGroups } from "@/lib/shopOptions";
 import { SHOP_REGIONS, type ShopRegion } from "@/lib/shopRegions";
 import { SHOP_CATEGORIES, type ShopCategory } from "@/lib/shopCategories";
-import { kickOnlinePlayer, uploadSubmissionImage, uploadImageBuffer } from "@/lib/gameServer";
+import { closeVaultChapter, kickOnlinePlayer, uploadSubmissionImage, uploadImageBuffer } from "@/lib/gameServer";
 import { sniffFormat } from "@/lib/imageSniff";
 import { dmOrEmail } from "@/lib/notify";
 import { erasePlayer, erasureSummary } from "@/lib/erasure";
@@ -5791,6 +5791,15 @@ export const toggleVaultLevel = guardedAction("toggleVaultLevel", "owner", async
     .eq("id", id);
   if (error) console.error("toggleVaultLevel", error.message);
   revalidatePath("/community-goals");
+});
+
+export const closeVaultLevel = guardedAction("closeVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!id) return;
+  const result = await closeVaultChapter(id);
+  revalidatePath("/community-goals");
+  if (!result.ok) redirect(`/community-goals?error=${encodeURIComponent(result.error)}`);
+  redirect("/community-goals?saved=1");
 });
 
 export const deleteVaultLevel = guardedAction("deleteVaultLevel", "owner", async (access, formData: FormData): Promise<void> => {

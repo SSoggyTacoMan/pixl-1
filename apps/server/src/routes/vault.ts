@@ -1,5 +1,8 @@
 import { Router } from "express";
+import { z } from "zod";
 import { db } from "../db/client.js";
+import { auditRequest } from "../audit.js";
+import { validate, v } from "../http/validate.js";
 import { communityEnergy, pendingCommunityEnergy, topChapterContributors } from "../xp.js";
 import { addNotification } from "./notifications.js";
 
@@ -30,16 +33,19 @@ const CHAPTER_LEADERBOARD_SIZE = 10;
 // RE bonus once that chapter's level unlocks - top1_re/top2_re/top3_re on the
 // row, credited once via vault_chapter_awards (unique per level+rank and per
 // level+user, so a retry can't double-pay). See drizzle/0146.
-async function settleChapterAward(level: VaultLevelRow, windowStart: Date | null) {
+// Returns false if the level was already closed by someone else.
+async function settleChapterAward(level: VaultLevelRow, windowStart: Date | null): Promise<boolean> {
   const totalReward = level.top1_re + level.top2_re + level.top3_re;
   if (totalReward <= 0) {
     // Nothing to award, but still mark the chapter closed so its window ends.
-    await db
+    const { data: closed } = await db
       .from("vault_levels")
       .update({ unlocked_at: new Date().toISOString() })
       .eq("id", level.id)
-      .is("unlocked_at", null);
-    return;
+      .is("unlocked_at", null)
+      .select("id")
+      .maybeSingle();
+    return Boolean(closed);
   }
 
   const top = await topChapterContributors(windowStart, 3);
@@ -54,7 +60,7 @@ async function settleChapterAward(level: VaultLevelRow, windowStart: Date | null
     .is("unlocked_at", null)
     .select("id")
     .maybeSingle();
-  if (!claimed) return;
+  if (!claimed) return false;
 
   for (let i = 0; i < top.length; i++) {
     const { userId } = top[i];
@@ -76,6 +82,7 @@ async function settleChapterAward(level: VaultLevelRow, windowStart: Date | null
       `You shipped the most Restoration Energy toward "${level.title}" this chapter (#${i + 1}). +${reAwarded} bonus RE.`,
     );
   }
+  return true;
 }
 
 async function displayInfoFor(userIds: string[]): Promise<Map<string, { displayName: string; avatarUrl: string | null }>> {
@@ -204,5 +211,49 @@ router.get("/api/vault", async (req, res) => {
     chapterLeaderboard,
   });
 });
+
+// Closes the chapter in progress early from the internal dashboard, before the
+// community crosses its threshold. Same settlement as an automatic unlock: the
+// top 3 contributors get top1_re/top2_re/top3_re. Only the current open
+// chapter can be closed, so each chapter's window still starts where the
+// previous one ended.
+router.post(
+  "/api/admin/vault/close",
+  validate({ query: v.noQuery, body: z.object({ levelId: z.coerce.number().int().positive() }) }),
+  async (req, res) => {
+    const levelId = Number(req.body.levelId);
+    const { data: rows, error } = await db
+      .from("vault_levels")
+      .select("id, level, energy_required, title, blurb, rewards, position, unlocked_at, top1_re, top2_re, top3_re")
+      .eq("active", true)
+      .order("position", { ascending: true })
+      .order("level", { ascending: true });
+    if (error) return res.status(500).json({ ok: false, error: "couldn't load vault levels" });
+
+    let windowStart: Date | null = null;
+    let open: VaultLevelRow | null = null;
+    for (const level of (rows ?? []) as VaultLevelRow[]) {
+      if (!level.unlocked_at) {
+        open = level;
+        break;
+      }
+      windowStart = new Date(level.unlocked_at);
+    }
+    if (!open || open.id !== levelId) {
+      auditRequest(req, { action: "vault.close", target: `vault_level:${levelId}`, result: "denied", meta: { reason: "not_current_chapter" } });
+      return res.status(409).json({ ok: false, error: "Only the current open chapter can be closed." });
+    }
+
+    const closed = await settleChapterAward(open, windowStart);
+    if (!closed) return res.status(409).json({ ok: false, error: "That chapter was already closed." });
+
+    const { data: awards } = await db
+      .from("vault_chapter_awards")
+      .select("user_id, award_rank, re_awarded")
+      .eq("vault_level_id", open.id);
+    auditRequest(req, { action: "vault.close", target: `vault_level:${open.id}`, result: "ok", meta: { awards: awards ?? [] } });
+    res.json({ ok: true, awards: awards ?? [] });
+  },
+);
 
 export default router;

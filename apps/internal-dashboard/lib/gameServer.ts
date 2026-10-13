@@ -65,6 +65,29 @@ export async function uploadImageBuffer(buf: Buffer): Promise<string> {
   return json.url;
 }
 
+// Closes the current Core Vault chapter early; the server pays the top 3
+// contributors their chapter RE bonus (apps/server/src/routes/vault.ts).
+export async function closeVaultChapter(
+  levelId: number,
+): Promise<{ ok: true; winners: number } | { ok: false; error: string }> {
+  const cfg = config();
+  if (!cfg) return { ok: false, error: "PIXL_SERVER_URL / SERVICE_KEY_INTERNAL_DASHBOARD not set." };
+  try {
+    const res = await fetch(`${cfg.url}/api/admin/vault/close`, {
+      method: "POST",
+      headers: { "x-pixl-service-key": cfg.key, "Content-Type": "application/json" },
+      body: JSON.stringify({ levelId }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const json = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; awards?: unknown[] } | null;
+    if (!json?.ok) return { ok: false, error: json?.error || "Couldn't close that goal." };
+    return { ok: true, winners: json.awards?.length ?? 0 };
+  } catch (e) {
+    console.error("closeVaultChapter", (e as Error).message);
+    return { ok: false, error: "Couldn't reach the server." };
+  }
+}
+
 export async function kickOnlinePlayer(userId: string, reason: string): Promise<boolean> {
   const cfg = config();
   if (!cfg) return false;
