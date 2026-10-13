@@ -1,5 +1,6 @@
 /* eslint-disable @next/next/no-img-element */
 import { Suspense, type ReactNode } from "react";
+import { precheckView, type PrecheckView } from "@/lib/precheck";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
@@ -1119,6 +1120,7 @@ export default async function ReviewDetail({
               {p.system_note}
             </Callout>
           )}
+          <PrecheckCallout view={precheckView(p)} />
           {!p.used_ai && (
             <Suspense fallback={null}>
               <Await promise={commitsPromise}>
@@ -1444,5 +1446,61 @@ function QueueNav({
       </span>
       {step(nextId, false)}
     </>
+  );
+}
+
+// What the server's AI pre-check found on the latest ship (apps/server/src/
+// precheck/). Missing items are the clear-cut requirements; notes are the
+// model's read and never decided anything on their own. Model text renders as
+// plain text.
+function PrecheckCallout({ view }: { view: PrecheckView | null }) {
+  if (!view) return null;
+  if (view.status === "pending")
+    return (
+      <Callout tone="neutral" icon="clock">
+        AI pre-check is still running on this ship.
+      </Callout>
+    );
+  if (view.status === "error")
+    return (
+      <Callout tone="neutral" icon="info">
+        AI pre-check couldn&apos;t run on this ship{view.skipped ? `: ${view.skipped}` : "."}
+      </Callout>
+    );
+  const missing = view.findings.length > 0;
+  return (
+    <Callout tone={missing ? "warning" : "info"} icon={missing ? "important" : "info"}>
+      <div className="flex flex-col gap-2">
+        <strong>
+          {view.status === "sent_back"
+            ? "AI pre-check sent this back to the maker"
+            : missing
+              ? "AI pre-check: required items look missing"
+              : "AI pre-check: nothing required is missing"}
+        </strong>
+        {view.summary && <span>{view.summary}</span>}
+        {missing && (
+          <ul className="list-disc pl-5">
+            {view.findings.map((f) => (
+              <li key={f.id}>
+                {f.label}
+                {f.evidence && <span className="hc-caption"> ({f.evidence})</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {view.notes.length > 0 && (
+          <div>
+            <span className="hc-caption">Notes for you (never sent anything back):</span>
+            <ul className="list-disc pl-5">
+              {view.notes.map((n, i) => (
+                <li key={i}>{n}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {view.skipped && <span className="hc-caption">Skipped: {view.skipped}</span>}
+      </div>
+    </Callout>
   );
 }

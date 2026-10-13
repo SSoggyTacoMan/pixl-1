@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { db } from "../db/client.js";
+import { runPrecheck, shouldPrecheck } from "../precheck/run.js";
 import { addNotification } from "./notifications.js";
 import { findAllInYswsArchive } from "../ysws/archive.js";
 import { buildDoubleDip, type TeamMember } from "../ysws/doubleDip.js";
@@ -892,11 +893,18 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     if (flagError) console.error("[projects] double dip log failed", flagError);
   }
 
+  // The AI pre-check (src/precheck/run.ts) runs after the response; this
+  // timestamp is its run token and keeps the project out of the review queue
+  // until it finishes (or for a few minutes at most).
+  const precheck = shouldPrecheck(project.repo_url as string);
+  const precheckStartedAt = new Date().toISOString();
   const { data, error: updateError } = await db
     .from("projects")
     .update({
       status: "shipped",
       shipped_at: new Date().toISOString(),
+      ai_review_status: precheck ? "pending" : "disabled",
+      ai_review_started_at: precheck ? precheckStartedAt : null,
       // Set once on the first ship and never reset, so the review table can
       // show the total wait (shipped_at restarts on every reship).
       first_shipped_at: (project.first_shipped_at as string | null) ?? new Date().toISOString(),
@@ -964,6 +972,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   if (!project.first_shipped_at && ownerSlackId) void enrollSlackPlayerInReviewChannel(ownerSlackId);
   if (project.status === "needs_changes" && project.notify_reviewer_slack_id)
     void dmReviewerOfResubmit(project.notify_reviewer_slack_id as string, data);
+  if (precheck) void runPrecheck(id, precheckStartedAt);
   res.json({ ok: true, project: toPlayerProject(data, session.userId) });
 });
 

@@ -6,6 +6,7 @@ import { reForProject } from "@/app/_generated/config";
 import { parseAuditNote } from "./auditNote";
 import { reviewerName } from "./liveMode";
 import { slackIdFromActorName } from "./reviewAccess";
+import { PRECHECK_HIDE_MS, isPrecheckRunning } from "./precheck";
 
 // Orchard Postgres over DATABASE_URL. pgCompat connects lazily, so this module
 // stays importable while Next prerenders static pages (e.g. /_not-found)
@@ -120,6 +121,12 @@ export interface ProjectRow {
   cart_screenshot_urls: string[];
   used_ai: boolean;
   ai_notes: string;
+  // AI pre-check (apps/server/src/precheck/), read through lib/precheck.ts.
+  ai_review_status?: string;
+  ai_review_started_at?: string | null;
+  ai_review_summary?: string;
+  ai_review_findings?: unknown;
+  ai_review_error?: string;
   is_update: boolean;
   update_notes: string;
   ship_note: string;
@@ -710,7 +717,9 @@ export async function listShippedProjects(
   // Strictly longest total wait first. Projects that were re-shipped after
   // changes (reverted_at is set on their reship) used to jump to the front
   // ahead of everything, which buried much older first-time ships behind them.
-  const rows = oldestWaitFirst((data ?? []) as ShippedProject[]);
+  // A ship whose AI pre-check is still running may be sent straight back to
+  // the maker, so it waits out of sight (a few minutes at most).
+  const rows = oldestWaitFirst((data ?? []) as ShippedProject[]).filter((p) => !isPrecheckRunning(p));
   const visible = opts?.includeClaimed
     ? annotateClaims(rows, viewer)
     : rows.filter((p) => !claimedByOther(p, viewer));
@@ -956,18 +965,26 @@ export async function listReviewedProjects(): Promise<ShippedProject[]> {
 export async function countPendingReviews(
   opts?: { viewer?: string },
 ): Promise<number> {
-  const { count, error } = await db
-    .from("projects")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "shipped")
-    .is("archived_at", null)
-    .is("rejected_at", null)
-    .is("banned_at", null);
+  const pending = () =>
+    db
+      .from("projects")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "shipped")
+      .is("archived_at", null)
+      .is("rejected_at", null)
+      .is("banned_at", null);
+  // Same rule as listShippedProjects: a running AI pre-check isn't queued yet.
+  const [{ count, error }, { count: running }] = await Promise.all([
+    pending(),
+    pending()
+      .eq("ai_review_status", "pending")
+      .gt("ai_review_started_at", new Date(Date.now() - PRECHECK_HIDE_MS).toISOString()),
+  ]);
   if (error) {
     console.error("countPendingReviews", error.message);
     return 0;
   }
-  return count ?? 0;
+  return Math.max(0, (count ?? 0) - (running ?? 0));
 }
 
 // Second-pass queue count for the "Second pass" tab badge (super-admins

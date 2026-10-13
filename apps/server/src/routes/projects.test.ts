@@ -48,6 +48,7 @@ const INTERNAL_ONLY_FIELDS = [
   "ai_review_revision",
   "ai_review_files_seen",
   "ai_review_files_omitted",
+  "ai_precheck_sendbacks",
   "second_pass_telescreen_checked",
   "second_pass_hours_deflated",
   "second_pass_heartbeats_added",

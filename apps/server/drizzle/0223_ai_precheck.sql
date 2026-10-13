@@ -1,0 +1,11 @@
+-- AI pre-check on ship (apps/server/src/precheck/). Reuses the ai_review_*
+-- columns from 0168 for its status and findings:
+--   ai_review_status     'pending' while the check runs, then 'clear',
+--                        'flagged', 'sent_back' or 'error'
+--   ai_review_started_at the run's token; the dashboard hides a project from
+--                        the review queue only while a fresh run is pending
+--   ai_review_findings   {findings: [{id, label, evidence}], notes, skipped, sentBack}
+--
+-- The only new column counts how many times the AI sent a project back, so it
+-- can do that at most once (MAX_AUTO_SENDBACKS) before a human takes over.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_precheck_sendbacks integer NOT NULL DEFAULT 0;
