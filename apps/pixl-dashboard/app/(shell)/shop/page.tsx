@@ -1,5 +1,4 @@
-import { publicGet, serverApi } from "@/lib/server-api";
-import { getSession } from "@/lib/session";
+import { serverApi } from "@/lib/server-api";
 import { EmptyNote, PageHeader } from "@/components/ui/primitives";
 import { normalizeItems, type ShopItemsResponse } from "./shop-lib";
 import { earnRates } from "../calc/estimates";
@@ -12,12 +11,9 @@ interface Wallet {
 }
 
 export default async function ShopPage() {
-  // Signed out, the catalog comes from the same route without a session (the
-  // server defaults every personal field), and there's no wallet to read.
-  const session = await getSession();
   const [data, wallet] = await Promise.all([
-    session ? serverApi<ShopItemsResponse>("/api/shop/items") : publicGet<ShopItemsResponse>("/api/shop/items"),
-    session ? serverApi<Wallet>("/api/profile/wallet") : null,
+    serverApi<ShopItemsResponse>("/api/shop/items"),
+    serverApi<Wallet>("/api/profile/wallet"),
   ]);
 
   return (
@@ -31,7 +27,6 @@ export default async function ShopPage() {
           region={data.region ?? "US"}
           pixels={wallet ? Number(wallet.pixels) : null}
           rates={earnRates()}
-          signedIn={!!session}
         />
       ) : (
         <EmptyNote>COULDN&apos;T REACH THE SHOP SERVER.<br />TRY AGAIN IN A BIT.</EmptyNote>

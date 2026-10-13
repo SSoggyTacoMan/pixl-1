@@ -46,7 +46,6 @@ export function ItemDetail({
   eligibility,
   verifyReturn,
   rates,
-  loginHref,
 }: {
   item: ShopItem;
   xp: number;
@@ -56,8 +55,6 @@ export function ItemDetail({
   verifyReturn: "ok" | "failed" | null;
   /** Per-hour earn rates computed server side (calc/estimates.ts). */
   rates: EarnRates | null;
-  /** Set when signed out: the page is browse-only and buying starts with logging in. */
-  loginHref: string | null;
 }) {
   const router = useRouter();
   const [rawPicks, setPicks] = useState<Record<number, string>>({});
@@ -169,7 +166,7 @@ export function ItemDetail({
             <PlainOptions item={item} picks={picks} onPick={(g, c) => setPicks({ ...picks, [g]: c })} />
           ) : null}
 
-          {browsable && !loginHref ? (
+          {browsable ? (
             <div>
               <label className={smallCaps} htmlFor="note-input">
                 NOTE TO FULFILLER (OPTIONAL)
@@ -186,9 +183,9 @@ export function ItemDetail({
             </div>
           ) : null}
 
-          {loginHref ? null : <AffordBar pct={ps.pct} label={ps.affordLabel} />}
+          <AffordBar pct={ps.pct} label={ps.affordLabel} />
 
-          {browsable && !isConfig && !loginHref ? (
+          {browsable && !isConfig ? (
             <div className="flex items-center gap-[10px]">
               <span className={smallCaps}>QTY</span>
               <div className="flex">
@@ -218,11 +215,7 @@ export function ItemDetail({
           ) : null}
 
           <div className={btnRow}>
-            {loginHref ? (
-              <a className={buttonVariants()} href={loginHref}>
-                LOG IN TO BUY
-              </a>
-            ) : bought ? (
+            {bought ? (
               <Link className={buttonVariants({ variant: "teal" })} href="/orders">
                 VIEW MY ORDERS
               </Link>
@@ -234,11 +227,9 @@ export function ItemDetail({
                 {buy.pending ? "BUYING..." : ps.buyLabel}
               </Button>
             )}
-            {loginHref ? null : (
-              <Button variant={saved ? "teal" : "dark"} onClick={toggleSave}>
-                {saved ? "★ SAVED" : "☆ SAVE"}
-              </Button>
-            )}
+            <Button variant={saved ? "teal" : "dark"} onClick={toggleSave}>
+              {saved ? "★ SAVED" : "☆ SAVE"}
+            </Button>
             <Link className={buttonVariants({ variant: "dark" })} href="/shop">
               KEEP BROWSING
             </Link>

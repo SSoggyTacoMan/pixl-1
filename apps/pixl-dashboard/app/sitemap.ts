@@ -4,7 +4,8 @@ import { locales } from "./_landing/dictionaries";
 import { config } from "./_generated/config";
 
 // Only public routes that exist: the landing page in each locale, the docs,
-// and the shop (browsable signed out). English is the bare root.
+// and the shop (browsable when signed out is not guaranteed, so it's left
+// out). English is the bare root.
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const site = config.urls.site;
   const localeUrl = (l: string) => (l === "en" ? site : `${site}/${l}`);
@@ -18,7 +19,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       priority: l === "en" ? 1 : 0.8,
       alternates: { languages },
     })),
-    { url: `${site}/shop`, changeFrequency: "daily" as const, priority: 0.7 },
     ...slugs.map((slug) => ({
       url: `${site}/docs/${slug}`,
       changeFrequency: "weekly" as const,

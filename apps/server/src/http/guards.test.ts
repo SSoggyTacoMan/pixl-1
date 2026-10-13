@@ -117,7 +117,6 @@ describe("public route list", () => {
       "GET /api/news",
       "GET /api/journals/public/:projectId/:token",
       "GET /api/shop/item/:id/public",
-      "GET /api/shop/items",
       "GET /api/explore/players",
       "GET /api/explore/players/:id/public",
       "GET /api/explore/projects",
@@ -145,12 +144,7 @@ describe("public route list", () => {
     expect(isPublicRoute("POST", "/api/projects/644/upvote")).toBe(false);
     expect(isPublicRoute("GET", "/api/journals/public/12")).toBe(false);
     expect(isPublicRoute("GET", "/api/journals/public//abc")).toBe(false);
-    // Browsing the catalog is public; acting on it is not.
-    expect(isPublicRoute("GET", "/api/shop/items")).toBe(true);
-    expect(isPublicRoute("GET", "/api/shop/items/12")).toBe(false);
-    expect(isPublicRoute("POST", "/api/shop/buy/12")).toBe(false);
-    expect(isPublicRoute("GET", "/api/shop/stock/12")).toBe(false);
-    expect(isPublicRoute("GET", "/api/shop/orders")).toBe(false);
+    expect(isPublicRoute("GET", "/api/shop/items")).toBe(false);
     expect(isPublicRoute("GET", "/auth")).toBe(false);
     expect(isPublicRoute("GET", "/api/forms")).toBe(false);
     expect(isPublicRoute("GET", "/hackatime/connect")).toBe(false);

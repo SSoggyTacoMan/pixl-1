@@ -70,7 +70,6 @@ whose service key doesn't match is `401` + `auth.service_key_rejected`.
   `GET /`, `GET /health`, `/auth/*` (the OAuth endpoints themselves),
   `GET /hackatime/callback`, `GET /api/news`,
   `GET /api/journals/public/:projectId/:token`, `GET /api/shop/item/:id/public`,
-  `GET /api/shop/items`,
   `GET /api/explore/players`, `GET /api/explore/players/:id/public`,
   `GET /api/explore/projects`, `GET /api/explore/projects/:id`,
   `/api/forms/*`. Anything not on that list needs a session.
