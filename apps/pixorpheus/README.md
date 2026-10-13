@@ -339,7 +339,6 @@ Tables (`tickets`, `helpers`, `user_memory`, `user_personality`, `program_memory
 | `SLACK_BOT_TOKEN` | Slack bot OAuth token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | App-level token (`xapp-...`, scope `connections:write`) for Socket Mode. **Required** - Pixo refuses to start without it |
 | `SLACK_HELP_CHANNEL` | Channel ID of the help channel where users post questions |
-| `SLACK_FAQ_URL` | URL to the FAQ (linked in the "Someone will be here soon!" message) |
 | `SLACK_ADMIN_USER_IDS` | Comma-separated Slack user IDs of admins: manage helpers, read others' memory, style training. Empty means no admins (fail closed) |
 | `SLACK_USER_TOKEN` | User token (`xoxp-...`) for deleting macro messages in threads |
 | `DATABASE_URL` | Postgres connection string (shared with the other apps in this monorepo) |

@@ -4,6 +4,7 @@ import { aiPost } from "../ai/client.js";
 import { checkAiRateLimit } from "../ai/rateLimit.js";
 import { app } from "../slack/app.js";
 import { normalizeTicket } from "./repo.js";
+import { config } from "../config.generated.js";
 import {
   pendingTickets,
   titlePrompts,
@@ -11,6 +12,10 @@ import {
   processedHelpMsgs,
   type PendingTicketEvent,
 } from "./state.js";
+
+// The FAQ section of the landing page, from packages/config (it used to be a
+// SLACK_FAQ_URL env var, which went missing on Orchard and printed "undefined").
+const FAQ_URL = `${config.urls.site}/#faq`;
 
 export async function checkFAQAndSimilar(event: PendingTicketEvent, client: WebClient): Promise<void> {
   const question = event.text || "";
@@ -80,21 +85,17 @@ export async function checkFAQAndSimilar(event: PendingTicketEvent, client: WebC
             text: `:mag: We found a similar question that was already resolved:\n*${label}*${linkPart}\n\nIf this doesn't answer your question, your ticket will still be created - a helper will follow up soon.`,
           },
         },
-        ...(process.env.SLACK_FAQ_URL
-          ? [
-              {
-                type: "actions" as const,
-                elements: [
-                  {
-                    type: "button" as const,
-                    text: { type: "plain_text" as const, text: "View FAQ" },
-                    url: process.env.SLACK_FAQ_URL,
-                    action_id: "view_faq",
-                  },
-                ],
-              },
-            ]
-          : []),
+        {
+          type: "actions" as const,
+          elements: [
+            {
+              type: "button" as const,
+              text: { type: "plain_text" as const, text: "View FAQ" },
+              url: FAQ_URL,
+              action_id: "view_faq",
+            },
+          ],
+        },
       ],
     });
   } catch (e) {}
@@ -231,7 +232,7 @@ export async function handleNewQuestion(event: PendingTicketEvent, client: WebCl
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `Someone will be here to help you soon! In the meantime, check out the <${process.env.SLACK_FAQ_URL}|FAQ>.`,
+          text: `Someone will be here to help you soon! In the meantime, check out the <${FAQ_URL}|FAQ>.`,
         },
       },
       {
@@ -408,7 +409,7 @@ const macros: Record<
     await client.chat.postMessage({
       channel: event.channel,
       thread_ts: ticket.msg_ts,
-      text: `Hey! Check out the FAQ here: <${process.env.SLACK_FAQ_URL}|FAQ>`,
+      text: `Hey! Check out the FAQ here: <${FAQ_URL}|FAQ>`,
     });
     const result = await resolveTicket(ticket.msg_ts, event.user, client);
     await notifyIfNotOk(result, ticket, event, client);
