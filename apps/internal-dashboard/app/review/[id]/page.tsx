@@ -481,8 +481,8 @@ export default async function ReviewDetail({
     </Callout>
   );
 
-  // Repo, README, demo (and Telescreen on the final pass) sit in the owner
-  // card, next to who built it, instead of a separate row further down.
+  // Repo, README, demo (and Telescreen on the final pass) sit right under the
+  // project description, so a reviewer reads what it is before opening it.
   const projectLinks = (
     <div className="flex flex-wrap gap-2">
       {repoUrl ? (
@@ -584,7 +584,6 @@ export default async function ReviewDetail({
               )}
             </p>
           </div>
-          {projectLinks}
         </div>
         {acceptedCollaborators.length > 0 && (
           <div className="mt-4 border-t border-[var(--border)] pt-4">
@@ -1093,8 +1092,8 @@ export default async function ReviewDetail({
             <h1 className="hc-title mt-2 break-words">{p.name}</h1>
           </div>
 
-          {/* Who built it, when, how long, and the links: first thing a
-              reviewer needs, so it sits right under the title. */}
+          {/* Who built it, when and how long: first thing a reviewer needs, so
+              it sits right under the title. */}
           <Suspense fallback={ownerCard(ownerNameFor(null))}>
             <Await promise={ownerHandlePromise}>{(handle) => ownerCard(ownerNameFor(handle))}</Await>
           </Suspense>
@@ -1112,6 +1111,8 @@ export default async function ReviewDetail({
               <div className="hc-markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(p.description) }} />
             </Card>
           )}
+
+          {projectLinks}
 
           {p.system_note && (
             <Callout tone="info" icon="info">
