@@ -10,6 +10,7 @@ const {
   NEW_ITEM_DAYS,
   BUYERS_VISIBLE_MIN,
   approvedTrialIds,
+  isReviewer,
   reviewGrantLockNote,
 } = await import("./shop.js");
 
@@ -180,5 +181,17 @@ describe("reviewGrantLockNote", () => {
     expect(
       reviewGrantLockNote({ reviews: 410, earned: 4, claimed: 4, available: 0, next_at: null, to_go: null }),
     ).toBe("You've claimed every grant (410 reviews).");
+  });
+});
+
+describe("isReviewer", () => {
+  const base = { reviews: 0, earned: 0, claimed: 0, available: 0, next_at: 150, to_go: 150 };
+  test("hides the grant from people who never reviewed", () => {
+    expect(isReviewer(null)).toBe(false);
+    expect(isReviewer(base)).toBe(false);
+  });
+  test("shows it once they have reviewed or already claimed one", () => {
+    expect(isReviewer({ ...base, reviews: 1 })).toBe(true);
+    expect(isReviewer({ ...base, claimed: 1 })).toBe(true);
   });
 });

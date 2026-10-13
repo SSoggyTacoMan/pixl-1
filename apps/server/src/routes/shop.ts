@@ -373,6 +373,11 @@ async function reviewGrantStatus(userId: string): Promise<ReviewGrantStatus | nu
   return data as ReviewGrantStatus;
 }
 
+// Someone who has reviewed at least once, or already claimed a grant.
+export function isReviewer(s: ReviewGrantStatus | null): boolean {
+  return !!s && (s.reviews > 0 || s.claimed > 0);
+}
+
 export function reviewGrantLockNote(s: ReviewGrantStatus | null): string {
   if (!s) return "Reviewers unlock this by reviewing projects.";
   if (s.next_at == null) return `You've claimed every grant (${s.reviews} reviews).`;
@@ -538,6 +543,11 @@ router.get("/api/shop/items", async (req, res) => {
   // clients show lock_note as-is. A manual lock above still wins.
   if (items.some((i) => i.review_locked)) {
     const grants = session ? await reviewGrantStatus(session.userId) : null;
+    // Not a reviewer (no review ever, no grant ever claimed): they never see
+    // the item, a locked 0/150 card would just confuse them.
+    if (!isReviewer(grants)) {
+      for (let n = items.length - 1; n >= 0; n--) if (items[n].review_locked) items.splice(n, 1);
+    }
     for (const i of items) {
       if (!i.review_locked || i.manual_locked) continue;
       i.unlockPending = false;
