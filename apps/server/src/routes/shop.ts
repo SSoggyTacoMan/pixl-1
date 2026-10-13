@@ -174,7 +174,7 @@ async function fetchItems(filterIds?: number[], region?: string) {
     // A personal item (reserved_user_id) is not tied to a region, it is
     // scoped to its player by scopePersonalItems below instead.
     if (withRegion && region)
-      q = q.or(`region.eq.${orValue(region)},unlock_xp.gt.0,reserved_user_id.is.not.null,review_locked.eq.true`);
+      q = q.or(`region.eq.${orValue(region)},unlock_xp.gt.0,reserved_user_id.is.not.null,review_locked.is.true`);
     return q.order("position", { ascending: true }).order("id", { ascending: true });
   };
   const first = await build(ITEM_COLUMNS, true);
