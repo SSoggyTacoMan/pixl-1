@@ -4,10 +4,21 @@ import { useEffect, useState, useTransition, type CSSProperties } from "react";
 import Icon from "@hackclub/icons";
 import { saveStaffSettings } from "@/app/actions";
 import { Card, DescriptionList, Mono } from "@/app/_ui/ui";
-import { ACCENTS, THEME_INFO, THEMES, type StaffSettings, type Theme } from "@/lib/staffSettings";
+import {
+  ACCENTS,
+  FONT_INFO,
+  FONTS,
+  MONO_FONT_INFO,
+  MONO_FONTS,
+  THEME_INFO,
+  THEMES,
+  type StaffSettings,
+  type Theme,
+} from "@/lib/staffSettings";
 
 const SECTIONS = [
   { id: "appearance", label: "Appearance", glyph: "photo" },
+  { id: "fonts", label: "Fonts", glyph: "code" },
   { id: "review", label: "Review", glyph: "checkmark" },
   { id: "account", label: "Account", glyph: "person" },
 ] as const;
@@ -79,6 +90,37 @@ function ThemeCard({ theme, selected, onPick }: { theme: Theme; selected: boolea
   );
 }
 
+function FontCard({
+  label,
+  note,
+  css,
+  sample,
+  selected,
+  onPick,
+}: {
+  label: string;
+  note: string;
+  css: string;
+  sample: string;
+  selected: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button type="button" className="hc-theme-card" aria-pressed={selected} onClick={onPick}>
+      <span className="hc-font-sample" style={{ fontFamily: css }}>
+        {sample}
+      </span>
+      <span className="flex items-center justify-between gap-2 px-1">
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-bold">{label}</span>
+          <span className="hc-caption block truncate text-xs">{note}</span>
+        </span>
+        {selected && <Icon glyph="checkmark" size={20} aria-hidden />}
+      </span>
+    </button>
+  );
+}
+
 // The settings page: a sidebar of sections, each saved to the signed-in
 // account as soon as it changes.
 export default function SettingsClient({
@@ -111,6 +153,8 @@ export default function SettingsClient({
     const el = document.documentElement;
     el.dataset.theme = next.theme;
     el.dataset.accent = next.accent;
+    el.dataset.font = next.font;
+    el.dataset.monoFont = next.monoFont;
     el.dataset.density = next.compact ? "compact" : "normal";
     startSaving(async () => {
       try {
@@ -190,6 +234,42 @@ export default function SettingsClient({
                   checked={settings.compact}
                   onChange={(compact) => update({ compact })}
                 />
+              </div>
+            </Card>
+          </>
+        )}
+
+        {section === "fonts" && (
+          <>
+            <Card>
+              <h2 className="hc-heading text-base">Interface font</h2>
+              <p className="hc-caption mt-1 mb-4 text-sm">Headings, tables and body text across the dashboard.</p>
+              <div className="hc-font-grid">
+                {FONTS.map((font) => (
+                  <FontCard
+                    key={font}
+                    {...FONT_INFO[font]}
+                    sample="Ship it, pixel pal"
+                    selected={settings.font === font}
+                    onPick={() => update({ font })}
+                  />
+                ))}
+              </div>
+            </Card>
+
+            <Card>
+              <h2 className="hc-heading text-base">Code font</h2>
+              <p className="hc-caption mt-1 mb-4 text-sm">IDs, hours, tabs, buttons and anything code-like.</p>
+              <div className="hc-font-grid">
+                {MONO_FONTS.map((monoFont) => (
+                  <FontCard
+                    key={monoFont}
+                    {...MONO_FONT_INFO[monoFont]}
+                    sample="#1042 => 3h 20m"
+                    selected={settings.monoFont === monoFont}
+                    onPick={() => update({ monoFont })}
+                  />
+                ))}
               </div>
             </Card>
           </>

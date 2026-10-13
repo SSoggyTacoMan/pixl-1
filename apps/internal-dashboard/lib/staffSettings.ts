@@ -19,12 +19,50 @@ export const THEMES = [
 // "theme" uses the selected theme's own accent (red for System/Dark/Light).
 export const ACCENTS = ["theme", "red", "orange", "green", "cyan", "blue", "purple"] as const;
 
+// Interface and code fonts (app/fonts.ts loads them, app/_ui/fonts.css applies them).
+export const FONTS = ["phantom", "system", "inter", "geist", "ibm-plex-sans", "atkinson"] as const;
+export const MONO_FONTS = [
+  "jetbrains-mono",
+  "geist-mono",
+  "fira-code",
+  "ibm-plex-mono",
+  "source-code-pro",
+  "system-mono",
+] as const;
+
 export type Theme = (typeof THEMES)[number];
 export type Accent = (typeof ACCENTS)[number];
+export type Font = (typeof FONTS)[number];
+export type MonoFont = (typeof MONO_FONTS)[number];
+
+// Picker labels; `css` is the font-family the preview card renders in.
+export const FONT_INFO: Record<Font, { label: string; note: string; css: string }> = {
+  phantom: { label: "Phantom Sans", note: "Hack Club's typeface", css: '"Phantom Sans", system-ui, sans-serif' },
+  system: { label: "System", note: "Your OS font", css: "system-ui, sans-serif" },
+  inter: { label: "Inter", note: "Neutral, very readable", css: "var(--font-inter), system-ui, sans-serif" },
+  geist: { label: "Geist", note: "Clean and modern", css: "var(--font-geist), system-ui, sans-serif" },
+  "ibm-plex-sans": { label: "IBM Plex Sans", note: "Technical feel", css: "var(--font-plex-sans), system-ui, sans-serif" },
+  atkinson: {
+    label: "Atkinson Hyperlegible",
+    note: "Built for low vision",
+    css: "var(--font-atkinson), system-ui, sans-serif",
+  },
+};
+
+export const MONO_FONT_INFO: Record<MonoFont, { label: string; note: string; css: string }> = {
+  "jetbrains-mono": { label: "JetBrains Mono", note: "The default", css: "var(--font-jetbrains-mono), monospace" },
+  "geist-mono": { label: "Geist Mono", note: "Pairs with Geist", css: "var(--font-geist-mono), monospace" },
+  "fira-code": { label: "Fira Code", note: "With ligatures", css: "var(--font-fira-code), monospace" },
+  "ibm-plex-mono": { label: "IBM Plex Mono", note: "Pairs with Plex Sans", css: "var(--font-plex-mono), monospace" },
+  "source-code-pro": { label: "Source Code Pro", note: "Adobe's classic", css: "var(--font-source-code-pro), monospace" },
+  "system-mono": { label: "System mono", note: "SF Mono, Consolas...", css: "ui-monospace, Menlo, Consolas, monospace" },
+};
 
 export interface StaffSettings {
   theme: Theme;
   accent: Accent;
+  font: Font;
+  monoFont: MonoFont;
   compact: boolean;
   /** Confetti after a review. Off unless someone turns it on. */
   confetti: boolean;
@@ -66,6 +104,8 @@ export const THEME_INFO: Record<
 export const DEFAULT_STAFF_SETTINGS: StaffSettings = {
   theme: "system",
   accent: "theme",
+  font: "phantom",
+  monoFont: "jetbrains-mono",
   compact: false,
   confetti: false,
   sound: true,
@@ -87,6 +127,8 @@ export function parseStaffSettings(raw: unknown): StaffSettings {
   return {
     theme: THEMES.includes(r.theme as Theme) ? (r.theme as Theme) : DEFAULT_STAFF_SETTINGS.theme,
     accent: ACCENTS.includes(r.accent as Accent) ? (r.accent as Accent) : DEFAULT_STAFF_SETTINGS.accent,
+    font: FONTS.includes(r.font as Font) ? (r.font as Font) : DEFAULT_STAFF_SETTINGS.font,
+    monoFont: MONO_FONTS.includes(r.monoFont as MonoFont) ? (r.monoFont as MonoFont) : DEFAULT_STAFF_SETTINGS.monoFont,
     compact: r.compact === true,
     confetti: r.confetti === true,
     sound: r.sound !== false,

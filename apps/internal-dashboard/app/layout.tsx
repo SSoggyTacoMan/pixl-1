@@ -1,10 +1,11 @@
 /* eslint-disable @next/next/no-img-element */
 import type { Metadata } from "next";
 import Link from "next/link";
-import { JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import "./_ui/admin.css";
 import "./_ui/themes.css";
+import "./_ui/fonts.css";
+import { fontVariables } from "./fonts";
 import { getAccess } from "@/lib/guard";
 import { countPendingReviews, countOpenReports, countPendingOrders, getStaffSettings } from "@/lib/db";
 import { ticketStats } from "@/lib/tickets";
@@ -17,8 +18,6 @@ import CommandPalette from "@/app/_ui/CommandPalette";
 import Tooltips from "@/app/_ui/Tooltips";
 import { buildNav } from "@/app/_ui/nav";
 import { ActionButton, Button, Icon, Mono } from "@/app/_ui/ui";
-
-const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains-mono" });
 
 export const metadata: Metadata = {
   title: "Pixl",
@@ -60,7 +59,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   if (!access) {
     return (
-      <html lang="en" className={jetbrainsMono.variable}>
+      <html lang="en" className={fontVariables}>
         <body>
           <div className="admin-shell">{children}</div>
         </body>
@@ -78,9 +77,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html
       lang="en"
-      className={jetbrainsMono.variable}
+      className={fontVariables}
       data-theme={settings.theme}
       data-accent={settings.accent}
+      data-font={settings.font}
+      data-mono-font={settings.monoFont}
       data-density={settings.compact ? "compact" : "normal"}
     >
       <body>

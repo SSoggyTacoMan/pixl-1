@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_STAFF_SETTINGS, THEME_INFO, THEMES, parseStaffSettings } from "./staffSettings";
+import {
+  DEFAULT_STAFF_SETTINGS,
+  FONT_INFO,
+  FONTS,
+  MONO_FONT_INFO,
+  MONO_FONTS,
+  THEME_INFO,
+  THEMES,
+  parseStaffSettings,
+} from "./staffSettings";
 
 describe("parseStaffSettings", () => {
   test("defaults when nothing is stored", () => {
@@ -16,7 +25,16 @@ describe("parseStaffSettings", () => {
   test("keeps valid values and drops unknown ones", () => {
     expect(
       parseStaffSettings({ theme: "light", accent: "blue", compact: true, confetti: true, reviewPanelWidth: 620 }),
-    ).toEqual({ theme: "light", accent: "blue", compact: true, confetti: true, sound: true, reviewPanelWidth: 620 });
+    ).toEqual({
+      theme: "light",
+      accent: "blue",
+      font: "phantom",
+      monoFont: "jetbrains-mono",
+      compact: true,
+      confetti: true,
+      sound: true,
+      reviewPanelWidth: 620,
+    });
     expect(parseStaffSettings({ theme: "neon", accent: "javascript:alert(1)", extra: 1 })).toEqual(
       DEFAULT_STAFF_SETTINGS,
     );
@@ -27,6 +45,19 @@ describe("parseStaffSettings", () => {
     expect(parseStaffSettings({ theme: "tokyo-night" }).theme).toBe("tokyo-night");
     // A stored "red" from before the theme accent existed stays red.
     expect(parseStaffSettings({ accent: "red" }).accent).toBe("red");
+  });
+
+  test("keeps known fonts and drops anything else", () => {
+    expect(parseStaffSettings({ font: "inter", monoFont: "fira-code" })).toMatchObject({ font: "inter", monoFont: "fira-code" });
+    expect(parseStaffSettings({ font: "Comic Sans", monoFont: "url(x)" })).toMatchObject({
+      font: "phantom",
+      monoFont: "jetbrains-mono",
+    });
+  });
+
+  test("every font has picker info", () => {
+    for (const font of FONTS) expect(FONT_INFO[font].label.length).toBeGreaterThan(0);
+    for (const font of MONO_FONTS) expect(MONO_FONT_INFO[font].label.length).toBeGreaterThan(0);
   });
 
   test("every theme has picker info", () => {
