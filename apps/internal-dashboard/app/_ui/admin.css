@@ -56,7 +56,8 @@
   --secondary: #b5bcc8;
   --muted: var(--hc-muted);
   --placeholder: #5c6676;
-  --primary: var(--hc-red);
+  /* A theme's own accent (app/_ui/themes.css), else Hack Club red. */
+  --primary: var(--theme-primary, var(--hc-red));
   --accent: var(--hc-cyan);
   --on-cream: #1b1b20;
 
@@ -80,9 +81,10 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Light theme: when the OS asks for it (theme "system") or when forced. */
+/* Light theme: when the OS asks for it (theme "system") or when forced. The
+   editor themes in themes.css never follow the OS. */
 @media (prefers-color-scheme: light) {
-  html:not([data-theme="dark"]) .admin-shell {
+  html:is([data-theme="system"], :not([data-theme])) .admin-shell {
     --background: var(--hc-snow);
     --surface: var(--hc-white);
     --surface-hover: #f2f4f8;
@@ -1272,7 +1274,7 @@ html:has(.admin-shell)::-webkit-scrollbar-corner,
 }
 
 @media (prefers-color-scheme: light) {
-  html:not([data-theme="dark"]):has(.admin-shell) {
+  html:is([data-theme="system"], :not([data-theme])):has(.admin-shell) {
     background: var(--hc-snow, #f9fafc);
     scrollbar-color: #cfd6df #f9fafc;
   }
@@ -1569,8 +1571,10 @@ html[data-theme="light"]:has(.admin-shell) {
   font-size: 12px;
 }
 
-/* ---- Settings menu (app/_ui/SettingsMenu.tsx) ---- */
+/* ---- Settings (app/settings): accents, density, swatches, switches ---- */
 
+/* "theme" has no rule: it keeps the theme's own --primary. */
+html[data-accent="red"] .admin-shell { --primary: var(--hc-red); }
 html[data-accent="orange"] .admin-shell { --primary: #e8590c; }
 html[data-accent="green"] .admin-shell { --primary: #12a37b; }
 html[data-accent="cyan"] .admin-shell { --primary: #1f8fb3; }
@@ -1607,18 +1611,137 @@ html[data-density="compact"] .hc-main {
   margin: 0;
 }
 
-.hc-settings-dialog {
-  width: min(440px, calc(100vw - 32px));
-  margin: 12vh auto auto;
-  border-radius: 12px;
+/* ---- Settings page (app/settings) ---- */
+
+.hc-settings-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 32px;
+  align-items: start;
 }
 
-.hc-settings-header {
+.hc-settings-nav {
+  position: sticky;
+  top: 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hc-settings-nav-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--secondary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hc-settings-nav-item:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.hc-settings-nav-item[aria-current="page"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: inset 3px 0 0 var(--primary), inset 0 0 0 1px var(--border);
+}
+
+@media (max-width: 760px) {
+  .hc-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .hc-settings-nav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+}
+
+.hc-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.hc-theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.hc-theme-card:hover {
+  border-color: var(--border-strong);
+}
+
+.hc-theme-card[aria-pressed="true"] {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+/* The mini window in each card: --p-* come from THEME_INFO previews. */
+.hc-theme-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 76px;
+  padding: 8px;
+  border: 1px solid rgb(127 127 127 / 0.25);
+  border-radius: var(--radius);
+  background: var(--p-bg);
+}
+
+.hc-theme-preview-title {
+  width: 55%;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--p-text);
+  opacity: 0.85;
+}
+
+.hc-theme-preview-panel {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: var(--p-surface);
+}
+
+.hc-theme-preview-dot {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--p-primary);
+}
+
+.hc-theme-preview-line {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--p-text);
+  opacity: 0.35;
 }
 
 .hc-setting-row {
@@ -1650,6 +1773,7 @@ html[data-density="compact"] .hc-main {
   box-shadow: 0 0 0 2px var(--swatch);
 }
 
+.hc-swatch[data-accent="theme"] { --swatch: var(--theme-primary, var(--hc-red)); }
 .hc-swatch[data-accent="red"] { --swatch: var(--hc-red); }
 .hc-swatch[data-accent="orange"] { --swatch: #e8590c; }
 .hc-swatch[data-accent="green"] { --swatch: #12a37b; }

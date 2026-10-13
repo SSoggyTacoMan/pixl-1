@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_STAFF_SETTINGS, parseStaffSettings } from "./staffSettings";
+import { DEFAULT_STAFF_SETTINGS, THEME_INFO, THEMES, parseStaffSettings } from "./staffSettings";
 
 describe("parseStaffSettings", () => {
   test("defaults when nothing is stored", () => {
@@ -20,6 +20,17 @@ describe("parseStaffSettings", () => {
     expect(parseStaffSettings({ theme: "neon", accent: "javascript:alert(1)", extra: 1 })).toEqual(
       DEFAULT_STAFF_SETTINGS,
     );
+  });
+
+  test("accepts the editor themes and the match-theme accent", () => {
+    expect(parseStaffSettings({ theme: "dracula", accent: "theme" })).toMatchObject({ theme: "dracula", accent: "theme" });
+    expect(parseStaffSettings({ theme: "tokyo-night" }).theme).toBe("tokyo-night");
+    // A stored "red" from before the theme accent existed stays red.
+    expect(parseStaffSettings({ accent: "red" }).accent).toBe("red");
+  });
+
+  test("every theme has picker info", () => {
+    for (const theme of THEMES) expect(THEME_INFO[theme].label.length).toBeGreaterThan(0);
   });
 
   test("the review sound is on unless it is exactly false", () => {

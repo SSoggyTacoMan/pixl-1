@@ -4,6 +4,7 @@ import Link from "next/link";
 import { JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import "./_ui/admin.css";
+import "./_ui/themes.css";
 import { getAccess } from "@/lib/guard";
 import { countPendingReviews, countOpenReports, countPendingOrders, getStaffSettings } from "@/lib/db";
 import { ticketStats } from "@/lib/tickets";
@@ -13,10 +14,9 @@ import { LiveModeProvider } from "@/app/_components/LiveMode";
 import { ReviewCelebration } from "@/app/_components/ReviewCelebration";
 import TopNav from "@/app/_ui/TopNav";
 import CommandPalette from "@/app/_ui/CommandPalette";
-import SettingsMenu from "@/app/_ui/SettingsMenu";
 import Tooltips from "@/app/_ui/Tooltips";
 import { buildNav } from "@/app/_ui/nav";
-import { ActionButton, Button, Mono } from "@/app/_ui/ui";
+import { ActionButton, Button, Icon, Mono } from "@/app/_ui/ui";
 
 const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains-mono" });
 
@@ -119,7 +119,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                       (<Mono>{session.slackId}</Mono>)
                     </span>
                   </span>
-                  <SettingsMenu initial={settings} />
+                  <Link
+                    href="/settings"
+                    className="hc-btn hc-btn-ghost hc-btn-sm hc-btn-icon"
+                    title="Settings"
+                    aria-label="Settings"
+                  >
+                    <Icon glyph="settings" size={20} />
+                  </Link>
                   <form action="/api/auth/logout" method="post">
                     <Button type="submit" variant="ghost" size="sm" icon="door-leave">
                       Log out
