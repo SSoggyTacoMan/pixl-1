@@ -727,26 +727,28 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   );
   // Hardware also counts journalled hours toward the tracked total, so journals
   // alone can carry a hardware ship; the total is journal + Hackatime. Software
-  // stays Hackatime-only for its floor.
-  let journalSeconds = 0;
-  if (isHardware) {
-    const { data: jrows } = await db
-      .from("project_journals")
-      .select("hours")
-      .eq("project_id", id)
-      .eq("user_id", session.userId);
-    const jhours = ((jrows ?? []) as { hours: number | null }[]).reduce(
-      (s, j) => s + (Number(j.hours) || 0),
-      0,
-    );
-    // Summing decimal hours in floating point (e.g. 0.2 + 2.7 + ...) can land
-    // on something like 20.599999999999998, which * 3600 becomes a
-    // non-integer number of seconds - hackatime_seconds is an integer
-    // column, and Postgres rejects that outright (22P02) instead of
-    // truncating it, which is exactly what broke shipping project 251.
-    journalSeconds = Math.round(jhours * 3600);
-  }
+  // stays Hackatime-only for its floor, but its journals still count toward
+  // what the review page shows (see claimSeconds below).
+  const { data: jrows } = await db
+    .from("project_journals")
+    .select("hours")
+    .eq("project_id", id)
+    .eq("user_id", session.userId);
+  const jhours = ((jrows ?? []) as { hours: number | null }[]).reduce(
+    (s, j) => s + (Number(j.hours) || 0),
+    0,
+  );
+  // Summing decimal hours in floating point (e.g. 0.2 + 2.7 + ...) can land
+  // on something like 20.599999999999998, which * 3600 becomes a
+  // non-integer number of seconds - hackatime_seconds is an integer
+  // column, and Postgres rejects that outright (22P02) instead of
+  // truncating it, which is exactly what broke shipping project 251.
+  const ownerJournalSeconds = Math.round(jhours * 3600);
+  const journalSeconds = isHardware ? ownerJournalSeconds : 0;
   const trackedSeconds = htSeconds + journalSeconds;
+  // The owner's claim as the review page totals it (Hackatime + journals for
+  // both kinds), so the double-dip cap is against the number a reviewer sees.
+  const claimSeconds = htSeconds + ownerJournalSeconds;
   // Software needs at least an hour of tracked time to ship; hardware has no
   // floor here - a build can be legitimately quick, and the BOM/cart/funding
   // checks above (plus review) are what actually gate a funded hardware ship.
@@ -875,7 +877,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     },
     matches,
     otherYsws,
-    trackedSeconds,
+    trackedSeconds: claimSeconds,
     collaborators: collaboratorTeam,
     ownerLabel,
     ownerSlackId,

@@ -1,4 +1,5 @@
 import type { ArchiveMatch } from "./archive.js";
+import { config } from "../config.generated.js";
 
 export interface ImportProvenance {
   imported_ysws_entry_id: string | null;
@@ -22,9 +23,9 @@ export interface DoubleDipInput {
   // has one row per collaborator, not one lumped total.
   matches: ArchiveMatch[];
   otherYsws: boolean;
-  // The ship owner's own tracked hours (unchanged meaning from before this
-  // was multi-person aware) - kept separate from `collaborators` since the
-  // owner is always on the ship even with zero collaborators.
+  // The ship owner's own claimed time (Hackatime plus their journal hours,
+  // the total the review page shows) - kept separate from `collaborators`
+  // since the owner is always on the ship even with zero collaborators.
   trackedSeconds: number;
   // Accepted collaborators only (not the owner - see trackedSeconds above).
   collaborators: TeamMember[];
@@ -47,7 +48,13 @@ function fmtDate(unixSeconds: number | null): string {
 
 function suggestedCapLine(label: string, claimed: number, prior: number): string {
   const cap = Math.max(0, Math.round((claimed - prior) * 10) / 10);
-  return `${label}: claims ${claimed}h here, got ${prior}h there , suggest crediting at most ${cap}h unless the new work is clearly separate.`;
+  return `${label}: claims ${claimed}h here, got ${prior}h before , suggest crediting at most ${cap}h unless the new work is clearly separate.`;
+}
+
+// This program's own earlier approvals land in the same archive, so a re-ship
+// of a project that was already approved here matches itself.
+function isOwnProgram(m: ArchiveMatch): boolean {
+  return m.ysws.trim().toLowerCase() === config.name.toLowerCase();
 }
 
 // Renders the per-person breakdown block shared by every "matches found"
@@ -66,9 +73,12 @@ function teamBreakdown(matches: ArchiveMatch[], team: TeamMember[]): string {
 
   const teamLines = team
     .map((t) => {
-      const prior = matches.find((m) => m.slackId && m.slackId === t.slackId);
-      return prior
-        ? suggestedCapLine(t.label, t.claimedHours, prior.hours)
+      // Every prior entry for this person counts: a project approved twice
+      // already has two archive rows, and only the sum is credited time.
+      const priors = matches.filter((m) => m.slackId && m.slackId === t.slackId);
+      const prior = Math.round(priors.reduce((s, m) => s + m.hours, 0) * 10) / 10;
+      return priors.length > 0
+        ? suggestedCapLine(t.label, t.claimedHours, prior)
         : `${t.label}: claims ${t.claimedHours}h here, no prior entry found for them specifically , no overlap to deflate.`;
     })
     .join(" ");
@@ -86,11 +96,18 @@ export function buildDoubleDip(input: DoubleDipInput): DoubleDipResult {
   ];
 
   if (matches.length > 0) {
-    const first = matches[0];
+    // Name the other program, not this one, whenever there is one.
+    const outside = matches.filter((m) => !isOwnProgram(m));
+    const first = outside[0] ?? matches[0];
     const breakdown = teamBreakdown(matches, team);
     if (project.imported_ysws_entry_id) {
       return {
         systemNote: `SYSTEM: Imported from "${first.ysws}" (${first.url}) through the YSWS importer, so the prior ship was declared up front. ${breakdown}`,
+      };
+    }
+    if (outside.length === 0) {
+      return {
+        systemNote: `SYSTEM: ${first.url} was already approved in ${config.name} before, so this is a re-ship: only the work since then should count. ${breakdown}`,
       };
     }
     if (otherYsws) {
@@ -100,7 +117,7 @@ export function buildDoubleDip(input: DoubleDipInput): DoubleDipResult {
     }
     return {
       systemNote: `SYSTEM: ${first.url} already appears in the Hack Club YSWS archive under "${first.ysws}" but the player did NOT disclose it. Possible double dip. ${breakdown}`,
-      flagDetail: `"${project.name}" shipped without disclosure: ${first.url} found in the YSWS archive (${first.ysws}, ${matches.map((m) => `${m.hours}h`).join("+")})`,
+      flagDetail: `"${project.name}" shipped without disclosure: ${first.url} found in the YSWS archive (${first.ysws}, ${outside.map((m) => `${m.hours}h`).join("+")})`,
     };
   }
 
