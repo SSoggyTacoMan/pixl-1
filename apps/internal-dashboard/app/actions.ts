@@ -2699,26 +2699,18 @@ export const deflateProjectHours = guardedAction("deflateProjectHours", "owner",
 
   const oldHours =
     project.approved_hours != null ? Number(project.approved_hours) : await claimedHoursFor(projectId);
-  const rawNewHours = Number(String(formData.get("newHours") ?? "").trim());
-  const newHours = Math.round(rawNewHours * 10) / 10;
-  if (!Number.isFinite(newHours) || newHours < 0 || newHours >= oldHours)
-    redirect(
-      `${back}?error=${encodeURIComponent(`New hours must be a number from 0 up to (but not including) the current ${oldHours}h.`)}`,
-    );
 
-  const ratio = newHours / oldHours;
-  const tier = Number(project.level) || 1;
-
-  // Hardware funding grants dock a flat pixel amount off the owner's payout
-  // (see creditBeneficiary's fundingPx) - repriceForHours only rebuilds the
-  // GROSS per-hour figure, so that same deduction has to come back off here
-  // too, or a funded project's "corrected" total comes out too high and
-  // creditProjectPixels ends up crediting MORE pixels instead of clawing
-  // back (funding_deducted_px is owner-only, never applies to collaborators).
-  const fundingDeductedPx = Number(project.funding_deducted_px) || 0;
-  const grossOwnerPx = await repriceForHours(project.user_id, projectId, newHours, tier);
-  const newOwnerPx = Math.max(grossOwnerPx - fundingDeductedPx, 0);
-  await creditProjectPixels(project.user_id, projectId, newOwnerPx, newHours, by);
+  // One hours box per person (hours_owner / hours_<collaborator row id>): only
+  // the people whose box is filled in are deflated, a blank box leaves that
+  // person's hours and pixels alone. Hours are what each person is credited
+  // with after the change.
+  const parseHours = (key: string): number | null | "bad" => {
+    const raw = String(formData.get(key) ?? "").trim();
+    if (!raw) return null;
+    const n = Math.round(Number(raw) * 10) / 10;
+    return Number.isFinite(n) && n >= 0 ? n : "bad";
+  };
+  const ownerNewHours = parseHours("hours_owner");
 
   const { data: collabRows } = await db
     .from("project_collaborators")
@@ -2728,26 +2720,55 @@ export const deflateProjectHours = guardedAction("deflateProjectHours", "owner",
   const collaborators = (collabRows ?? []) as
     { id: number; user_id: string; approved_hours: number | null }[];
 
+  const collabTargets: { id: number; user_id: string; cOldHours: number; cNewHours: number }[] = [];
+  let badInput = ownerNewHours === "bad" || (typeof ownerNewHours === "number" && ownerNewHours >= oldHours);
+  for (const c of collaborators) {
+    const n = parseHours(`hours_${c.id}`);
+    if (n == null) continue;
+    const cOldHours = Number(c.approved_hours) || 0;
+    if (n === "bad" || cOldHours <= 0 || n >= cOldHours) {
+      badInput = true;
+      continue;
+    }
+    collabTargets.push({ id: c.id, user_id: c.user_id, cOldHours, cNewHours: n });
+  }
+  const deflateOwner = typeof ownerNewHours === "number";
+  if (badInput || (!deflateOwner && collabTargets.length === 0))
+    redirect(
+      `${back}?error=${encodeURIComponent("Fill in the new hours for at least one person, each a number from 0 up to (but not including) their current hours.")}`,
+    );
+
+  const tier = Number(project.level) || 1;
   const orderNote =
     "If this left you without enough pixels to cover an order you'd already placed, that order was automatically cancelled and any leftover pixels refunded.";
 
-  for (const c of collaborators) {
-    const cOldHours = Number(c.approved_hours) || 0;
-    if (cOldHours <= 0) continue;
-    const cNewHours = Math.round(cOldHours * ratio * 10) / 10;
-    const cNewPx = await repriceForHours(c.user_id, projectId, cNewHours, tier);
-    await creditProjectPixels(c.user_id, projectId, cNewPx, cNewHours, by);
-    await db.from("project_collaborators").update({ approved_hours: cNewHours }).eq("id", c.id);
+  if (deflateOwner) {
+    // Hardware funding grants dock a flat pixel amount off the owner's payout
+    // (see creditBeneficiary's fundingPx) - repriceForHours only rebuilds the
+    // GROSS per-hour figure, so that same deduction has to come back off here
+    // too, or a funded project's "corrected" total comes out too high and
+    // creditProjectPixels ends up crediting MORE pixels instead of clawing
+    // back (funding_deducted_px is owner-only, never applies to collaborators).
+    const fundingDeductedPx = Number(project.funding_deducted_px) || 0;
+    const grossOwnerPx = await repriceForHours(project.user_id, projectId, ownerNewHours, tier);
+    const newOwnerPx = Math.max(grossOwnerPx - fundingDeductedPx, 0);
+    await creditProjectPixels(project.user_id, projectId, newOwnerPx, ownerNewHours, by);
+  }
+
+  for (const c of collabTargets) {
+    const cNewPx = await repriceForHours(c.user_id, projectId, c.cNewHours, tier);
+    await creditProjectPixels(c.user_id, projectId, cNewPx, c.cNewHours, by);
+    await db.from("project_collaborators").update({ approved_hours: c.cNewHours }).eq("id", c.id);
 
     const cBody =
-      `"${project.name}"'s credited hours were corrected from ${cOldHours}h to ${cNewHours}h , your pixels for it were adjusted to match.\n\n` +
+      `"${project.name}"'s credited hours were corrected from ${c.cOldHours}h to ${c.cNewHours}h , your pixels for it were adjusted to match.\n\n` +
       `Reason: ${reason}\n\n${orderNote}\n\nIf you think this is a mistake, contact the Pixl team.`;
     await db.from("notifications").insert({ user_id: c.user_id, title: "Project hours corrected", body: cBody });
     await dmOrEmail(c.user_id, "Project hours corrected", cBody);
     await logModAction(
       c.user_id,
       "project_hours_deflated",
-      `${project.name}: collaborator ${cOldHours}h → ${cNewHours}h , ${reason}`,
+      `${project.name}: collaborator ${c.cOldHours}h → ${c.cNewHours}h , ${reason}`,
       by,
     );
   }
@@ -2755,7 +2776,7 @@ export const deflateProjectHours = guardedAction("deflateProjectHours", "owner",
   const { error } = await db
     .from("projects")
     .update({
-      approved_hours: newHours,
+      ...(deflateOwner ? { approved_hours: ownerNewHours } : {}),
       deflation_reason: reason,
       hours_deflated_at: new Date().toISOString(),
       hours_deflated_by: by,
@@ -2768,27 +2789,29 @@ export const deflateProjectHours = guardedAction("deflateProjectHours", "owner",
     user_id: project.user_id,
     reviewer: by,
     verdict: "hours_deflated",
-    note: reason,
+    note: deflateOwner ? reason : `${reason} (collaborator hours only)`,
     audit_note: "",
     claimed_hours: oldHours,
-    approved_hours: newHours,
+    approved_hours: deflateOwner ? ownerNewHours : oldHours,
   });
   if (auditError) console.error("deflateProjectHours audit insert failed", auditError.message);
 
-  const ownerBody =
-    `"${project.name}"'s approved hours were corrected from ${oldHours}h to ${newHours}h , your pixels for it were adjusted to match.\n\n` +
-    `Reason: ${reason}\n\n${orderNote}\n\nIf you think this is a mistake, contact the Pixl team.`;
-  const { error: notifyError } = await db
-    .from("notifications")
-    .insert({ user_id: project.user_id, title: "Project hours corrected", body: ownerBody });
-  if (notifyError) console.error("deflateProjectHours notification failed", notifyError.message);
-  await dmOrEmail(project.user_id, "Project hours corrected", ownerBody);
-  await logModAction(
-    project.user_id,
-    "project_hours_deflated",
-    `${project.name}: ${oldHours}h → ${newHours}h , ${reason}`,
-    by,
-  );
+  if (deflateOwner) {
+    const ownerBody =
+      `"${project.name}"'s approved hours were corrected from ${oldHours}h to ${ownerNewHours}h , your pixels for it were adjusted to match.\n\n` +
+      `Reason: ${reason}\n\n${orderNote}\n\nIf you think this is a mistake, contact the Pixl team.`;
+    const { error: notifyError } = await db
+      .from("notifications")
+      .insert({ user_id: project.user_id, title: "Project hours corrected", body: ownerBody });
+    if (notifyError) console.error("deflateProjectHours notification failed", notifyError.message);
+    await dmOrEmail(project.user_id, "Project hours corrected", ownerBody);
+    await logModAction(
+      project.user_id,
+      "project_hours_deflated",
+      `${project.name}: ${oldHours}h → ${ownerNewHours}h , ${reason}`,
+      by,
+    );
+  }
 
   revalidatePath(back);
 });
