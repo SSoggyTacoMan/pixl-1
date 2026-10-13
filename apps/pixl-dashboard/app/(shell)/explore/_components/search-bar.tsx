@@ -4,7 +4,7 @@
 // Component page does the fetch. Typing is debounced; selects apply at once.
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
-import { Input, Select } from "@/components/ui/primitives";
+import { Input, Select, spinnerSm } from "@/components/ui/primitives";
 import { filtersQuery, parseFilters } from "../lib";
 
 export interface FilterValues {
@@ -41,8 +41,9 @@ export function SearchBar({
   }, [v, pathname, router]);
 
   return (
-    <div className="ex-searchbar" aria-busy={pending}>
+    <div className="mb-[18px] flex flex-wrap items-center gap-2.5" aria-busy={pending}>
       <Input
+        className="min-w-[180px] flex-1"
         type="search"
         aria-label={placeholder}
         placeholder={placeholder}
@@ -53,7 +54,12 @@ export function SearchBar({
       />
       {filters ? (
         <>
-          <Select aria-label="Tier" value={v.tier ?? "all"} onChange={(e) => setV((s) => ({ ...s, tier: e.target.value }))}>
+          <Select
+            className="w-auto"
+            aria-label="Tier"
+            value={v.tier ?? "all"}
+            onChange={(e) => setV((s) => ({ ...s, tier: e.target.value }))}
+          >
             <option value="all">ALL TIERS</option>
             <option value="1">TIER 1</option>
             <option value="2">TIER 2</option>
@@ -61,6 +67,7 @@ export function SearchBar({
             <option value="4">TIER 4</option>
           </Select>
           <Select
+            className="w-auto"
             aria-label="Shipped"
             value={v.shipped ?? "all"}
             onChange={(e) => setV((s) => ({ ...s, shipped: e.target.value }))}
@@ -71,7 +78,7 @@ export function SearchBar({
           </Select>
         </>
       ) : null}
-      {pending ? <span className="spin-sm" aria-hidden /> : null}
+      {pending ? <span className={spinnerSm} aria-hidden /> : null}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import type { Rect } from "@/app/(shell)/nav-data";
 
-export function PixelIcon({ rects, className = "ic" }: { rects: readonly Rect[]; className?: string }) {
+export function PixelIcon({ rects, className }: { rects: readonly Rect[]; className?: string }) {
   return (
     <span className={className}>
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">

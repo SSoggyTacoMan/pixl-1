@@ -1,9 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import { buttonVariants } from "@/components/ui/primitives";
 
 /** Copies `text` to the clipboard; if that's blocked, shows the text instead. */
-export function CopyButton({ text, label, className = "btn ghost" }: { text: string; label: string; className?: string }) {
+export function CopyButton({
+  text,
+  label,
+  className = buttonVariants({ variant: "ghost" }),
+}: {
+  text: string;
+  label: string;
+  className?: string;
+}) {
   const [shown, setShown] = useState<string | null>(null);
   async function copy() {
     try {

@@ -3,8 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ConfirmDialog } from "@/components/ui/dialog";
+import { Button, panelDeep } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { deleteProject } from "../actions";
 import { projectError } from "../errors";
+import { hint } from "./styles";
 
 /** Two-step delete, like the old page. */
 export function DangerZone({ id, name }: { id: number; name: string }) {
@@ -23,12 +26,12 @@ export function DangerZone({ id, name }: { id: number; name: string }) {
   }
 
   return (
-    <div className="danger-zone panel-deep mt-8 p-4">
-      <span className="faint text-sm">Done with this project?</span>
-      <button type="button" className="btn red" onClick={() => setStep(1)}>
+    <div className={cn(panelDeep, "mt-[28px] flex items-center justify-between gap-[12px] px-[14px] py-[12px]")}>
+      <span className="text-sm text-faint">Done with this project?</span>
+      <Button variant="red" onClick={() => setStep(1)}>
         DELETE PROJECT
-      </button>
-      {err ? <span className="hint bad">{err}</span> : null}
+      </Button>
+      {err ? <span className={hint("bad")}>{err}</span> : null}
       <ConfirmDialog
         open={step === 1}
         onOpenChange={(o) => !o && setStep(0)}

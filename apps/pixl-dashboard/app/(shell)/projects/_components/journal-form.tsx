@@ -1,7 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { Button, field, panel } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { MdEditor } from "./md-editor";
+import { hint } from "./styles";
 
 export interface JournalDraft {
   title: string;
@@ -35,9 +38,9 @@ export function JournalForm({
   };
 
   return (
-    <div className="panel flex flex-col gap-2 p-3">
+    <div className={cn(panel, "flex flex-col gap-2 p-3")}>
       <input
-        className="field"
+        className={field}
         maxLength={120}
         placeholder="Title (optional)"
         value={d.title}
@@ -45,12 +48,12 @@ export function JournalForm({
         onChange={(e) => update({ title: e.target.value })}
       />
       <MdEditor value={d.content} onChange={(content) => update({ content })} hours={d.hours} disabled={disabled} />
-      <div className="composer-foot">
-        <span className="hint" title="Only hours Hackatime didn't already track, it logs your coding time automatically.">
+      <div className="mt-[8px] flex flex-wrap items-center gap-[10px]">
+        <span className={hint()} title="Only hours Hackatime didn't already track, it logs your coding time automatically.">
           extra hours (not tracked by Hackatime):
         </span>
         <input
-          className="field"
+          className={cn(field, "w-[90px]")}
           type="number"
           min={0}
           max={100}
@@ -61,13 +64,11 @@ export function JournalForm({
         />
         <span className="ml-auto flex gap-2">
           {onCancel ? (
-            <button type="button" className="btn ghost" onClick={onCancel} disabled={pending}>
+            <Button variant="ghost" onClick={onCancel} disabled={pending}>
               CANCEL
-            </button>
+            </Button>
           ) : null}
-          <button
-            type="button"
-            className="btn"
+          <Button
             disabled={disabled || pending || !d.content.trim()}
             onClick={async () => {
               if (await onSubmit({ ...d, title: d.title.trim(), content: d.content.trim() }) && !onCancel) {
@@ -76,7 +77,7 @@ export function JournalForm({
             }}
           >
             {pending ? "SAVING..." : submitLabel}
-          </button>
+          </Button>
         </span>
       </div>
     </div>

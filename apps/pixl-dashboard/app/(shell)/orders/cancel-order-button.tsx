@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { Notice } from "@/components/ui/primitives";
+import { Button, Notice } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
 import { cancelOrder } from "./actions";
 
@@ -21,9 +21,9 @@ export function CancelOrderButton({ id }: { id: number }) {
 
   return (
     <div className="ml-auto flex flex-col items-end gap-2">
-      <button type="button" className="btn ghost" disabled={pending} onClick={() => setOpen(true)}>
+      <Button variant="ghost" disabled={pending} onClick={() => setOpen(true)}>
         {pending ? "CANCELLING…" : "CANCEL & REFUND"}
-      </button>
+      </Button>
       {error ? <Notice tone="bad">Couldn&apos;t cancel that order: {error}</Notice> : null}
       <ConfirmDialog
         open={open}

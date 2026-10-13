@@ -23,7 +23,6 @@ import { linkedSeconds } from "../_components/project-list";
 import { ProjectEditor } from "../_components/project-editor";
 import { PublicView, type PublicProject } from "../_components/public-view";
 import { Timeline } from "../_components/timeline";
-import "../projects.css";
 
 export const metadata = { title: "Project" };
 
@@ -90,7 +89,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         collabs ? (
           <Collaborators projectId={id} collaborators={collabs.collaborators} isOwner={collabs.isOwner} joinCode={project.join_code} />
         ) : (
-          <p className="faint text-sm">Couldn&apos;t load collaborators.</p>
+          <p className="text-sm text-faint">Couldn&apos;t load collaborators.</p>
         )
       }
       timeline={<Timeline data={timeline} />}

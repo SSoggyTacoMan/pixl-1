@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
-import { Notice } from "@/components/ui/primitives";
+import { Button, Notice } from "@/components/ui/primitives";
 import type { ProjectEstimate } from "../../calc/estimates";
 import { isInReview, type BlackoutState, type HtStats, type Project, type Trial } from "../types";
 import { ProjectForm } from "./project-form";
 import { ProjectHeader } from "./project-header";
 import { SaveStatusChip } from "./save-status";
 import { ShipPanel } from "./ship-panel";
+import { backLink, sectionH } from "./styles";
 import { TrialBrief, TrialReward } from "./trial-bits";
 import { useProjectForm } from "./use-project-form";
 
@@ -49,7 +50,7 @@ export function ProjectEditor({
 
   return (
     <div>
-      <Link className="btn dark mb-4 inline-block" href="/projects">
+      <Link className={backLink} href="/projects">
         ← ALL PROJECTS
       </Link>
       <ProjectHeader
@@ -63,12 +64,12 @@ export function ProjectEditor({
       <TrialReward project={project} />
       {!inReview ? <TrialBrief trial={trial} /> : null}
 
-      <div className="section-h flex items-center gap-3">
+      <div className={sectionH}>
         PROJECT DETAILS
         <SaveStatusChip status={status} />
-        <button type="button" className="btn ghost ml-auto" onClick={() => setShowDetails((v) => !v)}>
+        <Button variant="ghost" className="ml-auto" onClick={() => setShowDetails((v) => !v)}>
           {showDetails ? "HIDE DETAILS" : "EDIT DETAILS"}
-        </button>
+        </Button>
       </div>
       {flash ? (
         <Notice tone={flash.tone} className="mb-3">
@@ -92,10 +93,10 @@ export function ProjectEditor({
         />
       ) : null}
 
-      <div className="section-h">COLLABORATORS</div>
+      <div className={sectionH}>COLLABORATORS</div>
       {collaborators}
 
-      <div className="section-h">SHIP IT</div>
+      <div className={sectionH}>SHIP IT</div>
       <ShipPanel
         project={project}
         form={form}
@@ -108,10 +109,10 @@ export function ProjectEditor({
         pauseAutosave={pauseAutosave}
       />
 
-      <div className="section-h">TIMELINE</div>
+      <div className={sectionH}>TIMELINE</div>
       {timeline}
 
-      <div className="section-h">JOURNAL</div>
+      <div className={sectionH}>JOURNAL</div>
       {journal}
 
       {dangerZone}

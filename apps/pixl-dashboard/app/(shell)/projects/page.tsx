@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PageHeader } from "@/components/ui/primitives";
+import { PageHeader, buttonVariants } from "@/components/ui/primitives";
 import { serverApi } from "@/lib/server-api";
 import { Feeds, type ActivityItem, type NewsItem } from "./_components/feeds";
 import { HackatimeStrip } from "./_components/hackatime-strip";
@@ -9,7 +9,6 @@ import { JoinCodeBox, PendingInvites, type PendingInvite } from "./_components/l
 import { Legend, ProjectList } from "./_components/project-list";
 import { loadBlackout, loadProjects, loadStats } from "./data";
 import { TourReplayButton } from "./_tour/tour-provider";
-import "./projects.css";
 
 export const metadata = { title: "Projects" };
 
@@ -31,7 +30,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
       <PageHeader title="PROJECTS" sub="BUILD · JOURNAL · SHIP · GET PAID IN PIXELS.">
         <Legend projects={projects} />
         <TourReplayButton />
-        <Link id="new-btn" className="btn" href="/projects/new">
+        <Link id="new-btn" className={buttonVariants()} href="/projects/new">
           + NEW PROJECT
         </Link>
       </PageHeader>

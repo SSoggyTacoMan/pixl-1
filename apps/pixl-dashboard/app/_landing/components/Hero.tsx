@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useLocale } from "./LocaleProvider";
 import { Crew } from "./Crew";
 import { config } from "@/app/_generated/config";
+import { cn } from "@/lib/cn";
 
 // The game lives on its own host; open it in a new tab, never proxied.
 const PLAY_URL = config.urls.play;
@@ -89,8 +90,12 @@ export function Hero() {
             </p>
           </motion.div>
           <motion.p
-            className="font-pixel text-[#ec3750] text-[6rem] sm:text-[9rem] md:text-[13rem] lg:text-[16rem] select-none leading-none"
-            style={{ textShadow: "var(--pixl-shadow)" }}
+            className={cn(
+              "font-pixel text-[#ec3750] text-[6rem] sm:text-[9rem] md:text-[13rem] lg:text-[16rem] select-none leading-none",
+              // pixel outline plus a drop shadow, twice as thick from sm up
+              "[text-shadow:2px_0_0_#16161e,-2px_0_0_#16161e,0_2px_0_#16161e,0_-2px_0_#16161e,2px_2px_0_#16161e,-2px_2px_0_#16161e,2px_-2px_0_#16161e,-2px_-2px_0_#16161e,5px_5px_0_#16161e]",
+              "sm:[text-shadow:4px_0_0_#16161e,-4px_0_0_#16161e,0_4px_0_#16161e,0_-4px_0_#16161e,4px_4px_0_#16161e,-4px_4px_0_#16161e,4px_-4px_0_#16161e,-4px_-4px_0_#16161e,10px_10px_0_#16161e]",
+            )}
             initial={{ opacity: 0, y: -80, scale: 0.85 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1], delay: 0.2 }}

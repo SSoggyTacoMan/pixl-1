@@ -5,6 +5,8 @@
 // in the card, Escape skips, and screen readers get a titled dialog.
 import { Dialog as D } from "radix-ui";
 import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { cn } from "@/lib/cn";
+import { Button, buttonVariants } from "@/components/ui/primitives";
 import { RichText } from "./rich-text";
 import type { TourStep } from "./steps";
 import { useTargetRect, type Box } from "./use-target-rect";
@@ -56,16 +58,19 @@ export function TourOverlay({
       <D.Portal>
         {spot ? (
           <div
-            className="pt-hole"
+            className="pointer-events-none fixed z-[200] border-2 border-gold shadow-[0_0_0_9999px_rgb(10_10_14/.5)] transition-[top,left,width,height] duration-250 ease-[ease]"
             aria-hidden
             style={{ top: spot.top - PAD, left: spot.left - PAD, width: spot.width + PAD * 2, height: spot.height + PAD * 2 }}
           />
         ) : (
-          <div className="pt-veil" aria-hidden />
+          <div className="fixed inset-0 z-[200] bg-[rgb(10_10_14/.5)]" aria-hidden />
         )}
         <D.Content
           ref={cardRef}
-          className={`pt-card${spot ? "" : " center"}`}
+          className={cn(
+            "fixed z-[201] w-[min(340px,calc(100vw-32px))] border-2 border-stroke bg-panel p-[18px] text-ink",
+            !spot && "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2",
+          )}
           style={spot ? cardPosition(spot, size) : undefined}
           // The backdrop is inert: only Skip / Done / Escape end the tour.
           onPointerDownOutside={(e) => e.preventDefault()}
@@ -75,39 +80,43 @@ export function TourOverlay({
             nextRef.current?.focus();
           }}
         >
-          <D.Title className="pt-title">{step.title}</D.Title>
+          <D.Title className="mb-[8px] font-pixel text-[18px] tracking-[.5px] text-gold">{step.title}</D.Title>
           <D.Description asChild>
-            <div className="pt-body">
+            <div className="text-[14px] leading-[1.55] text-dim [&_b]:text-ink">
               <RichText value={step.body} />
             </div>
           </D.Description>
           {step.extra ? (
-            <button type="button" className="btn ghost pt-extra" onClick={() => onExtra(step.extra!.href)}>
+            <button
+              type="button"
+              className={cn(buttonVariants({ variant: "ghost" }), "mt-[12px] block w-full")}
+              onClick={() => onExtra(step.extra!.href)}
+            >
               {step.extra.label}
             </button>
           ) : null}
-          <div className="pt-foot">
-            <div className="pt-dots" aria-hidden>
+          <div className="mt-[16px] flex items-center gap-[10px]">
+            <div className="mr-auto flex gap-[5px]" aria-hidden>
               {steps.map((_, n) => (
-                <span key={n} className={`pt-dot${n === index ? " on" : ""}`} />
+                <span key={n} className={cn("size-[7px]", n === index ? "bg-gold" : "bg-muted")} />
               ))}
             </div>
             <span className="sr-only">
               Step {index + 1} of {steps.length}
             </span>
             {!last ? (
-              <button type="button" className="pt-skip" onClick={onSkip}>
+              <button type="button" className="border-0 bg-transparent p-[6px] text-[12px] text-faint" onClick={onSkip}>
                 Skip
               </button>
             ) : null}
             {index > 0 ? (
-              <button type="button" className="btn ghost" onClick={onBack}>
+              <Button variant="ghost" onClick={onBack}>
                 Back
-              </button>
+              </Button>
             ) : null}
-            <button ref={nextRef} type="button" className="btn" onClick={onNext}>
+            <Button ref={nextRef} onClick={onNext}>
               {last ? "Done" : "Next"}
-            </button>
+            </Button>
           </div>
         </D.Content>
       </D.Portal>

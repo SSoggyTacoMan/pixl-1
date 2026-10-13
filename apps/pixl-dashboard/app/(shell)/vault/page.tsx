@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
-import { EmptyNote, Notice } from "@/components/ui/primitives";
+import { EmptyNote, Notice, pageSub, pageTitle, panelDeep } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { serverGet } from "@/lib/server-api";
 import type { VaultData } from "./vault-lib";
 import { Chamber, Gauge, Leaderboard } from "./vault-parts";
-import "./vault.css";
 
 export const metadata: Metadata = { title: "The Core Vault" };
 
@@ -12,10 +12,10 @@ export default async function VaultPage() {
   const data = res.ok ? { ...res.data, levels: res.data.levels ?? [], energy: res.data.energy || 0 } : null;
 
   return (
-    <div className="vault-page">
-      <section className="v-hero">
-        <h1 className="page-title">THE CORE VAULT</h1>
-        <div className="page-sub">EVERY SHIP FEEDS RESTORATION ENERGY, THE COMMUNITY RECOVERS THE VAULT TOGETHER</div>
+    <div className="mx-auto max-w-[960px]">
+      <section className="px-[20px] pt-[24px] pb-[4px] text-center">
+        <h1 className={pageTitle}>THE CORE VAULT</h1>
+        <div className={cn(pageSub, "text-teal")}>EVERY SHIP FEEDS RESTORATION ENERGY, THE COMMUNITY RECOVERS THE VAULT TOGETHER</div>
       </section>
 
       {!data ? (
@@ -30,15 +30,15 @@ export default async function VaultPage() {
             <EmptyNote>THE VAULT IS SEALED, NO LEVELS CONFIGURED YET.</EmptyNote>
           ) : (
             <>
-              <div className="chambers">
+              <div className="mt-[28px] flex flex-col gap-[16px]">
                 {data.levels.map((l, i) => (
                   <Chamber key={l.level} level={l} energy={data.energy} index={i} />
                 ))}
               </div>
-              <div className="lore panel-deep">
+              <div className={cn(panelDeep, "mt-[34px] mb-[10px] px-[20px] py-[16px] text-[14px] leading-[1.75] text-dim")}>
                 The Core is a vault holding the old civilization&apos;s technology. As the community pours in{" "}
-                <b>Restoration Energy</b>, it recovers another chamber, and hands the equipment inside back to{" "}
-                <b>everyone</b>. These aren&apos;t gifts from an NPC. They&apos;re what the Core has finally managed
+                <b className="text-teal">Restoration Energy</b>, it recovers another chamber, and hands the equipment inside back to{" "}
+                <b className="text-teal">everyone</b>. These aren&apos;t gifts from an NPC. They&apos;re what the Core has finally managed
                 to restore.
               </div>
             </>

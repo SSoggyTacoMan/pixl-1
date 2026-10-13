@@ -4,7 +4,7 @@
 // (or verify via Hack Club Auth) -> first-order phone -> buy.
 import { useState } from "react";
 import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
-import { Input, Notice } from "@/components/ui/primitives";
+import { Button, Input, Notice } from "@/components/ui/primitives";
 import { goTo, useAction } from "@/components/use-action";
 import { startAuthFlow } from "@/lib/actions/flows";
 
@@ -83,15 +83,15 @@ export function Checkout({
           <p className="text-dim">We&apos;ll ship to: {eligibility.summary}</p>
           {flow.error ? <Notice tone="bad" className="mt-3">{flow.error}</Notice> : null}
           <div className="mt-4 flex flex-wrap justify-end gap-2">
-            <button type="button" className="btn ghost" onClick={() => setStep(null)}>
+            <Button variant="ghost" onClick={() => setStep(null)}>
               Cancel
-            </button>
-            <button type="button" className="btn dark" disabled={flow.pending} onClick={verifyAddress}>
+            </Button>
+            <Button variant="dark" disabled={flow.pending} onClick={verifyAddress}>
               Verify address
-            </button>
-            <button type="button" className="btn" disabled={pending} onClick={afterAddress}>
+            </Button>
+            <Button disabled={pending} onClick={afterAddress}>
               Yes, ship here
-            </button>
+            </Button>
           </div>
         </Dialog>
       ) : (
@@ -127,12 +127,10 @@ export function Checkout({
         />
         {phoneErr ? <Notice tone="bad" className="mt-2">{phoneErr}</Notice> : null}
         <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className="btn ghost" onClick={() => setStep(null)}>
+          <Button variant="ghost" onClick={() => setStep(null)}>
             Cancel
-          </button>
-          <button type="button" className="btn" onClick={submitPhone}>
-            Continue
-          </button>
+          </Button>
+          <Button onClick={submitPhone}>Continue</Button>
         </div>
       </Dialog>
     </>

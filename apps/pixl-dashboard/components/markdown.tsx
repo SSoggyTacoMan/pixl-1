@@ -5,6 +5,7 @@
 // the Hack Club CDN (lib/cdn-hosts.ts) - any other host would hand every
 // viewer's IP to whoever wrote the entry, so those render as a plain link.
 import type { ReactNode } from "react";
+import { cn } from "@/lib/cn";
 import { playerImageSrc, safeHttpUrl } from "@/lib/safe-url";
 
 type Tok = { re: RegExp; render: (m: RegExpExecArray, key: string) => ReactNode };
@@ -144,8 +145,26 @@ export function renderMarkdown(src: string): ReactNode[] {
   return out;
 }
 
+// Styles the rendered elements from the root, so renderMarkdown's output stays
+// plain tags. A caller's className can override any of these through cn().
+const mdClass = cn(
+  "leading-[1.65] [word-break:break-word]",
+  "[&_:is(h1,h2,h3,h4,h5,h6)]:mt-[14px] [&_:is(h1,h2,h3,h4,h5,h6)]:mb-[6px] [&_:is(h1,h2,h3,h4,h5,h6)]:font-pixel",
+  "[&_p]:my-[8px]",
+  "[&_:is(ul,ol)]:my-[8px] [&_:is(ul,ol)]:ml-[22px] [&_ul]:list-[square] [&_ol]:list-decimal",
+  "[&_blockquote]:my-[8px] [&_blockquote]:border-l-4 [&_blockquote]:border-stroke [&_blockquote]:pl-[10px]",
+  "[&_blockquote]:text-dim",
+  "[&_pre]:my-[8px] [&_pre]:overflow-x-auto [&_pre]:border-2 [&_pre]:border-stroke [&_pre]:bg-panel-deep",
+  "[&_pre]:p-[10px] [&_pre]:font-mono [&_pre]:text-[13px]",
+  "[&_code]:bg-panel-2 [&_code]:px-[3px] [&_code]:font-mono [&_code]:text-[.92em]",
+  "[&_pre_code]:bg-transparent [&_pre_code]:p-0",
+  "[&_img]:my-[8px] [&_img]:max-w-full [&_img]:border-2 [&_img]:border-stroke",
+  "[&_hr]:my-[14px] [&_hr]:h-[2px] [&_hr]:border-0 [&_hr]:bg-stroke",
+  "[&_a]:underline",
+);
+
 export function Markdown({ source, className }: { source: string; className?: string }) {
-  return <div className={`md${className ? ` ${className}` : ""}`}>{renderMarkdown(source)}</div>;
+  return <div className={cn(mdClass, className)}>{renderMarkdown(source)}</div>;
 }
 
 /** Strips Godot BBCode tags to plain text (quests/news copy authored for the game). */

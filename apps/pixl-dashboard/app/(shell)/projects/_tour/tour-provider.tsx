@@ -16,8 +16,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { setOnboardingStep } from "@/lib/actions/onboarding";
 import { FP_SHOWN_KEY, ONBOARDED_KEY, TOUR_STEP_KEY } from "@/lib/local-state";
 import { clampStep, firstProjectSteps, onboardingSteps, type TourStep, type TourTrial } from "./steps";
+import { Button } from "@/components/ui/primitives";
 import { TourOverlay } from "./tour-overlay";
-import "./tour.css";
 
 const START_DELAY_MS = 700;
 
@@ -154,8 +154,8 @@ export function TourReplayButton() {
   const ctx = useContext(TourContext);
   if (!ctx) return null;
   return (
-    <button type="button" className="btn ghost" onClick={ctx.replay} title="New here? Replay the tour">
+    <Button variant="ghost" onClick={ctx.replay} title="New here? Replay the tour">
       TOUR
-    </button>
+    </Button>
   );
 }

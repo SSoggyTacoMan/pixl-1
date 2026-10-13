@@ -1,6 +1,5 @@
 import { getNav } from "@/lib/docs";
 import { DocsShell } from "./docs-shell";
-import "./docs.css";
 
 // Deliberately above the [slug] segment, not inside it. Next keys each
 // segment's rendered subtree by its cache key, and a dynamic segment's cache

@@ -39,21 +39,21 @@ export default async function FormPage({
 
   if (!cfg || !cfg.ok) {
     return (
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "48px 20px" }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>Form not found</h1>
-        <p style={{ color: "#666" }}>This form doesn&apos;t exist or isn&apos;t set up yet.</p>
+      <div className="mx-auto max-w-[560px] px-[20px] py-[48px]">
+        <h1 className="mb-[8px] text-[24px] font-bold">Form not found</h1>
+        <p className="text-[#666]">This form doesn&apos;t exist or isn&apos;t set up yet.</p>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 560, margin: "0 auto", padding: "48px 20px" }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>{cfg.title}</h1>
+    <div className="mx-auto max-w-[560px] px-[20px] py-[48px]">
+      <h1 className="mb-[8px] text-[24px] font-bold">{cfg.title}</h1>
       {cfg.description && (
-        <p style={{ color: "#666", marginBottom: 24 }}>{cfg.description}</p>
+        <p className="mb-[24px] text-[#666]">{cfg.description}</p>
       )}
       {cfg.closed ? (
-        <div style={{ background: "#fee", border: "1px solid #c99", borderRadius: 8, padding: 16 }}>
+        <div className="rounded-[8px] border border-[#c99] bg-[#fee] p-[16px]">
           This form is closed and no longer accepting submissions.
         </div>
       ) : (

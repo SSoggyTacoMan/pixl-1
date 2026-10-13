@@ -4,13 +4,15 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Markdown } from "@/components/markdown";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { Notice } from "@/components/ui/primitives";
+import { Notice, panel } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { deleteJournal, editJournal, postJournal } from "../collab-actions";
 import { projectError, projectErrorWith } from "../errors";
 import { timeAgo } from "../format";
 import type { JournalEntry } from "../types";
 import { journalDraftKey as draftKey } from "@/lib/local-state";
 import { JournalForm, type JournalDraft } from "./journal-form";
+import { hint } from "./styles";
 
 function readDraft(id: number): JournalDraft {
   try {
@@ -87,7 +89,7 @@ export function Journal({ projectId, entries, locked }: { projectId: number; ent
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="hint text-sm">
+      <p className={hint()}>
         Journaling is optional, but it&apos;s the best way to protect your payout: entries justify your hours to a reviewer, so a
         journaled project rarely gets deflated. Don&apos;t re-enter hours Hackatime already tracked; the hours field is only for time it
         missed (planning, hardware work, art...).
@@ -99,7 +101,7 @@ export function Journal({ projectId, entries, locked }: { projectId: number; ent
       ) : null}
       {msg ? <Notice tone={msg.tone}>{msg.text}</Notice> : null}
       {entries.length === 0 ? (
-        <p className="faint py-3 text-center text-sm">No entries yet, journal as you build, reviewers read these.</p>
+        <p className="py-3 text-center text-sm text-faint">No entries yet, journal as you build, reviewers read these.</p>
       ) : (
         entries.map((e) => {
           const id = String(e.id);
@@ -115,11 +117,11 @@ export function Journal({ projectId, entries, locked }: { projectId: number; ent
               />
             );
           return (
-            <div key={id} className="journal-entry panel">
-              <div className="jmeta">
+            <div key={id} className={cn(panel, "px-[14px] py-[12px]")}>
+              <div className="mb-[6px] flex flex-wrap items-center gap-[10px] text-[12px] text-faint">
                 <span>{timeAgo(e.created_at)}</span>
-                {e.edited_at ? <span className="faint">(edited)</span> : null}
-                {e.hours ? <span className="teal">{Number(e.hours).toFixed(1)}h</span> : null}
+                {e.edited_at ? <span className="text-faint">(edited)</span> : null}
+                {e.hours ? <span className="text-teal">{Number(e.hours).toFixed(1)}h</span> : null}
                 {!locked ? (
                   <span className="ml-auto flex gap-2">
                     <button type="button" className="underline" onClick={() => setEditing(id)}>

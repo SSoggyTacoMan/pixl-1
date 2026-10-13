@@ -3,14 +3,20 @@
 import { useState } from "react";
 import { connectHackatime } from "@/lib/actions/flows";
 import { goTo, useAction } from "@/components/use-action";
+import { Button, buttonVariants, panel } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { DEFAULT_CUTOFF_MS, hours, shortDate } from "../format";
 import type { HtStats } from "../types";
+import { hint } from "./styles";
+
+const htBar = cn(panel, "mb-[14px] flex flex-wrap items-center gap-[10px] px-[14px] py-[10px] font-pixel text-[13px] tracking-[1px]");
+const htDot = "inline-block size-[10px] border border-stroke";
 
 /** Connect / reconnect Hackatime through the server's flow (Bearer POST -> url). */
 export function ConnectHackatimeButton({
   returnTo,
   label = "CONNECT",
-  className = "btn",
+  className = buttonVariants(),
 }: {
   returnTo: string;
   label?: string;
@@ -30,7 +36,7 @@ export function ConnectHackatimeButton({
       >
         {pending ? "OPENING..." : label}
       </button>
-      {error ? <span className="hint bad">{error}</span> : null}
+      {error ? <span className={hint("bad")}>{error}</span> : null}
     </span>
   );
 }
@@ -40,11 +46,11 @@ export function HackatimeStrip({ stats }: { stats: HtStats | null }) {
   if (!stats) return null;
   if (!stats.connected) {
     return (
-      <div className="ht-bar panel">
-        <span className="ht-dot off" />
+      <div className={htBar}>
+        <span className={cn(htDot, "bg-bad")} />
         <span>
           HACKATIME NOT CONNECTED, hours can&apos;t be counted until you link it.
-          {stats.error ? <span className="faint"> ({stats.error})</span> : null}
+          {stats.error ? <span className="text-faint"> ({stats.error})</span> : null}
         </span>
         <span className="ml-auto">
           <ConnectHackatimeButton returnTo="/projects" />
@@ -57,28 +63,28 @@ export function HackatimeStrip({ stats }: { stats: HtStats | null }) {
   const since = stats.projects.reduce((s, h) => s + (h.secondsSinceCutoff ?? h.seconds), 0);
   return (
     <>
-      <div className="ht-bar panel">
-        <span className="ht-dot on" />
+      <div className={htBar}>
+        <span className={cn(htDot, "bg-good")} />
         <span>HACKATIME CONNECTED</span>
-        <span className="teal">
+        <span className="text-teal">
           {hours(since)} since {shortDate(DEFAULT_CUTOFF_MS)}
         </span>
-        <span className="muted">{stats.projects.length} tracked</span>
-        <button type="button" className="btn ghost ml-auto" onClick={() => setOpen((v) => !v)}>
+        <span className="text-muted">{stats.projects.length} tracked</span>
+        <Button variant="ghost" className="ml-auto" onClick={() => setOpen((v) => !v)}>
           TIME PER PROJECT {open ? "▴" : "▾"}
-        </button>
-        <ConnectHackatimeButton returnTo="/projects" label="RECONNECT" className="btn ghost" />
+        </Button>
+        <ConnectHackatimeButton returnTo="/projects" label="RECONNECT" className={buttonVariants({ variant: "ghost" })} />
       </div>
       {open ? (
-        <div className="ht-rows">
+        <div className="mb-[14px] grid gap-[8px]">
           {sorted.map((p) => (
-            <div className="ht-row panel" key={p.name}>
+            <div className={cn(panel, "px-[12px] py-[8px] text-[13px]")} key={p.name}>
               <div className="flex justify-between">
                 <span>{p.name}</span>
-                <span className="teal">{hours(p.seconds)}</span>
+                <span className="text-teal">{hours(p.seconds)}</span>
               </div>
-              <div className="bar">
-                <div style={{ width: `${top ? (p.seconds / top) * 100 : 0}%` }} />
+              <div className="mt-[6px] h-[8px] border border-stroke bg-panel-2">
+                <div className="h-full bg-teal" style={{ width: `${top ? (p.seconds / top) * 100 : 0}%` }} />
               </div>
             </div>
           ))}

@@ -17,7 +17,6 @@ import { MapPreview } from "./components/MapPreview";
 import { MainContent } from "./components/MainContent";
 import { FAQ } from "./components/FAQ";
 import { Footer } from "./components/Footer";
-import "./landing.css";
 
 /** Path for a locale: English is the bare root. */
 export function localePath(locale: Locale): string {
@@ -50,6 +49,19 @@ export async function landingMetadata(locale: Locale): Promise<Metadata> {
   };
 }
 
+// The landing was designed for a 16px root (the shell runs at 15px) and is
+// always cream whatever the shell theme, so while it is mounted it sets the
+// root font size, smooth scrolling and its own fixed scrollbar colours on
+// <html> (via html:has(<this root>)) and on everything inside it.
+const landingRoot = [
+  "[html:has(&)]:text-[16px] [html:has(&)]:scroll-smooth",
+  "[html:has(&)]:[scrollbar-color:#16161e_#e8dfbf] [&_*]:[scrollbar-color:#16161e_#e8dfbf]",
+  "[html:has(&)::-webkit-scrollbar-track]:bg-[#e8dfbf] [html:has(&)::-webkit-scrollbar-corner]:bg-[#e8dfbf]",
+  "[&_::-webkit-scrollbar-track]:bg-[#e8dfbf] [&_::-webkit-scrollbar-corner]:bg-[#e8dfbf]",
+  "[html:has(&)::-webkit-scrollbar-thumb]:bg-[#16161e] [html:has(&)::-webkit-scrollbar-thumb]:border-[#e8dfbf]",
+  "[&_::-webkit-scrollbar-thumb]:bg-[#16161e] [&_::-webkit-scrollbar-thumb]:border-[#e8dfbf]",
+].join(" ");
+
 export async function LandingPage({ locale }: { locale: Locale }) {
   const dict = await getDictionary(locale);
   return (
@@ -57,7 +69,7 @@ export async function LandingPage({ locale }: { locale: Locale }) {
       <SmoothScroll>
         <div
           lang={locale}
-          className="pixl-landing min-h-screen overflow-x-clip bg-[#F5EED2] font-pixel text-black antialiased"
+          className={`pixl-landing min-h-screen overflow-x-clip bg-[#F5EED2] font-pixel text-black antialiased ${landingRoot}`}
         >
           <Menu />
           <LanguageSwitcher />

@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import { EmptyNote, Notice } from "@/components/ui/primitives";
+import { EmptyNote, Notice, pageSub, pageTitle } from "@/components/ui/primitives";
 import { serverGet } from "@/lib/server-api";
 import { EntryList } from "./entry-list";
 import type { SttEntry, SttRound } from "./stt-lib";
-import "./show-n-tell.css";
 
 export const metadata: Metadata = { title: "Show & Tell" };
 
@@ -17,9 +16,9 @@ export default async function ShowNTellPage() {
   }));
 
   return (
-    <div className="stt-page">
-      <h1 className="page-title">SHOW &amp; TELL</h1>
-      <div className="page-sub">
+    <div>
+      <h1 className={pageTitle}>SHOW &amp; TELL</h1>
+      <div className={pageSub}>
         {round
           ? round.title
           : "Vote for your favorite project, one vote per account, no stuffing the ballot. You can't vote for your own project."}

@@ -1,8 +1,17 @@
 "use client";
 
+import { badgeVariants } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { safeHttpUrl } from "@/lib/safe-url";
 import type { ConfigPicks, ShopItem } from "../shop-lib";
 import { optionGroups, stockGroupIndex, stockMap } from "./item-lib";
+import { smallCaps } from "../shop-styles";
+
+const optGroup = "flex flex-col gap-[6px]";
+const optChoices = "flex flex-wrap gap-[6px]";
+const optChoice = (on: boolean, soldOut = false) =>
+  cn(badgeVariants(), on && "bg-gold text-btn-ink", soldOut && "line-through opacity-45");
+const choiceNote = "ml-[4px] text-[10px] opacity-80";
 
 /** Plain options ("Size: S, M"), with live per-choice stock where tracked. */
 export function PlainOptions({
@@ -21,9 +30,9 @@ export function PlainOptions({
   return (
     <div className="flex flex-col gap-3">
       {groups.map((g, gi) => (
-        <div className="opt-group" key={gi}>
-          {g.name ? <div className="opt-group-name">{g.name.toUpperCase()}</div> : null}
-          <div className="opt-choices">
+        <div className={optGroup} key={gi}>
+          {g.name ? <div className={smallCaps}>{g.name.toUpperCase()}</div> : null}
+          <div className={optChoices}>
             {g.choices.map((c) => {
               const s = gi === sIdx ? stock.get(c) : undefined;
               const soldOut = !!s && s.remaining <= 0;
@@ -31,13 +40,13 @@ export function PlainOptions({
                 <button
                   type="button"
                   key={c}
-                  className={`chip opt-choice${picks[gi] === c ? " on" : ""}${soldOut ? " sold-out" : ""}`}
+                  className={optChoice(picks[gi] === c, soldOut)}
                   disabled={soldOut}
                   aria-pressed={picks[gi] === c}
                   onClick={() => onPick(gi, c)}
                 >
                   {c.toUpperCase()}
-                  {s ? <span className="stock-tag">{soldOut ? "SOLD OUT" : `${s.remaining} LEFT`}</span> : null}
+                  {s ? <span className={choiceNote}>{soldOut ? "SOLD OUT" : `${s.remaining} LEFT`}</span> : null}
                 </button>
               );
             })}
@@ -64,7 +73,7 @@ export function Configurator({
   return (
     <div className="flex flex-col gap-3">
       {ref ? (
-        <div className="cfg-ref-note">
+        <div className="text-[13px] text-faint">
           Want the exact spec sheet?{" "}
           <a href={ref} target="_blank" rel="noopener noreferrer">
             Check the real configurator ↗
@@ -78,17 +87,17 @@ export function Configurator({
           ? new Set((picks[g.name] as string[] | undefined) ?? [])
           : new Set([(picks[g.name] as string | undefined) ?? g.choices[0]?.label]);
         return (
-          <div className="opt-group" key={g.name}>
-            <div className="opt-group-name">
+          <div className={optGroup} key={g.name}>
+            <div className={smallCaps}>
               {g.name.toUpperCase()}
               {multi ? " (pick any)" : ""}
             </div>
-            <div className="opt-choices">
+            <div className={optChoices}>
               {g.choices.map((c) => (
                 <button
                   type="button"
                   key={c.label}
-                  className={`chip opt-choice${chosen.has(c.label) ? " on" : ""}`}
+                  className={optChoice(chosen.has(c.label))}
                   aria-pressed={chosen.has(c.label)}
                   onClick={() => {
                     if (multi) {
@@ -102,7 +111,7 @@ export function Configurator({
                   }}
                 >
                   {c.label}
-                  {c.price ? <span className="cfg-delta">+{c.price}px</span> : null}
+                  {c.price ? <span className={choiceNote}>+{c.price}px</span> : null}
                 </button>
               ))}
             </div>

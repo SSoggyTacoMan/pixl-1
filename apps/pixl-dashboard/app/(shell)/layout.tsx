@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { wrap } from "@/components/ui/primitives";
 import { serverApi, serverGet } from "@/lib/server-api";
 import { getSession } from "@/lib/session";
 import { expiredUrl, sessionRejected } from "@/lib/session-expiry";
@@ -45,8 +46,9 @@ export default async function ShellLayout({ children }: { children: React.ReactN
         re={wallet ? Math.round(wallet.re) : 0}
         communityRe={events ? Math.round(events.community_re) : 0}
       />
-      <div className="shell-main">
-        <main className="wrap">{children}</main>
+      {/* Clears the fixed sidebar and top rail (a bottom dock under 900px). */}
+      <div className="pt-[54px] pl-[260px] max-[900px]:pb-[64px] max-[900px]:pl-0">
+        <main className={wrap}>{children}</main>
       </div>
     </>
   );

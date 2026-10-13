@@ -63,7 +63,7 @@ export function ReportForm() {
             </Button>
           </div>
         ) : (
-          <div className="search-wrap">
+          <div className="relative">
             <Input
               id="report-q"
               autoComplete="off"
@@ -73,9 +73,19 @@ export function ReportForm() {
               onChange={(e) => setQ(e.target.value)}
             />
             {hits.length ? (
-              <div className="search-menu" role="listbox">
+              <div
+                className="absolute right-0 left-0 z-10 mt-[2px] max-h-[220px] overflow-y-auto border-2 border-stroke bg-panel-deep"
+                role="listbox"
+              >
                 {hits.map((p) => (
-                  <button key={p.id} type="button" role="option" aria-selected={false} onClick={() => setPicked(p)}>
+                  <button
+                    key={p.id}
+                    type="button"
+                    role="option"
+                    aria-selected={false}
+                    className="block w-full border-0 bg-transparent px-[12px] py-[9px] text-left text-ink [font:inherit] hover:bg-panel-2"
+                    onClick={() => setPicked(p)}
+                  >
                     {p.display_name}
                   </button>
                 ))}

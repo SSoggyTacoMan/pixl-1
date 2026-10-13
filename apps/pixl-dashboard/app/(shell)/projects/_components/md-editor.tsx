@@ -4,9 +4,17 @@
 // preview (components/markdown.tsx renders React elements, never HTML).
 import { useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
+import { textareaField } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { countJournalImages, journalCharsNeeded, journalImagesNeeded } from "../format";
 import { clipboardImage } from "./file-button";
+import { hint } from "./styles";
 import { uploadImageFile } from "./upload";
+
+const mdBtn = cn(
+  "border-2 border-stroke bg-panel px-[8px] py-[2px] font-pixel text-[12px] text-ink",
+  "disabled:cursor-default disabled:opacity-50",
+);
 
 type Action = "bold" | "italic" | "h" | "ul" | "quote" | "code" | "link";
 
@@ -96,25 +104,25 @@ export function MdEditor({
 
   return (
     <div>
-      <div className="md-bar">
+      <div className="mb-[6px] flex flex-wrap gap-[4px]">
         {BUTTONS.map(([a, l]) => (
-          <button key={a} type="button" className="md-btn" disabled={disabled || preview} onClick={() => act(a)}>
+          <button key={a} type="button" className={mdBtn} disabled={disabled || preview} onClick={() => act(a)}>
             {l}
           </button>
         ))}
-        <button type="button" className="md-btn" disabled={disabled || busy} onClick={() => file.current?.click()}>
+        <button type="button" className={mdBtn} disabled={disabled || busy} onClick={() => file.current?.click()}>
           {busy ? "UPLOADING..." : "IMAGE"}
         </button>
-        <button type="button" className={`md-btn${preview ? " active" : ""}`} onClick={() => setPreview((p) => !p)}>
+        <button type="button" className={cn(mdBtn, preview && "bg-ink text-panel-deep")} onClick={() => setPreview((p) => !p)}>
           PREVIEW
         </button>
       </div>
       {preview ? (
-        <div className="md-preview">{value.trim() ? <Markdown source={value} /> : <span className="faint">Nothing to preview.</span>}</div>
+        <div className="min-h-[96px] border-2 border-stroke bg-panel-deep p-[10px]">{value.trim() ? <Markdown source={value} /> : <span className="text-faint">Nothing to preview.</span>}</div>
       ) : (
         <textarea
           ref={ta}
-          className="field min-h-40"
+          className={cn(textareaField, "min-h-40")}
           maxLength={5000}
           value={value}
           disabled={disabled}
@@ -140,10 +148,10 @@ export function MdEditor({
           if (f) void attach(f);
         }}
       />
-      <span className={`hint ${ok ? "ok" : "bad"}`}>
+      <span className={hint(ok ? "ok" : "bad")}>
         {need ? `${len} / ${need} chars` : `${len} chars`} · {imgHave} / {imgNeed} image{imgNeed === 1 ? "" : "s"}
       </span>
-      {err ? <span className="hint bad block">{err}</span> : null}
+      {err ? <span className={hint("bad")}>{err}</span> : null}
     </div>
   );
 }

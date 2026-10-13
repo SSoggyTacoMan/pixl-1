@@ -1,6 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { buttonVariants } from "@/components/ui/primitives";
+import { hint } from "./styles";
 import { uploadBomFile, uploadImageFile, type UploadOutcome } from "./upload";
 
 /** A button that opens a file picker and uploads the chosen file. */
@@ -10,7 +12,7 @@ export function FileButton({
   projectId,
   disabled,
   onUploaded,
-  className = "btn dark",
+  className = buttonVariants({ variant: "dark" }),
 }: {
   label: string;
   kind: "image" | "bom";
@@ -49,7 +51,7 @@ export function FileButton({
           if (f) void handle(f);
         }}
       />
-      {msg ? <span className="hint bad">{msg}</span> : null}
+      {msg ? <span className={hint("bad")}>{msg}</span> : null}
     </span>
   );
 }

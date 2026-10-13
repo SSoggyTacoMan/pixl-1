@@ -4,6 +4,8 @@
 // promptDialog.
 import { Dialog as D } from "radix-ui";
 import type { ReactNode } from "react";
+import { cn } from "@/lib/cn";
+import { Button, panel } from "./primitives";
 
 export function Dialog({
   open,
@@ -21,8 +23,14 @@ export function Dialog({
   return (
     <D.Root open={open} onOpenChange={onOpenChange}>
       <D.Portal>
-        <D.Overlay className="dialog-overlay" />
-        <D.Content className="dialog-content panel p-5">
+        <D.Overlay className="fixed inset-0 z-100 bg-black/45" />
+        <D.Content
+          className={cn(
+            panel,
+            "fixed top-1/2 left-1/2 z-[101] -translate-x-1/2 -translate-y-1/2 p-5",
+            "max-h-[calc(100vh-48px)] w-[min(560px,calc(100vw-32px))] overflow-y-auto",
+          )}
+        >
           <D.Title className="font-pixel text-xl text-ink">{title}</D.Title>
           {description ? <D.Description className="mt-2 text-dim">{description}</D.Description> : null}
           <div className="mt-4">{children}</div>
@@ -57,12 +65,12 @@ export function ConfirmDialog({
     <Dialog open={open} onOpenChange={onOpenChange} title={title} description={description}>
       {children}
       <div className="mt-4 flex justify-end gap-2">
-        <button type="button" className="btn ghost" onClick={() => onOpenChange(false)} disabled={pending}>
+        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>
           Cancel
-        </button>
-        <button type="button" className={`btn${danger ? " red" : ""}`} onClick={onConfirm} disabled={pending}>
+        </Button>
+        <Button variant={danger ? "red" : "default"} onClick={onConfirm} disabled={pending}>
           {pending ? "Working..." : confirmLabel}
-        </button>
+        </Button>
       </div>
     </Dialog>
   );

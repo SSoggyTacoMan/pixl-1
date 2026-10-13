@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { EmptyNote, PageHeader } from "@/components/ui/primitives";
+import { EmptyNote, PageHeader, autoGrid, panel } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { serverGet } from "@/lib/server-api";
 import { parseFilters, playersQuery, timeAgo } from "../lib";
 import type { DirectoryPlayer } from "../types";
 import { Avatar } from "../_components/avatar";
 import { SearchBar } from "../_components/search-bar";
 import { ExploreTabs } from "../_components/tabs";
-import "../explore.css";
 
 export const metadata: Metadata = { title: "Players" };
 
@@ -32,14 +32,20 @@ export default async function PlayersPage({
       ) : players.length === 0 ? (
         <EmptyNote>NOBODY HERE BY THAT NAME.</EmptyNote>
       ) : (
-        <div className="grid">
+        <div className={autoGrid}>
           {players.map((p) => {
             const n = Number(p.project_count ?? 0);
             return (
-              <Link key={p.id} className="panel pcard" href={`/explore/players/${encodeURIComponent(p.id)}`}>
+              <Link
+                key={p.id}
+                className={cn(
+                  panel,
+                  "flex flex-col items-center gap-[9px] px-3.5 pt-5 pb-4 text-center text-inherit no-underline hover:border-gold hover:text-inherit",
+                )}
+                href={`/explore/players/${encodeURIComponent(p.id)}`}>
                 <Avatar name={p.display_name} url={p.avatar_url} />
-                <div className="pname">{p.display_name}</div>
-                <div className="pmeta">
+                <div className="text-lg break-words text-ink">{p.display_name}</div>
+                <div className="text-[13.5px] text-faint">
                   {n} project{n === 1 ? "" : "s"} · joined {timeAgo(p.created_at)}
                 </div>
               </Link>

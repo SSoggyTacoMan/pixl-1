@@ -1,11 +1,13 @@
 "use client";
 
+import { Button, buttonVariants, field, selectField, textareaField } from "@/components/ui/primitives";
 import { LEVELS, PROJECT_TYPES, type HtStats, type Trial } from "../types";
 import type { FormState, SetForm } from "./editor-state";
 import { FileButton } from "./file-button";
 import { CountedTextarea, Disclosure, OpenLink, Row } from "./form-bits";
 import { HardwareFields } from "./funding-fields";
 import { HtPicker } from "./ht-picker";
+import { formGrid, hint } from "./styles";
 
 /**
  * The project details form. State lives in the parent (the ship panel reads
@@ -46,11 +48,11 @@ export function ProjectForm({
   const linkedMissing = linkedId != null && !trials.some(isLinked);
 
   return (
-    <div className="form-grid panel">
+    <div className={formGrid}>
       <Row label="NAME *">
         <input
           id="f-name"
-          className="field"
+          className={field}
           maxLength={120}
           value={form.name}
           disabled={locked}
@@ -60,7 +62,7 @@ export function ProjectForm({
       </Row>
       <Row label="DESCRIPTION">
         <textarea
-          className="field"
+          className={textareaField}
           maxLength={2000}
           value={form.description}
           disabled={locked}
@@ -68,11 +70,11 @@ export function ProjectForm({
           onChange={(e) => set({ description: e.target.value })}
         />
       </Row>
-      <div className="two-col">
+      <div className="grid grid-cols-[1fr_1fr] gap-[14px] max-[720px]:grid-cols-1">
         <Row label="GITHUB REPO" extra={<OpenLink url={form.repoUrl} />}>
           <input
             id="f-repo"
-            className="field"
+            className={field}
             maxLength={500}
             value={form.repoUrl}
             disabled={locked}
@@ -82,7 +84,7 @@ export function ProjectForm({
         </Row>
         <Row label="DEMO / PLAYABLE LINK" extra={<OpenLink url={form.demoUrl} />}>
           <input
-            className="field"
+            className={field}
             maxLength={10000}
             value={form.demoUrl}
             disabled={locked}
@@ -98,11 +100,11 @@ export function ProjectForm({
           label={form.imageUrl ? "REPLACE IMAGE" : "CHOOSE IMAGE"}
           onUploaded={(url) => set({ imageUrl: url })}
         />
-        <span className="hint">PNG, JPG or WebP, up to 15MB. You can also paste an image while not typing in a field. Preview shows at the top.</span>
+        <span className={hint()}>PNG, JPG or WebP, up to 15MB. You can also paste an image while not typing in a field. Preview shows at the top.</span>
       </Row>
       <Row label="KIND">
         <select
-          className="field"
+          className={selectField}
           value={form.kind}
           disabled={locked}
           onChange={(e) => set({ kind: e.target.value === "hardware" ? "hardware" : "software" })}
@@ -111,13 +113,13 @@ export function ProjectForm({
           <option value="hardware">Hardware</option>
         </select>
         {form.kind === "hardware" ? (
-          <span className="hint">Hardware hours come from your journal (and Hackatime if you code firmware).</span>
+          <span className={hint()}>Hardware hours come from your journal (and Hackatime if you code firmware).</span>
         ) : null}
       </Row>
       <HardwareFields form={form} set={set} projectId={projectId} locked={locked} usdPerHour={usdPerHour} />
       <Row label="TRIAL (build for a Trial, or your own idea)">
         <select
-          className="field"
+          className={selectField}
           value={form.sidequestId}
           disabled={locked}
           onChange={(e) => set({ sidequestId: e.target.value })}
@@ -145,7 +147,7 @@ export function ProjectForm({
         </select>
       </Row>
       <Row label="TYPE (helps reviewers know how to run it)">
-        <select className="field" value={form.projectType} disabled={locked} onChange={(e) => set({ projectType: e.target.value })}>
+        <select className={selectField} value={form.projectType} disabled={locked} onChange={(e) => set({ projectType: e.target.value })}>
           {PROJECT_TYPES.map(([v, l]) => (
             <option key={v} value={v}>
               {l}
@@ -154,14 +156,14 @@ export function ProjectForm({
         </select>
       </Row>
       <Row label="TIER (your call, the reviewer confirms it)">
-        <select className="field" value={form.level} disabled={locked} onChange={(e) => set({ level: Number(e.target.value) })}>
+        <select className={selectField} value={form.level} disabled={locked} onChange={(e) => set({ level: Number(e.target.value) })}>
           {LEVELS.map(([name], i) => (
             <option key={name} value={i + 1}>
               {name}
             </option>
           ))}
         </select>
-        <span className="hint">{LEVELS[Math.min(Math.max(form.level - 1, 0), LEVELS.length - 1)][1]}</span>
+        <span className={hint()}>{LEVELS[Math.min(Math.max(form.level - 1, 0), LEVELS.length - 1)][1]}</span>
       </Row>
       <Row label="HACKATIME PROJECTS (proof of hours)">
         <HtPicker stats={stats} value={form.hackatime} onChange={(v) => set({ hackatime: v })} disabled={locked} returnTo={returnTo} />
@@ -214,10 +216,10 @@ export function ProjectForm({
         </Row>
       </Disclosure>
       <div className="flex flex-wrap gap-2">
-        <button id="f-save" type="button" className="btn" disabled={locked || saving} onClick={onSave}>
+        <Button id="f-save" disabled={locked || saving} onClick={onSave}>
           {locked ? "IN REVIEW: CAN'T EDIT" : saving ? "SAVING..." : saveLabel}
-        </button>
-        <a className="btn dark" href="/projects">
+        </Button>
+        <a className={buttonVariants({ variant: "dark" })} href="/projects">
           CANCEL
         </a>
       </div>

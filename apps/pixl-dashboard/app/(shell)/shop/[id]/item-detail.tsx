@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { bbstrip } from "@/components/markdown";
 import { SafeImage } from "@/components/safe-image";
-import { Notice } from "@/components/ui/primitives";
+import { Button, buttonVariants, Notice, panel, textareaField } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
+import { cn } from "@/lib/cn";
 import { buyItem, saveItem, unsaveItem } from "../actions";
 import { shopError } from "../shop-errors";
 import { isTrophy, metaBits, type ConfigPicks, type ShopItem } from "../shop-lib";
@@ -18,6 +19,20 @@ import type { EarnRates } from "../../calc/estimates";
 import { hoursHint } from "../hours-hint";
 import { priceState } from "./price-state";
 import { TrophyDetail } from "./trophy-detail";
+import {
+  btnRow,
+  detailDesc,
+  detailImg,
+  detailInfo,
+  detailName,
+  detailRow,
+  imgPlaceholder,
+  itemMeta,
+  slotImg,
+  smallCaps,
+} from "../shop-styles";
+
+const stepBtn = "w-[34px] border-2 border-stroke bg-panel-2 font-bold disabled:opacity-40";
 
 export type { CheckoutEligibility };
 
@@ -121,17 +136,21 @@ export function ItemDetail({
   }
 
   return (
-    <section className="panel p-5">
-      <div className="detail-row">
-        <div className="detail-img">
-          <SafeImage src={isConfig ? configImage(item, config) : item.image_url} fallback={<span className="ph" />} />
+    <section className={cn(panel, "p-5")}>
+      <div className={detailRow}>
+        <div className={detailImg}>
+          <SafeImage
+            src={isConfig ? configImage(item, config) : item.image_url}
+            className={slotImg}
+            fallback={<span className={imgPlaceholder} />}
+          />
         </div>
-        <div className="detail-info">
-          <h1 className="detail-name">{item.name}</h1>
+        <div className={detailInfo}>
+          <h1 className={detailName}>{item.name}</h1>
           <LimitedChips item={item} isConfig={!!(isConfig && browsable)} />
           <DetailPrice ps={ps} hint={item.locked ? "" : hoursHint(total, rates)} />
-          <div className="detail-desc">{bbstrip(item.description || "")}</div>
-          {metaBits(item).length ? <div className="item-meta">{metaBits(item).join(" · ")}</div> : null}
+          <div className={detailDesc}>{bbstrip(item.description || "")}</div>
+          {metaBits(item).length ? <div className={itemMeta}>{metaBits(item).join(" · ")}</div> : null}
 
           {browsable && isConfig ? (
             <Configurator
@@ -149,12 +168,12 @@ export function ItemDetail({
 
           {browsable ? (
             <div>
-              <label className="qty-label" htmlFor="note-input">
+              <label className={smallCaps} htmlFor="note-input">
                 NOTE TO FULFILLER (OPTIONAL)
               </label>
               <textarea
                 id="note-input"
-                className="field mt-1"
+                className={cn(textareaField, "mt-1")}
                 maxLength={300}
                 rows={2}
                 placeholder="anything the person shipping this should know..."
@@ -167,10 +186,10 @@ export function ItemDetail({
           <AffordBar pct={ps.pct} label={ps.affordLabel} />
 
           {browsable && !isConfig ? (
-            <div className="qty-row">
-              <span className="qty-label">QTY</span>
-              <div className="qty-stepper">
-                <button type="button" disabled={quantity <= 1} onClick={() => setQuantity(clampQty(quantity - 1))}>
+            <div className="flex items-center gap-[10px]">
+              <span className={smallCaps}>QTY</span>
+              <div className="flex">
+                <button type="button" className={stepBtn} disabled={quantity <= 1} onClick={() => setQuantity(clampQty(quantity - 1))}>
                   -
                 </button>
                 <input
@@ -179,10 +198,11 @@ export function ItemDetail({
                   max={999}
                   inputMode="numeric"
                   aria-label="Quantity"
+                  className="w-[64px] border-y-2 border-stroke bg-panel text-center text-ink"
                   value={quantity}
                   onChange={(e) => setQuantity(clampQty(Number(e.target.value)))}
                 />
-                <button type="button" disabled={quantity >= 999} onClick={() => setQuantity(clampQty(quantity + 1))}>
+                <button type="button" className={stepBtn} disabled={quantity >= 999} onClick={() => setQuantity(clampQty(quantity + 1))}>
                   +
                 </button>
               </div>
@@ -194,25 +214,23 @@ export function ItemDetail({
             <Notice tone="bad">{buy.error || save.error || unsave.error}</Notice>
           ) : null}
 
-          <div className="btn-row">
+          <div className={btnRow}>
             {bought ? (
-              <Link className="btn teal" href="/orders">
+              <Link className={buttonVariants({ variant: "teal" })} href="/orders">
                 VIEW MY ORDERS
               </Link>
             ) : (
-              <button
-                type="button"
-                className="btn"
+              <Button
                 disabled={ps.buyDisabled || buy.pending}
                 onClick={() => setStep(firstStep(!!item.beacon_locked))}
               >
                 {buy.pending ? "BUYING..." : ps.buyLabel}
-              </button>
+              </Button>
             )}
-            <button type="button" className={`btn ${saved ? "teal" : "dark"}`} onClick={toggleSave}>
+            <Button variant={saved ? "teal" : "dark"} onClick={toggleSave}>
               {saved ? "★ SAVED" : "☆ SAVE"}
-            </button>
-            <Link className="btn dark" href="/shop">
+            </Button>
+            <Link className={buttonVariants({ variant: "dark" })} href="/shop">
               KEEP BROWSING
             </Link>
           </div>

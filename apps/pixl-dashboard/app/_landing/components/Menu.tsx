@@ -44,7 +44,7 @@ export function Menu() {
         hidden ? "-translate-y-full" : "translate-y-0"
       }`}
     >
-      <a href="https://hackclub.com" target="_blank">
+      <a href="https://hackclub.com" target="_blank" className="text-inherit">
         <img
           src="/hc-logo.png"
           alt="Hack Club"

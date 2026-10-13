@@ -4,13 +4,27 @@ import Link from "next/link";
 import { useState } from "react";
 import { bbstrip } from "@/components/markdown";
 import { SafeImage } from "@/components/safe-image";
-import { Notice } from "@/components/ui/primitives";
+import { Badge, Button, buttonVariants, Notice, panel } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
+import { cn } from "@/lib/cn";
 import { claimTrophy } from "../actions";
 import { shopError } from "../shop-errors";
 import type { ShopItem } from "../shop-lib";
 import { AffordBar } from "./detail-bits";
 import { optionGroups } from "./item-lib";
+import {
+  btnRow,
+  chipRow,
+  detailDesc,
+  detailImg,
+  detailInfo,
+  detailName,
+  detailPriceSize,
+  detailRow,
+  imgPlaceholder,
+  priceClass,
+  slotImg,
+} from "../shop-styles";
 
 /** Level-gated trophy: earned, not bought. */
 export function TrophyDetail({ item, xp, claimed }: { item: ShopItem; xp: number; claimed: boolean }) {
@@ -26,27 +40,27 @@ export function TrophyDetail({ item, xp, claimed }: { item: ShopItem; xp: number
   }
 
   return (
-    <section className="panel p-5">
-      <div className="detail-row">
-        <div className="detail-img">
-          <SafeImage src={item.image_url} fallback={<span className="ph" />} />
+    <section className={cn(panel, "p-5")}>
+      <div className={detailRow}>
+        <div className={detailImg}>
+          <SafeImage src={item.image_url} className={slotImg} fallback={<span className={imgPlaceholder} />} />
         </div>
-        <div className="detail-info">
-          <h1 className="detail-name">{item.name}</h1>
-          <div className="chip-row">
-            <span className={`chip${state === "locked" ? "" : " teal"}`}>LEVEL {need} TROPHY, EARNED, NOT BOUGHT</span>
+        <div className={detailInfo}>
+          <h1 className={detailName}>{item.name}</h1>
+          <div className={chipRow}>
+            <Badge tone={state === "locked" ? "default" : "teal"}>LEVEL {need} TROPHY, EARNED, NOT BOUGHT</Badge>
           </div>
-          <div className={`price detail-price${state === "locked" ? " cant" : ""}`}>
+          <div className={cn(priceClass(state === "locked"), detailPriceSize)}>
             {state === "claimed" ? "CLAIMED" : state === "claimable" ? "READY TO CLAIM!" : `LOCKED, REACH ${need} XP`}
           </div>
-          <div className="detail-desc">{bbstrip(item.description || "")}</div>
-          <div className="chip-row">
+          <div className={detailDesc}>{bbstrip(item.description || "")}</div>
+          <div className={chipRow}>
             {optionGroups(item)
               .flatMap((g) => g.choices)
               .map((o) => (
-                <span key={o} className="chip teal">
+                <Badge key={o} tone="teal">
                   {o.toUpperCase()}
-                </span>
+                </Badge>
               ))}
           </div>
           <AffordBar
@@ -56,16 +70,15 @@ export function TrophyDetail({ item, xp, claimed }: { item: ShopItem; xp: number
           />
           {justClaimed ? <Notice tone="good">TROPHY CLAIMED! The team will reach out.</Notice> : null}
           {claim.error ? <Notice tone="bad">{claim.error}</Notice> : null}
-          <div className="btn-row">
-            <button
-              type="button"
-              className={`btn${state === "claimable" ? " teal" : ""}`}
+          <div className={btnRow}>
+            <Button
+              variant={state === "claimable" ? "teal" : "default"}
               disabled={state !== "claimable" || claim.pending}
               onClick={doClaim}
             >
               {claim.pending ? "CLAIMING..." : state === "claimed" ? "CLAIMED" : state === "claimable" ? "CLAIM" : "LOCKED"}
-            </button>
-            <Link className="btn dark" href="/shop">
+            </Button>
+            <Link className={buttonVariants({ variant: "dark" })} href="/shop">
               KEEP BROWSING
             </Link>
           </div>

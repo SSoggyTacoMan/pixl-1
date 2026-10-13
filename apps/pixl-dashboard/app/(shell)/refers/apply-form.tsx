@@ -35,8 +35,9 @@ export function ApplyForm({ prefill }: { prefill: string }) {
         void submit();
       }}
     >
-      <div className="rf-apply-row">
+      <div className="flex flex-wrap gap-[10px]">
         <Input
+          className="min-w-[160px] flex-1 tracking-[2px] uppercase"
           aria-label="Referral code"
           maxLength={6}
           placeholder="CODE"

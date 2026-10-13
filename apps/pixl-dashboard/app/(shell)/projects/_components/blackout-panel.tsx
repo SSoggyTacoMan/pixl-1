@@ -3,11 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/primitives";
+import { Badge, Button } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { enterBlackout, leaveBlackout } from "../collab-actions";
 import { projectError } from "../errors";
 import type { BlackoutState, Project } from "../types";
 import { BLACKOUT_CHIPS } from "./blackout-chip";
+import { checkRow, disclosure, hint } from "./styles";
 
 const TEXT: Record<string, string> = {
   entered: "Entered. Only work you do from now until Blackout ends is eligible.",
@@ -48,21 +50,21 @@ export function BlackoutPanel({ project, blackout, inReview }: { project: Projec
     const chip = BLACKOUT_CHIPS[entry.label];
     const canTakeBack = (entry.label === "entered" && !entry.firstShipAt) || entry.label === "needs_changes";
     return (
-      <div className="disclosure">
+      <div className={disclosure}>
         <div className="flex flex-wrap items-center gap-2">
           <strong>Operation Blackout</strong>
           {chip ? <Badge tone={chip[1]}>{chip[0]}</Badge> : null}
         </div>
-        <p className="hint">
+        <p className={hint()}>
           {TEXT[entry.label] ?? ""}
           {entry.graceDeadline ? ` Fix window closes ${fmt(entry.graceDeadline)} (your local time).` : ""}
         </p>
         {canTakeBack && !inReview ? (
-          <button type="button" className="btn ghost mt-2" disabled={pending} onClick={() => setConfirmOut(true)}>
+          <Button variant="ghost" className="mt-2" disabled={pending} onClick={() => setConfirmOut(true)}>
             OPT OUT OF BLACKOUT
-          </button>
+          </Button>
         ) : null}
-        {err ? <p className="hint bad">{err}</p> : null}
+        {err ? <p className={hint("bad")}>{err}</p> : null}
         <ConfirmDialog
           open={confirmOut}
           onOpenChange={setConfirmOut}
@@ -77,18 +79,18 @@ export function BlackoutPanel({ project, blackout, inReview }: { project: Projec
   }
 
   return (
-    <div className="disclosure">
+    <div className={disclosure}>
       <strong>Operation Blackout</strong>
-      <label className="check-row mt-2">
+      <label className={cn(checkRow, "mt-2")}>
         <input type="checkbox" checked={false} disabled={pending} onChange={() => run("enter")} />
         Enter this project into Operation Blackout
       </label>
-      <p className="hint">
+      <p className={hint()}>
         Only work you do after entering{op.endsAt ? `, and before Blackout ends (${fmt(op.endsAt)}, your local time)` : ""}, is
         eligible. You can still ship and get reviewed anytime. Entering doesn&apos;t guarantee approval. Once you ship you can only
         opt out if changes are requested.
       </p>
-      {err ? <p className="hint bad">{err}</p> : null}
+      {err ? <p className={hint("bad")}>{err}</p> : null}
     </div>
   );
 }

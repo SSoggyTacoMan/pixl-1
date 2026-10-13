@@ -48,7 +48,7 @@ export function Footer() {
           <a
             href="https://summer.hackclub.com"
             target="_blank"
-            className="underline underline-offset-2 hover:text-[#ec3750] transition-colors"
+            className="text-inherit underline underline-offset-2 hover:text-[#ec3750] transition-colors"
           >
             {t.partneredWithGithub}
           </a>
@@ -56,7 +56,7 @@ export function Footer() {
           <a
             href="https://www.youtube.com/watch?v=nf0S5qGrFyY"
             target="_blank"
-            className="underline underline-offset-2 hover:text-[#ec3750] transition-colors"
+            className="text-inherit underline underline-offset-2 hover:text-[#ec3750] transition-colors"
           >
             {t.hostedWorldsLongest}
           </a>
@@ -64,7 +64,7 @@ export function Footer() {
           <a
             href="https://losangeles.hackclub.com"
             target="_blank"
-            className="underline underline-offset-2 hover:text-[#ec3750] transition-colors"
+            className="text-inherit underline underline-offset-2 hover:text-[#ec3750] transition-colors"
           >
             {t.ranCanadasLargest}
           </a>
@@ -171,7 +171,7 @@ export function Footer() {
             href="https://github.com/Pixl-YSWS/pixl"
             target="_blank"
             rel="noreferrer"
-            className="underline underline-offset-2 hover:text-[#ec3750] transition-colors"
+            className="text-inherit underline underline-offset-2 hover:text-[#ec3750] transition-colors"
           >
             {t.github}
           </a>

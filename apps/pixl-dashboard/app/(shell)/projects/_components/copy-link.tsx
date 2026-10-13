@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { config } from "@/app/_generated/config";
+import { Button } from "@/components/ui/primitives";
 
 /** Copies the canonical project URL (pixl.hackclub.com/projects/<id>). */
 export function CopyLinkButton({ id, variant = "button" }: { id: number; variant?: "button" | "link" }) {
@@ -24,8 +25,8 @@ export function CopyLinkButton({ id, variant = "button" }: { id: number; variant
     );
   }
   return (
-    <button type="button" className="btn ghost" onClick={copy}>
+    <Button variant="ghost" onClick={copy}>
       {copied ?? "SHARE"}
-    </button>
+    </Button>
   );
 }

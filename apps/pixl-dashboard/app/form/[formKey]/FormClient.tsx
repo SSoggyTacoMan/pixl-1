@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { cn } from "@/lib/cn";
 import { requestFormCode, submitForm } from "./actions";
 
 const SLACK_ID_RE = /^[UW][A-Z0-9]{6,}$/;
@@ -11,6 +12,13 @@ const CODE_RE = /^\d{6}$/;
 // are filled in during "form" and carried through to the final /submit call
 // once the code from "code" is entered - only one write of them either way.
 type Step = "form" | "code" | "done";
+
+const fieldLabel = "mb-[16px] block";
+const fieldTitle = "mb-[6px] block text-[14px] font-semibold";
+const fieldInput = "w-full rounded-[8px] border border-[#ccc] p-[10px] [font-family:inherit]";
+const errorText = "mb-[12px] text-[#c00]";
+const submitButton =
+  "rounded-[8px] border-none bg-[#4A154B] px-[20px] py-[10px] font-semibold text-white disabled:opacity-60";
 
 export function FormClient({
   formKey,
@@ -90,7 +98,7 @@ export function FormClient({
 
   if (step === "done") {
     return (
-      <div style={{ background: "#efe", border: "1px solid #9c9", borderRadius: 8, padding: 16 }}>
+      <div className="rounded-[8px] border border-[#9c9] bg-[#efe] p-[16px]">
         Thanks - your submission was received. We&apos;ll DM you on Slack once it&apos;s been
         looked at.
       </div>
@@ -100,9 +108,9 @@ export function FormClient({
   if (step === "code") {
     return (
       <form onSubmit={submit}>
-        {notice && <p style={{ color: "#333", marginBottom: 12 }}>{notice}</p>}
-        <label style={{ display: "block", marginBottom: 16 }}>
-          <span style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+        {notice && <p className="mb-[12px] text-[#333]">{notice}</p>}
+        <label className={fieldLabel}>
+          <span className={fieldTitle}>
             Verification code
           </span>
           <input
@@ -113,24 +121,14 @@ export function FormClient({
             value={code}
             onChange={(e) => setCode(e.target.value)}
             placeholder="123456"
-            style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid #ccc", fontFamily: "inherit" }}
+            className={fieldInput}
           />
         </label>
-        {error && <p style={{ color: "#c00", marginBottom: 12 }}>{error}</p>}
+        {error && <p className={errorText}>{error}</p>}
         <button
           type="submit"
           disabled={busy}
-          style={{
-            background: "#4A154B",
-            color: "#fff",
-            padding: "10px 20px",
-            borderRadius: 8,
-            border: "none",
-            fontWeight: 600,
-            cursor: busy ? "default" : "pointer",
-            opacity: busy ? 0.6 : 1,
-            marginRight: 12,
-          }}
+          className={cn(submitButton, "mr-[12px]")}
         >
           {busy ? "Submitting…" : "Verify & submit"}
         </button>
@@ -138,15 +136,7 @@ export function FormClient({
           type="button"
           disabled={busy}
           onClick={(e) => requestCode(e)}
-          style={{
-            background: "none",
-            color: "#4A154B",
-            padding: "10px 4px",
-            border: "none",
-            fontWeight: 600,
-            cursor: busy ? "default" : "pointer",
-            textDecoration: "underline",
-          }}
+          className="border-none bg-transparent px-[4px] py-[10px] font-semibold text-[#4A154B] underline"
         >
           Resend code
         </button>
@@ -156,11 +146,11 @@ export function FormClient({
 
   return (
     <form onSubmit={requestCode}>
-      <label style={{ display: "block", marginBottom: 16 }}>
-        <span style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+      <label className={fieldLabel}>
+        <span className={fieldTitle}>
           Your Slack member ID
         </span>
-        <span style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 6 }}>
+        <span className="mb-[6px] block text-[12px] text-[#666]">
           In Slack: click your profile photo → More → Copy member ID. It starts with U or W.
           We&apos;ll DM you a code there to confirm it&apos;s really you.
         </span>
@@ -170,12 +160,12 @@ export function FormClient({
           value={slackId}
           onChange={(e) => setSlackId(e.target.value)}
           placeholder="U0XXXXXXX"
-          style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid #ccc", fontFamily: "inherit" }}
+          className={fieldInput}
         />
       </label>
       {questions.map((f) => (
-        <label key={f.key} style={{ display: "block", marginBottom: 16 }}>
-          <span style={{ display: "block", fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+        <label key={f.key} className={fieldLabel}>
+          <span className={fieldTitle}>
             {f.label}
           </span>
           <textarea
@@ -184,7 +174,7 @@ export function FormClient({
             maxLength={4000}
             value={values[f.key] ?? ""}
             onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-            style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid #ccc", fontFamily: "inherit" }}
+            className={fieldInput}
           />
         </label>
       ))}
@@ -199,22 +189,13 @@ export function FormClient({
         tabIndex={-1}
         autoComplete="off"
         aria-hidden="true"
-        style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }}
+        className="absolute left-[-9999px] size-px opacity-0"
       />
-      {error && <p style={{ color: "#c00", marginBottom: 12 }}>{error}</p>}
+      {error && <p className={errorText}>{error}</p>}
       <button
         type="submit"
         disabled={busy}
-        style={{
-          background: "#4A154B",
-          color: "#fff",
-          padding: "10px 20px",
-          borderRadius: 8,
-          border: "none",
-          fontWeight: 600,
-          cursor: busy ? "default" : "pointer",
-          opacity: busy ? 0.6 : 1,
-        }}
+        className={submitButton}
       >
         {busy ? "Sending code…" : "Send verification code"}
       </button>

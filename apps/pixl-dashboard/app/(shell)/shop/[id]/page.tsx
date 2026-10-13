@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { cityCountry } from "@/lib/address-summary";
+import { buttonVariants, emptyNote } from "@/components/ui/primitives";
 import { serverApi } from "@/lib/server-api";
 import { normalizeItems, type ShopItemsResponse } from "../shop-lib";
 import { earnRates } from "../../calc/estimates";
 import { ItemDetail, type CheckoutEligibility } from "./item-detail";
-import "../shop.css";
 
 export const metadata = { title: "Shop item" };
 
@@ -43,7 +43,10 @@ export default async function ShopItemPage({
 
   return (
     <>
-      <Link className="back-link" href="/shop">
+      <Link
+        className="mb-[14px] inline-block font-pixel tracking-[1px] text-gold hover:text-gold-soft"
+        href="/shop"
+      >
         ← BACK TO SHOP
       </Link>
       {item ? (
@@ -58,12 +61,12 @@ export default async function ShopItemPage({
           verifyReturn={sp.addr_verified_return ? (sp.addr_verified === "1" ? "ok" : "failed") : null}
         />
       ) : (
-        <div className="empty-note">
+        <div className={emptyNote}>
           CAN&apos;T FIND THAT ITEM.
           <br />
           IT MAY HAVE SOLD OUT OR VANISHED.
           <div className="mt-4">
-            <Link className="btn dark" href="/shop">
+            <Link className={buttonVariants({ variant: "dark" })} href="/shop">
               BACK TO THE SHELVES
             </Link>
           </div>

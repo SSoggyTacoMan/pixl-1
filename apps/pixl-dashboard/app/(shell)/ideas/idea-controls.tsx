@@ -3,9 +3,19 @@
 // Interactive bits of an idea card: vote buttons, delete, apply.
 import { useState } from "react";
 import { ConfirmDialog } from "@/components/ui/dialog";
+import { buttonVariants } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
+import { cn } from "@/lib/cn";
 import { applyToIdea, deleteIdea, voteIdea } from "./actions";
 import { applyError, voteError, type Idea } from "./ideas-lib";
+
+const inlineError = "text-[12.5px] text-bad";
+const voteBtn = cn(
+  "inline-flex cursor-px items-center gap-[5px] border-2 border-stroke bg-panel-2 px-[11px] py-1",
+  "font-pixel text-[13px] font-semibold text-dim disabled:cursor-default",
+  "[transition:color_.12s_ease,border-color_.12s_ease,background-color_.12s_ease,transform_.08s_ease]",
+  "enabled:hover:-translate-y-px",
+);
 
 export function VoteGroup({ idea }: { idea: Idea }) {
   const [up, setUp] = useState({ n: idea.upvotes || 0, on: idea.has_upvoted });
@@ -25,10 +35,14 @@ export function VoteGroup({ idea }: { idea: Idea }) {
 
   return (
     <span className="flex flex-col gap-1">
-      <span className="vote-group">
+      <span className="inline-flex items-center gap-1.5">
         <button
           type="button"
-          className={`vote-btn up${up.on ? " on" : ""}`}
+          className={cn(
+            voteBtn,
+            "enabled:hover:border-gold enabled:hover:text-gold",
+            up.on && "border-gold bg-gold text-btn-ink",
+          )}
           disabled={locked}
           aria-label="Upvote this idea"
           title={up.on ? "You upvoted this" : "Upvote this idea"}
@@ -38,7 +52,11 @@ export function VoteGroup({ idea }: { idea: Idea }) {
         </button>
         <button
           type="button"
-          className={`vote-btn down${down.on ? " on" : ""}`}
+          className={cn(
+            voteBtn,
+            "enabled:hover:border-bad enabled:hover:text-bad",
+            down.on && "border-bad bg-bad text-btn-ink",
+          )}
           disabled={locked}
           aria-label="Downvote this idea"
           title={down.on ? "You downvoted this" : "Downvote this idea"}
@@ -47,12 +65,22 @@ export function VoteGroup({ idea }: { idea: Idea }) {
           ▼ <span>{down.n}</span>
         </button>
       </span>
-      {msg ? <span className="inline-error" role="alert">{msg}</span> : null}
+      {msg ? (
+        <span className={inlineError} role="alert">
+          {msg}
+        </span>
+      ) : null}
     </span>
   );
 }
 
-export function DeleteIdeaButton({ id, className = "btn dark" }: { id: number; className?: string }) {
+export function DeleteIdeaButton({
+  id,
+  className = buttonVariants({ variant: "dark" }),
+}: {
+  id: number;
+  className?: string;
+}) {
   const [open, setOpen] = useState(false);
   const del = useAction(deleteIdea);
 
@@ -75,7 +103,7 @@ export function DeleteIdeaButton({ id, className = "btn dark" }: { id: number; c
         pending={del.pending}
         onConfirm={confirm}
       >
-        {del.error ? <p className="inline-error">Couldn&apos;t delete that idea.</p> : null}
+        {del.error ? <p className={inlineError}>Couldn&apos;t delete that idea.</p> : null}
       </ConfirmDialog>
     </>
   );
@@ -100,13 +128,17 @@ export function ApplyButton({ id }: { id: number }) {
     <>
       <button
         type="button"
-        className={`btn teal poster-desc-apply${applied ? " on" : ""}`}
+        className={cn(
+          buttonVariants({ variant: "teal" }),
+          "mt-1.5 self-start",
+          applied && "cursor-default bg-panel-2 text-faint hover:bg-panel-2 disabled:hover:bg-panel-2",
+        )}
         disabled={applied || apply.pending}
         onClick={run}
       >
         {applied ? "APPLIED" : apply.pending ? "APPLYING..." : "APPLY"}
       </button>
-      <div className={applied || !msg ? "poster-desc-note" : "inline-error"} role="status">
+      <div className={applied || !msg ? "text-xs text-faint" : inlineError} role="status">
         {msg ?? "Link up on Slack if the poster reaches out"}
       </div>
     </>

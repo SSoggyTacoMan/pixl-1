@@ -6,7 +6,7 @@ import type { ExploreProject } from "./types";
 import { ProjectCard } from "./_components/project-card";
 import { SearchBar } from "./_components/search-bar";
 import { ExploreTabs } from "./_components/tabs";
-import "./explore.css";
+import { sectionHeading, shipGrid } from "./styles";
 
 export const metadata: Metadata = { title: "Explore projects" };
 
@@ -34,11 +34,11 @@ export default async function ExploreProjectsPage({
       <ExploreTabs active="projects" />
 
       {recent.length ? (
-        <section className="ex-section" aria-labelledby="ex-recent">
-          <h2 id="ex-recent" className="dash-h">
+        <section className="mb-[26px]" aria-labelledby="ex-recent">
+          <h2 id="ex-recent" className={sectionHeading}>
             JUST SHIPPED
           </h2>
-          <div className="ship-grid">
+          <div className={shipGrid}>
             {recent.map((p) => (
               <ProjectCard key={`s${p.id}`} p={p} canVote={false} />
             ))}
@@ -53,7 +53,7 @@ export default async function ExploreProjectsPage({
       ) : projects.length === 0 ? (
         <EmptyNote>{filtered ? "NO PROJECTS MATCH THOSE FILTERS." : "NO PROJECTS YET, GO MAKE THE FIRST ONE!"}</EmptyNote>
       ) : (
-        <div className="ship-grid">
+        <div className={shipGrid}>
           {projects.map((p) => (
             <ProjectCard key={p.id} p={p} />
           ))}

@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { Markdown } from "@/components/markdown";
 import { SafeImage } from "@/components/safe-image";
-import { Badge } from "@/components/ui/primitives";
+import { Badge, buttonVariants, pageTitle, panel } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { safeHttpUrl } from "@/lib/safe-url";
 import { statusInfo } from "../../explore/lib";
 import { hours, shortDate } from "../format";
 import { CopyLinkButton } from "./copy-link";
+import { backLink, projHero, projHeroImg, sectionH } from "./styles";
 
 /** GET /api/explore/projects/:id - only the fields the server marks public. */
 export interface PublicProject {
@@ -39,26 +41,26 @@ export function PublicView({ data }: { data: PublicProject }) {
   const demo = safeHttpUrl(project.demo_url);
   return (
     <div>
-      <Link className="btn dark mb-4 inline-block" href="/explore">
+      <Link className={backLink} href="/explore">
         ← ALL PROJECTS
       </Link>
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <h1 className="page-title !text-3xl">{project.name}</h1>
-        <span className="chip">{st.label}</span>
+        <h1 className={cn(pageTitle, "text-3xl")}>{project.name}</h1>
+        <Badge>{st.label}</Badge>
         {project.level != null ? <Badge>LV {project.level}</Badge> : null}
         {project.is_peak ? (
           <Badge tone="gold" title="Nominated as a standout project by a reviewer">
             BEACON
           </Badge>
         ) : null}
-        <span className="chip teal">{hours(project.hackatime_seconds)} TRACKED</span>
+        <Badge tone="teal">{hours(project.hackatime_seconds)} TRACKED</Badge>
         <Badge>{data.upvotes} UPVOTES</Badge>
         <span className="ml-auto">
           <CopyLinkButton id={project.id} />
         </span>
       </div>
       {owner ? (
-        <p className="faint mb-4 text-sm">
+        <p className="mb-4 text-sm text-faint">
           by{" "}
           <Link className="text-gold underline-offset-2 hover:underline" href={`/explore/players/${owner.id}`}>
             {owner.display_name}
@@ -66,49 +68,54 @@ export function PublicView({ data }: { data: PublicProject }) {
           · started {shortDate(project.created_at)}
         </p>
       ) : null}
-      <div className="proj-hero mb-4">
-        <SafeImage player src={project.image_url} fallback={<span className="faint text-sm">No thumbnail yet</span>} />
+      <div className={projHero}>
+        <SafeImage
+          player
+          src={project.image_url}
+          className={projHeroImg}
+          fallback={<span className="text-sm text-faint">No thumbnail yet</span>}
+        />
       </div>
       {project.description ? <Markdown source={project.description} className="mb-4" /> : null}
       <div className="mb-5 flex gap-2">
         {repo ? (
-          <a className="btn ghost" href={repo} target="_blank" rel="noopener noreferrer">
+          <a className={buttonVariants({ variant: "ghost" })} href={repo} target="_blank" rel="noopener noreferrer">
             REPO
           </a>
         ) : null}
         {demo ? (
-          <a className="btn ghost" href={demo} target="_blank" rel="noopener noreferrer">
+          <a className={buttonVariants({ variant: "ghost" })} href={demo} target="_blank" rel="noopener noreferrer">
             DEMO
           </a>
         ) : null}
       </div>
       {reviews.length ? (
         <>
-          <div className="section-h">REVIEWS</div>
+          <div className={sectionH}>REVIEWS</div>
           {reviews.map((r, i) => (
-            <div key={i} className="panel mb-2 p-4">
+            <div key={i} className={cn(panel, "mb-2 p-4")}>
               <div className="mb-1 text-sm">
                 <b>{r.verdict === "approved" ? "APPROVED" : "CHANGES REQUESTED"}</b>{" "}
-                <span className="faint">{shortDate(r.created_at)}</span>
+                <span className="text-faint">{shortDate(r.created_at)}</span>
               </div>
               {r.note ? <Markdown source={r.note} /> : null}
             </div>
           ))}
         </>
       ) : null}
-      <div className="section-h">JOURNAL</div>
+      <div className={sectionH}>JOURNAL</div>
       {entries.length ? (
         entries.map((e) => (
-          <div key={e.id} className="panel mb-2 p-4">
+          <div key={e.id} className={cn(panel, "mb-2 p-4")}>
             <div className="mb-1 text-sm">
-              <b>{e.title || "Entry"}</b> <span className="faint">{shortDate(e.created_at)}</span>
-              {e.hours ? <span className="faint"> · {Number(e.hours).toFixed(1)}h</span> : null}
+              <b>{e.title || "Entry"}</b> <span className="text-faint">{shortDate(e.created_at)}</span>
+              {e.hours ? <span className="text-faint"> · {Number(e.hours).toFixed(1)}h</span> : null}
             </div>
             {e.content ? <Markdown source={e.content} /> : null}
           </div>
         ))
       ) : (
-        <p className="faint text-sm">No journal entries yet.</p>
+        <p className="text-sm text-faint">No journal entries yet.</p>
       )}
     </div>
   );

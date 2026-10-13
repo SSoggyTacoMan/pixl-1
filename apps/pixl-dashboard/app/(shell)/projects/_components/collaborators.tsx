@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/primitives";
+import { Badge, Button, field, panel } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import {
   generateJoinCode,
   inviteCollaborator,
@@ -17,6 +18,7 @@ import { projectError } from "../errors";
 import { hours } from "../format";
 import type { HtStats } from "../types";
 import { ConnectHackatimeButton } from "./hackatime-strip";
+import { checkRow, hint, htPick, htPickHours, htPickRow, smallButton } from "./styles";
 
 function InviteSearch({ projectId, onDone }: { projectId: number; onDone: (msg: string, bad?: boolean) => void }) {
   const [q, setQ] = useState("");
@@ -34,9 +36,9 @@ function InviteSearch({ projectId, onDone }: { projectId: number; onDone: (msg: 
 
   return (
     <div className="relative mt-3 max-w-xs">
-      <input className="field" placeholder="Invite by name..." value={q} autoComplete="off" onChange={(e) => setQ(e.target.value)} />
+      <input className={field} placeholder="Invite by name..." value={q} autoComplete="off" onChange={(e) => setQ(e.target.value)} />
       {results.length ? (
-        <div className="panel absolute left-0 top-11 z-10 w-full">
+        <div className={cn(panel, "absolute left-0 top-11 z-10 w-full")}>
           {results.map((p) => (
             <button
               key={p.userId}
@@ -100,41 +102,41 @@ export function Collaborators({
   }
 
   return (
-    <div className="panel p-4">
+    <div className={cn(panel, "p-4")}>
       {collaborators.length ? (
         collaborators.map((c) => (
-          <div key={String(c.id)} className="check-row justify-between py-1">
+          <div key={String(c.id)} className={cn(checkRow, "justify-between py-1")}>
             <span className="flex items-center gap-2">
               {c.name} {c.status === "pending" ? <Badge>INVITED</Badge> : <Badge tone="green">JOINED</Badge>}
             </span>
             {isOwner ? (
-              <button type="button" className="btn ghost !px-2 !py-0.5 !text-xs" onClick={() => setRemoving(String(c.id))}>
+              <button type="button" className={smallButton} onClick={() => setRemoving(String(c.id))}>
                 REMOVE
               </button>
             ) : null}
           </div>
         ))
       ) : (
-        <p className="faint text-sm">No collaborators yet. Collaborators can view and log hours only, they can&apos;t edit or ship this project.</p>
+        <p className="text-sm text-faint">No collaborators yet. Collaborators can view and log hours only, they can&apos;t edit or ship this project.</p>
       )}
       {isOwner ? (
         <>
           <InviteSearch projectId={projectId} onDone={done} />
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="hint">or share a join code:</span>
+            <span className={hint()}>or share a join code:</span>
             {code ? <Badge tone="teal">{code}</Badge> : null}
-            <button type="button" className="btn ghost !px-2 !py-0.5 !text-xs" onClick={codeClick}>
+            <button type="button" className={smallButton} onClick={codeClick}>
               {code ? "COPY CODE" : "GET INVITE CODE"}
             </button>
             {code ? (
-              <button type="button" className="btn ghost !px-2 !py-0.5 !text-xs" onClick={() => setRotating(true)}>
+              <button type="button" className={smallButton} onClick={() => setRotating(true)}>
                 ROTATE CODE
               </button>
             ) : null}
           </div>
         </>
       ) : null}
-      {msg ? <p className={`hint ${msg.bad ? "bad" : "ok"} mt-2`}>{msg.text}</p> : null}
+      {msg ? <p className={hint(msg.bad ? "bad" : "ok")}>{msg.text}</p> : null}
       {isOwner ? (
         <ConfirmDialog
           open={rotating}
@@ -181,43 +183,42 @@ export function Collaborators({
 export function MyHackatime({ self, stats, projectId }: { self: Collaborator | undefined; stats: HtStats | null; projectId: number }) {
   const [picked, setPicked] = useState<string[]>(self?.hackatimeProjects ?? []);
   const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
-  if (!self) return <p className="faint text-sm">Couldn&apos;t load your collaborator info.</p>;
+  if (!self) return <p className="text-sm text-faint">Couldn&apos;t load your collaborator info.</p>;
   if (!stats || !stats.connected)
     return (
       <div className="flex flex-wrap items-center gap-3">
-        <span className="faint text-sm">Hackatime isn&apos;t connected, connect it to track your own hours on this project.</span>
+        <span className="text-sm text-faint">Hackatime isn&apos;t connected, connect it to track your own hours on this project.</span>
         <ConnectHackatimeButton returnTo={`/projects/${projectId}`} />
       </div>
     );
   return (
     <div>
-      <p className="faint mb-2 text-sm">Tick the Hackatime projects that are YOUR work on this project.</p>
-      <div className="ht-pick">
+      <p className="mb-2 text-sm text-faint">Tick the Hackatime projects that are YOUR work on this project.</p>
+      <div className={htPick}>
         {[...stats.projects]
           .sort((a, b) => b.seconds - a.seconds)
           .map((h) => (
-            <label key={h.name}>
+            <label key={h.name} className={htPickRow}>
               <input
                 type="checkbox"
                 checked={picked.includes(h.name)}
                 onChange={(e) => setPicked(e.target.checked ? [...picked, h.name] : picked.filter((n) => n !== h.name))}
               />
               <span>{h.name}</span>
-              <span className="h">{hours(h.seconds)}</span>
+              <span className={htPickHours}>{hours(h.seconds)}</span>
             </label>
           ))}
       </div>
-      <button
-        type="button"
-        className="btn mt-2"
+      <Button
+        className="mt-2"
         onClick={async () => {
           const r = await saveCollabHackatime({ collabId: String(self.id), hackatimeProjects: picked });
           setMsg(r.ok ? { text: "Saved!" } : { text: "Couldn't save, try again.", bad: true });
         }}
       >
         SAVE
-      </button>
-      {msg ? <span className={`hint ${msg.bad ? "bad" : "ok"} ml-2`}>{msg.text}</span> : null}
+      </Button>
+      {msg ? <span className={cn(hint(msg.bad ? "bad" : "ok"), "ml-2")}>{msg.text}</span> : null}
     </div>
   );
 }

@@ -3,9 +3,11 @@
 // Upvote pill on a project card. Click again to take the vote back.
 import { useState } from "react";
 import { useAction } from "@/components/use-action";
+import { cn } from "@/lib/cn";
 import type { ActionResult } from "@/lib/guarded-action-core";
 import { removeUpvote, upvoteProject } from "../actions";
 import { upvoteError } from "../lib";
+import { voteBase, voteIcon } from "./card-styles";
 
 type Vote = { upvotes: number; hasUpvoted: boolean };
 
@@ -27,7 +29,12 @@ export function UpvoteButton({ projectId, count, voted }: { projectId: number; c
     <>
       <button
         type="button"
-        className={`pc-vote${state.hasUpvoted ? " on" : ""}`}
+        className={cn(
+          voteBase,
+          "cursor-px disabled:cursor-default",
+          state.hasUpvoted && "bg-[#ff8c37] [box-shadow:inset_0_calc(-2*var(--u))_#d96f1f]",
+          "enabled:hover:bg-[#ece0bd] enabled:hover:[box-shadow:inset_0_calc(-2*var(--u))_#dccb9c]",
+        )}
         onClick={toggle}
         disabled={pending}
         aria-pressed={state.hasUpvoted}
@@ -35,11 +42,14 @@ export function UpvoteButton({ projectId, count, voted }: { projectId: number; c
         title={state.hasUpvoted ? "Remove your upvote" : "Upvote this project"}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/img/pixl-ui/icon_upvote.png" alt="" />
+        <img src="/img/pixl-ui/icon_upvote.png" alt="" className={voteIcon} />
         <span>{state.upvotes}</span>
       </button>
       {err ? (
-        <span role="alert" className="pc-vote-err">
+        <span role="alert" className={cn(
+            "overflow-hidden font-sans text-[length:calc(9*var(--u))] leading-[1.2] font-semibold text-[#a3261a]",
+            "[--h:34] [--w:130] [--x:10] [--y:206]",
+          )}>
           {err}
         </span>
       ) : null}

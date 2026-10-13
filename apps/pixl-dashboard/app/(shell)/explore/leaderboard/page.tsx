@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { EmptyNote, PageHeader } from "@/components/ui/primitives";
+import { EmptyNote, PageHeader, panelDeep } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { serverGet } from "@/lib/server-api";
 import { BOARDS, boardHref, countdown, parseBoard, type Board } from "../lib";
 import type { PixelBoard, ValueBoard } from "../types";
 import { BoardRows, YouCard } from "../_components/board";
-import { ExploreTabs } from "../_components/tabs";
-import "../explore.css";
+import { ExploreTabs, tabClass, tabRow } from "../_components/tabs";
 
 export const metadata: Metadata = { title: "Leaderboard" };
 
@@ -37,15 +37,15 @@ async function PixelsBoard() {
       <BoardRows rows={rows} unit="PX" empty="NO PIXELS ANYWHERE YET." />
       <YouCard rank={d.yourRank} value={d.yourPixels} unit="PX" climb="ship projects to climb" />
       {sprint ? (
-        <div className="sprint-panel panel-deep">
-          <h3>{sprint.name}</h3>
-          <div className="faint mb-3 text-xs">Pixels earned during the event only · {countdown(sprint.ends_at)}</div>
+        <div className={cn(panelDeep, "mt-[26px] px-5 py-[18px]")}>
+          <h3 className="mb-1 text-[19px] text-teal">{sprint.name}</h3>
+          <div className="mb-3 text-xs text-faint">Pixels earned during the event only · {countdown(sprint.ends_at)}</div>
           {(sprint.players ?? []).length ? (
             <BoardRows rows={(sprint.players ?? []).map((p) => ({ ...p, value: p.pixels }))} unit="PX" plainRanks />
           ) : (
-            <div className="faint">No sprint pixels yet, be first!</div>
+            <div className="text-faint">No sprint pixels yet, be first!</div>
           )}
-          <div className="muted mt-2.5 text-sm">
+          <div className="mt-2.5 text-sm text-muted">
             Your sprint total: {Number(sprint.your_pixels || 0).toLocaleString("en-US")} PX
           </div>
         </div>
@@ -77,12 +77,12 @@ export default async function LeaderboardPage({
     <>
       <PageHeader title="LEADERBOARD" sub="WHO IS SHIPPING THE MOST." />
       <ExploreTabs active="leaderboard" />
-      <nav className="ex-tabs ex-subtabs" aria-label="Leaderboards">
+      <nav className={tabRow} aria-label="Leaderboards">
         {BOARDS.map((b) => (
           <Link
             key={b.key}
             href={boardHref(b.key)}
-            className={`ex-tab${b.key === board ? " active" : ""}`}
+            className={tabClass(b.key === board, true)}
             aria-current={b.key === board ? "page" : undefined}
           >
             {b.label}

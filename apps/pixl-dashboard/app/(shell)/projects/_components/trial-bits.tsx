@@ -4,16 +4,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { Notice } from "@/components/ui/primitives";
+import { Button, label, Notice } from "@/components/ui/primitives";
 import { claimTrialReward } from "../actions";
 import { projectError } from "../errors";
 import type { Project, Trial } from "../types";
+import { hint, trialBox } from "./styles";
 
 /** "Building for this Trial" brief shown on the new-project form and the editor. */
 export function TrialBrief({ trial }: { trial: Trial | null | undefined }) {
   if (!trial) return null;
   return (
-    <div className="trial-box mb-4 p-4">
+    <div className={trialBox}>
       <div className="font-pixel tracking-wider">
         BUILDING FOR TRIAL: {trial.name}
         {trial.region ? ` · ${trial.region}` : ""}
@@ -21,7 +22,7 @@ export function TrialBrief({ trial }: { trial: Trial | null | undefined }) {
       {trial.description ? <p className="mt-2">{trial.description}</p> : null}
       {trial.brief ? (
         <div className="mt-3">
-          <div className="label">THE FULL BRIEF</div>
+          <div className={label}>THE FULL BRIEF</div>
           <p className="whitespace-pre-wrap">{trial.brief}</p>
         </div>
       ) : null}
@@ -37,7 +38,7 @@ export function TrialBrief({ trial }: { trial: Trial | null | undefined }) {
           beyond that. Prefer pixels only? You can skip the prize once it&apos;s approved.
         </p>
       ) : null}
-      <p className="hint mt-2">Build to this spec. When you ship, pick this Trial in the ship panel (change it if you&apos;re building something else).</p>
+      <p className={hint()}>Build to this spec. When you ship, pick this Trial in the ship panel (change it if you&apos;re building something else).</p>
     </div>
   );
 }
@@ -84,7 +85,7 @@ export function TrialReward({ project }: { project: Project }) {
   }
 
   return (
-    <div className="trial-box mb-4 p-4">
+    <div className={trialBox}>
       <div className="font-pixel tracking-wider">YOUR TRIAL REWARD</div>
       <p className="mt-2">
         {project.sidequest_name || "This Trial"} is done! By default you keep <b>{prize}</b>
@@ -97,13 +98,13 @@ export function TrialReward({ project }: { project: Project }) {
         . Prefer pure pixels? Skip the prize to take all <b>{total}</b> instead. It&apos;s final either way.
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <button type="button" className="btn" onClick={() => setChoice("item")}>
+        <Button onClick={() => setChoice("item")}>
           KEEP {prize.toUpperCase()}
           {beyond > 0 ? ` + ${beyond} PX` : ""}
-        </button>
-        <button type="button" className="btn dark" onClick={() => setChoice("pixels")}>
+        </Button>
+        <Button variant="dark" onClick={() => setChoice("pixels")}>
           SKIP PRIZE, TAKE {total} PX
-        </button>
+        </Button>
       </div>
       {msg ? (
         <Notice tone={msg.tone} className="mt-3">

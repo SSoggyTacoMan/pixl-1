@@ -4,12 +4,30 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { NavItem } from "@/lib/docs";
+import { cn } from "@/lib/cn";
+import { buttonVariants, railButton } from "@/components/ui/primitives";
 
 const OPEN_KEY = "pixl-docs-open-groups";
 const THEMES = [
   { id: "light", label: "Pixl Paper", panel: "#f5eed2", gold: "#ec3750" },
   { id: "dark", label: "Pixl Ink", panel: "#171615", gold: "#ff6b4a" },
 ];
+
+// Same two states as the shell sidebar: ink block on hover, red block when
+// current. 15px, not 16: Poppins runs wider than Pixelify at the same size,
+// and 16 put the longer titles back to wrapping inside the 300px sidebar.
+const sectionLink = cn(
+  "block border-2 border-transparent py-[7px] pr-[12px] pl-[20px] font-sans text-[15px] font-medium leading-[1.4] text-ink no-underline",
+  "[transition:color_.13s_ease,background-color_.13s_ease,border-color_.13s_ease,transform_.12s_ease]",
+  "hover:translate-x-[3px] hover:border-stroke hover:bg-ink hover:text-panel-deep",
+);
+const sectionLinkActive = "border-stroke bg-accent font-semibold text-panel-deep hover:bg-accent";
+
+const themeOption = cn(
+  "flex w-full items-center gap-[9px] border-none bg-transparent px-[11px] py-[8px] text-left",
+  "font-pixel text-[13.5px] tracking-[.3px] text-ink transition-[background-color,color] duration-[120ms] ease-[ease]",
+  "hover:bg-accent hover:text-panel-deep",
+);
 
 function groupNav(nav: NavItem[]): { label: string; items: NavItem[] }[] {
   const groups: { label: string; items: NavItem[] }[] = [];
@@ -91,7 +109,7 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
   useEffect(() => {
     if (!menuOpen) return;
     function onDocClick(e: MouseEvent) {
-      if (!(e.target as HTMLElement).closest(".theme-picker")) setMenuOpen(false);
+      if (!(e.target as HTMLElement).closest("[data-theme-picker]")) setMenuOpen(false);
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setMenuOpen(false);
@@ -129,17 +147,35 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
   }
 
   return (
-    <div className="docs">
-      <aside className="docs-nav">
-        <div className="docs-nav-head">
-          <Link className="docs-brand" href="/">
+    // Nav | article | on-this-page. --sidebar is wider than the dash's own:
+    // these are page titles, not icon-sized nav labels, and at 260px the
+    // longer ones wrapped onto two lines. The body:has() variant swaps the
+    // global overflow-y: scroll for auto on the docs only.
+    <div
+      className={cn(
+        "grid min-h-screen grid-cols-[var(--sidebar)_minmax(0,1fr)_240px] items-start [--sidebar:300px]",
+        "max-[1080px]:grid-cols-[var(--sidebar)_minmax(0,1fr)] max-[820px]:grid-cols-1",
+        "[body:has(&)]:overflow-y-auto!",
+      )}
+    >
+      <aside
+        className={cn(
+          "sticky top-0 h-screen overflow-y-auto border-r-4 border-stroke bg-panel px-[12px] pt-[22px] pb-[32px]",
+          "max-[820px]:static max-[820px]:h-auto max-[820px]:border-r-0 max-[820px]:border-b-4",
+        )}
+      >
+        <div className="flex items-center justify-between gap-[8px] pt-[2px] pr-[6px] pb-[18px] pl-[8px]">
+          <Link
+            className="flex items-center gap-[9px] font-pixel text-[19px] font-bold tracking-[.3px] text-ink no-underline hover:text-gold-soft"
+            href="/"
+          >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/docs/icon.svg" alt="" />
-            PIXL <span>DOCS</span>
+            <img src="/docs/icon.svg" alt="" className="size-[26px] [image-rendering:pixelated]" />
+            PIXL <span className="text-gold">DOCS</span>
           </Link>
-          <div className="theme-picker">
+          <div className="relative" data-theme-picker>
             <button
-              className="theme-toggle"
+              className={railButton}
               type="button"
               aria-label="Change theme"
               aria-expanded={menuOpen}
@@ -157,16 +193,16 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
               </svg>
             </button>
             {menuOpen && (
-              <div className="theme-menu">
+              <div className="absolute top-[calc(100%+6px)] right-0 z-60 flex min-w-[170px] flex-col overflow-hidden border-2 border-stroke bg-panel shadow-drop">
                 {THEMES.map((t) => (
                   <button
                     key={t.id}
-                    className={`theme-opt${t.id === theme ? " active" : ""}`}
+                    className={cn(themeOption, t.id === theme && "bg-ink text-panel-deep hover:bg-ink")}
                     type="button"
                     onClick={() => setTheme(t.id)}
                   >
                     <span
-                      className="swatch"
+                      className="size-[14px] shrink-0 border border-stroke"
                       style={{ background: t.panel, boxShadow: `inset 0 0 0 2px ${t.gold}` }}
                     />
                     <span>{t.label}</span>
@@ -177,44 +213,67 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
           </div>
         </div>
         <button
-          className="btn dark"
+          className={cn(buttonVariants({ variant: "dark" }), "mx-[6px] mb-[16px] justify-center")}
           type="button"
-          style={{ margin: "0 6px 16px", justifyContent: "center" }}
           onClick={() => (location.href = backHref)}
         >
           ◄ BACK
         </button>
         <nav>
-          {groups.map((g) => (
-            <div key={g.label} className={`docs-group${isGroupOpen(g.label) ? "" : " collapsed"}`}>
-              <button className="docs-group-head" type="button" onClick={() => toggleGroup(g.label)}>
-                <span className="g-title">{g.label}</span>
-                <span className="count">{g.items.length}</span>
-                <span className="chev">▼</span>
-              </button>
-              {/* No trailing slash: this app runs with Next's default
-                  trailingSlash: false, so /docs/<slug>/ answers an RSC
-                  request with a bare 308 instead of a flight payload. The
-                  client router reads that as "not a Next route" and falls
-                  back to a full browser navigation - which is what made
-                  every sidebar click reload the page. */}
-              <div className="docs-group-items">
-                {g.items.map((i) => (
-                  <Link
-                    key={i.slug}
-                    className={`section-link${i.slug === activeSlug ? " active" : ""}`}
-                    href={`/docs/${i.slug}`}
+          {groups.map((g) => {
+            const groupOpen = isGroupOpen(g.label);
+            return (
+              <div key={g.label} className="mt-[4px]">
+                <button
+                  className={cn(
+                    "flex w-full items-center gap-[8px] border-0 bg-transparent px-[10px] py-[9px] text-left",
+                    "font-sans text-[13px] font-semibold uppercase tracking-[1.4px] text-muted",
+                    "transition-[color,background-color] duration-[130ms] ease-[ease] hover:bg-panel-2 hover:text-ink",
+                  )}
+                  type="button"
+                  onClick={() => toggleGroup(g.label)}
+                >
+                  <span className="flex-1">{g.label}</span>
+                  <span className="text-[11px] font-semibold text-muted">{g.items.length}</span>
+                  <span
+                    className={cn(
+                      "text-[10px] opacity-70 transition-transform duration-[180ms] ease-[ease]",
+                      !groupOpen && "-rotate-90",
+                    )}
                   >
-                    {i.title}
-                  </Link>
-                ))}
+                    ▼
+                  </span>
+                </button>
+                {/* No trailing slash: this app runs with Next's default
+                    trailingSlash: false, so /docs/<slug>/ answers an RSC
+                    request with a bare 308 instead of a flight payload. The
+                    client router reads that as "not a Next route" and falls
+                    back to a full browser navigation - which is what made
+                    every sidebar click reload the page. */}
+                <div
+                  className={cn(
+                    "flex max-h-[600px] flex-col gap-[2px] overflow-hidden pb-[6px] opacity-100",
+                    "[transition:max-height_.24s_ease,opacity_.2s_ease,padding-bottom_.24s_ease]",
+                    !groupOpen && "max-h-0 pb-0 opacity-0",
+                  )}
+                >
+                  {g.items.map((i) => (
+                    <Link
+                      key={i.slug}
+                      className={cn(sectionLink, i.slug === activeSlug && sectionLinkActive)}
+                      href={`/docs/${i.slug}`}
+                    >
+                      {i.title}
+                    </Link>
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </nav>
       </aside>
 
-      {/* The page renders both remaining grid columns (.docs-main and the
+      {/* The page renders both remaining grid columns (the article and the
           on-this-page rail) - neither Next's layout plumbing nor a fragment
           emits DOM, so they land as direct children of this grid. The rail
           has to come from the page because its headings are per-doc. */}

@@ -3,8 +3,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getAllSlugs, cachedGetDoc } from "@/lib/docs";
 import { config } from "@/app/_generated/config";
+import { cn } from "@/lib/cn";
 import { CodeBlocks } from "./code-blocks";
 import { DocToc } from "./doc-toc";
+import { docProse } from "./doc-prose";
 
 export async function generateStaticParams() {
   const slugs = await getAllSlugs();
@@ -43,6 +45,14 @@ export async function generateMetadata({
   };
 }
 
+const footLink = cn(
+  "flex-1 border-2 border-stroke bg-panel px-[18px] py-[14px] no-underline shadow-drop",
+  "transition-[box-shadow,transform] duration-[130ms] ease-[ease]",
+  "hover:-translate-x-[2px] hover:-translate-y-[2px] hover:bg-panel hover:shadow-drop-lg",
+);
+const footDir = "mb-[4px] block text-[11px] uppercase tracking-[.5px] text-dim";
+const footTitle = "text-[15px] font-semibold text-ink";
+
 const SIGN_GROUPS = ["Start here", "Resources", "Guides", "Setup"];
 
 export default async function DocPage({
@@ -57,25 +67,28 @@ export default async function DocPage({
 
   return (
     <>
-      <main className="docs-main">
-        <article className="doc">
-          <div className="eyebrow">{doc.meta.group}</div>
-          <div dangerouslySetInnerHTML={{ __html: doc.body }} />
-          <div className="doc-foot">
+      <main className="px-[60px] pt-[46px] pb-[100px] max-[820px]:px-[20px] max-[820px]:pt-[30px] max-[820px]:pb-[72px]">
+        <article>
+          {/* the landing's "01" step badge: a filled block, not tinted text */}
+          <div className="mb-[14px] inline-block border-2 border-stroke bg-accent px-[9px] py-[3px] font-pixel text-[12px] font-semibold uppercase tracking-[1px] text-panel-deep">
+            {doc.meta.group}
+          </div>
+          <div data-doc-body className={docProse} dangerouslySetInnerHTML={{ __html: doc.body }} />
+          <div className="mt-[52px] flex gap-[14px]">
             {prev && (
-              <Link className="prev" href={`/docs/${prev.slug}`}>
-                <span className="dir">Previous</span>
-                <span className="ttl">{prev.title}</span>
+              <Link className={footLink} href={`/docs/${prev.slug}`}>
+                <span className={footDir}>Previous</span>
+                <span className={footTitle}>{prev.title}</span>
               </Link>
             )}
             {next && (
-              <Link className="next" href={`/docs/${next.slug}`}>
-                <span className="dir">Next</span>
-                <span className="ttl">{next.title}</span>
+              <Link className={cn(footLink, "text-right")} href={`/docs/${next.slug}`}>
+                <span className={footDir}>Next</span>
+                <span className={footTitle}>{next.title}</span>
               </Link>
             )}
           </div>
-          <div className="doc-sign">
+          <div className="mt-[28px] text-center text-[12px] text-dim">
             {SIGN_GROUPS.includes(doc.meta.group) ? "Built by alexx" : "Built by the Pixl team"}
           </div>
           <CodeBlocks slug={slug} />

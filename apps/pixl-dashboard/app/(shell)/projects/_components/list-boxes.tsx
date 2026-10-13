@@ -4,10 +4,12 @@
 // the join-with-a-code box.
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Notice } from "@/components/ui/primitives";
+import { Button, field, Notice, panel } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { useAction } from "@/components/use-action";
 import { acceptInvite, declineInvite, redeemJoinCode } from "../collab-actions";
 import { projectError } from "../errors";
+import { hint, inviteBox, inviteBoxSub, inviteBoxTitle, sectionH } from "./styles";
 
 export interface PendingInvite {
   id: string | number;
@@ -24,17 +26,15 @@ export function PendingInvites({ invites }: { invites: PendingInvite[] }) {
   const busy = accept.pending || decline.pending;
   return (
     <div className="mb-4">
-      <div className="section-h !mt-0">COLLABORATION INVITES</div>
+      <div className={cn(sectionH, "mt-0")}>COLLABORATION INVITES</div>
       {msg ? <Notice tone={msg.bad ? "bad" : "good"} className="mb-2">{msg.text}</Notice> : null}
       {invites.map((inv) => (
-        <div key={inv.id} className="panel mb-2 flex flex-wrap items-center gap-3 p-3">
+        <div key={inv.id} className={cn(panel, "mb-2 flex flex-wrap items-center gap-3 p-3")}>
           <span>
             {inv.invitedBy} invited you to collaborate on <b>{inv.projectName}</b>
           </span>
           <span className="ml-auto flex gap-2">
-            <button
-              type="button"
-              className="btn"
+            <Button
               disabled={busy}
               onClick={async () => {
                 const r = await accept.run({ collabId: String(inv.id) });
@@ -43,10 +43,9 @@ export function PendingInvites({ invites }: { invites: PendingInvite[] }) {
               }}
             >
               ACCEPT
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
+            </Button>
+            <Button
+              variant="ghost"
               disabled={busy}
               onClick={async () => {
                 const r = await decline.run({ collabId: String(inv.id) });
@@ -55,7 +54,7 @@ export function PendingInvites({ invites }: { invites: PendingInvite[] }) {
               }}
             >
               DECLINE
-            </button>
+            </Button>
           </span>
         </div>
       ))}
@@ -79,15 +78,15 @@ export function JoinCodeBox() {
     } else setMsg({ text: r.error === "invalid_input" ? "That code didn't work." : projectError(r.error), bad: true });
   }
   return (
-    <div className="invite-box">
+    <div className={inviteBox}>
       <div>
-        <span className="invite-box-title">GOT AN INVITE CODE?</span>
-        <span className="invite-box-sub">Join a friend&apos;s project as a collaborator.</span>
-        {msg ? <span className={`hint ${msg.bad ? "bad" : "ok"}`}>{msg.text}</span> : null}
+        <span className={inviteBoxTitle}>GOT AN INVITE CODE?</span>
+        <span className={inviteBoxSub}>Join a friend&apos;s project as a collaborator.</span>
+        {msg ? <span className={hint(msg.bad ? "bad" : "ok")}>{msg.text}</span> : null}
       </div>
       <div className="flex gap-2">
         <input
-          className="field max-w-[200px]"
+          className={cn(field, "max-w-[200px]")}
           placeholder="E.G. BLUE-FOX"
           autoComplete="off"
           value={code}
@@ -95,9 +94,9 @@ export function JoinCodeBox() {
           onChange={(e) => setCode(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && join()}
         />
-        <button type="button" className="btn" disabled={pending} onClick={join}>
+        <Button disabled={pending} onClick={join}>
           JOIN
-        </button>
+        </Button>
       </div>
     </div>
   );

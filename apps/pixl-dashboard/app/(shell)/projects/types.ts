@@ -147,13 +147,16 @@ export function canShip(p: Pick<Project, "status" | "rejected_at">): boolean {
   return !isInReview(p) && (["draft", "needs_changes", "approved"].includes(String(p.status)) || !!p.rejected_at);
 }
 
-export function statusInfo(p: Pick<Project, "status" | "banned_at" | "rejected_at">): [string, string] {
-  if (p.banned_at) return ["BANNED", "status-needs"];
-  if (p.rejected_at) return ["REJECTED", "status-needs"];
-  if (p.status === "approved") return ["APPROVED", "status-approved"];
-  if (isInReview(p)) return ["IN REVIEW", "status-shipped"];
-  if (p.status === "needs_changes") return ["NEEDS CHANGES", "status-needs"];
-  return ["DRAFT", "status-draft"];
+/** Status label plus its chip tone (see _components/styles.ts statusChip). */
+export function statusInfo(
+  p: Pick<Project, "status" | "banned_at" | "rejected_at">,
+): [string, "approved" | "shipped" | "needs" | "draft"] {
+  if (p.banned_at) return ["BANNED", "needs"];
+  if (p.rejected_at) return ["REJECTED", "needs"];
+  if (p.status === "approved") return ["APPROVED", "approved"];
+  if (isInReview(p)) return ["IN REVIEW", "shipped"];
+  if (p.status === "needs_changes") return ["NEEDS CHANGES", "needs"];
+  return ["DRAFT", "draft"];
 }
 
 export function normalizeProject(raw: Record<string, unknown>): Project {

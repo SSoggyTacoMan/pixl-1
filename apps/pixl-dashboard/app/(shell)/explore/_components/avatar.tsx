@@ -4,6 +4,7 @@
 // a Slack profile photo host (lib/safe-url.ts playerImageSrc),
 // otherwise (or if it fails to load) their initial as plain text.
 import { useState } from "react";
+import { cn } from "@/lib/cn";
 import { playerImageSrc } from "@/lib/safe-url";
 import { initial } from "../lib";
 
@@ -11,10 +12,22 @@ export function Avatar({ name, url, className }: { name: unknown; url: unknown; 
   const [broken, setBroken] = useState(false);
   const src = broken ? null : playerImageSrc(url, { avatar: true });
   return (
-    <div className={`avatar${className ? ` ${className}` : ""}`}>
+    <div
+      className={cn(
+        "flex size-24 items-center justify-center overflow-hidden border-2 border-stroke bg-panel-deep text-[40px] text-gold",
+        className,
+      )}
+    >
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} />
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          className="size-full object-cover"
+          onError={() => setBroken(true)}
+        />
       ) : (
         initial(name)
       )}

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { Notice } from "@/components/ui/primitives";
+import { Button, label, Notice } from "@/components/ui/primitives";
 import { goTo } from "@/components/use-action";
 import { startAuthFlow } from "@/lib/actions/flows";
 import { shipProject, unshipProject } from "../actions";
@@ -15,6 +15,7 @@ import { BlackoutPanel } from "./blackout-panel";
 import type { FormState } from "./editor-state";
 import { CountedTextarea } from "./form-bits";
 import { checklist, shipBlockers } from "./ship-checks";
+import { checkRow, formGrid, hint } from "./styles";
 
 type Dialog = null | "confirm" | "trial_hours" | "address" | "hca" | "unship";
 
@@ -124,26 +125,26 @@ export function ShipPanel({
           <Link href="/account">Add your birthday</Link> for Hack Club compliance, takes 10 seconds.
         </Notice>
       ) : null}
-      <div className="form-grid panel">
-        <div className="ship-list">
+      <div className={formGrid}>
+        <div className="flex flex-col gap-[4px] text-[14px]">
           {items.map((i) => (
             <div key={i.label}>
-              <span className={i.ok ? "ship-ok" : "ship-no"}>{i.ok ? "+" : "-"}</span> {i.label}
+              <span className={i.ok ? "font-bold text-good" : "font-bold text-bad"}>{i.ok ? "+" : "-"}</span> {i.label}
             </div>
           ))}
         </div>
-        <p className="hint">
+        <p className={hint()}>
           <strong>Journal entries are optional, not required to ship.</strong> They&apos;re also what reviewers use to justify your
           hours, so an empty journal is the fastest way to get deflated.
         </p>
         <BlackoutPanel project={project} blackout={blackout} inReview={inReview} />
-        <label className="check-row">
+        <label className={checkRow}>
           <input type="checkbox" checked={eligible} disabled={inReview} onChange={(e) => setEligible(e.target.checked)} />
           This isn&apos;t a school assignment or paid Hack Club work
         </label>
         {!inReview ? (
           <div>
-            <span className="label">NOTE TO REVIEWER (optional)</span>
+            <span className={label}>NOTE TO REVIEWER (optional)</span>
             <CountedTextarea
               value={note}
               onChange={setNote}
@@ -160,22 +161,22 @@ export function ShipPanel({
                 : "A reviewer has already started on this project, so it can't be unshipped or edited until the review is done."}
             </Notice>
             <div className="flex flex-wrap gap-2">
-              <button type="button" className="btn dark" disabled>
+              <Button variant="dark" disabled>
                 IN REVIEW
-              </button>
+              </Button>
               {canUnship(project) ? (
-                <button type="button" className="btn" disabled={pending} onClick={() => setDialog("unship")}>
+                <Button disabled={pending} onClick={() => setDialog("unship")}>
                   UNSHIP TO EDIT
-                </button>
+                </Button>
               ) : null}
             </div>
           </>
         ) : (
           <div className="flex flex-wrap items-center gap-3">
-            <button id="s-ship" type="button" className="btn" disabled={pending} onClick={tryShip}>
+            <Button id="s-ship" disabled={pending} onClick={tryShip}>
               {pending ? "SHIPPING..." : form.isUpdate ? "SHIP UPDATE" : "SHIP FOR REVIEW"}
-            </button>
-            <span className="hint">Shipping saves your edits first.</span>
+            </Button>
+            <span className={hint()}>Shipping saves your edits first.</span>
           </div>
         )}
         {msg ? <Notice tone={msg.tone}>{msg.text}</Notice> : null}

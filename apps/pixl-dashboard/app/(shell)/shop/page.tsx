@@ -3,7 +3,6 @@ import { EmptyNote, PageHeader } from "@/components/ui/primitives";
 import { normalizeItems, type ShopItemsResponse } from "./shop-lib";
 import { earnRates } from "../calc/estimates";
 import { ShopBrowser } from "./shop-browser";
-import "./shop.css";
 
 export const metadata = { title: "Shop" };
 

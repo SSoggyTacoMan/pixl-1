@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { EmptyNote, Notice } from "@/components/ui/primitives";
+import { EmptyNote, Notice, pageSub, pageTitle } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { serverGet } from "@/lib/server-api";
-import { TrialCard, type TrialQuest } from "./trial-card";
-import "./trials.css";
+import { TrialCard, trialsHero, type TrialQuest } from "./trial-card";
 
 export const metadata: Metadata = { title: "Trials" };
 
@@ -15,10 +15,10 @@ export default async function TrialsPage() {
 
   return (
     <>
-      <section className="hero">
+      <section className={trialsHero}>
         <div>
-          <h1 className="page-title">TRIALS</h1>
-          <div className="page-sub">Every Trial from the villagers, story and reward on the card.</div>
+          <h1 className={pageTitle}>TRIALS</h1>
+          <div className={cn(pageSub, "text-ink")}>Every Trial from the villagers, story and reward on the card.</div>
         </div>
       </section>
 
@@ -33,7 +33,7 @@ export default async function TrialsPage() {
           THE VILLAGERS ARE THINKING...
         </EmptyNote>
       ) : (
-        <div className="trial-grid">
+        <div className="mt-[30px] flex flex-wrap justify-center gap-[32px]">
           {sorted.map((q) => (
             <TrialCard key={String(q.id)} q={q} />
           ))}

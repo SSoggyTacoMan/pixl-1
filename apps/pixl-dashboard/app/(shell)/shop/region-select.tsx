@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { selectField } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
+import { cn } from "@/lib/cn";
 import { setRegion } from "./actions";
 import { REGIONS } from "./shop-lib";
 
@@ -18,9 +20,9 @@ export function RegionSelect({ region }: { region: string }) {
   }
 
   return (
-    <div className="region-select">
+    <div className="flex flex-col gap-[4px]">
       <select
-        className="field"
+        className={cn(selectField, "w-auto min-w-[150px]")}
         value={value}
         disabled={pending}
         title="Your region: sets which catalog you shop from"
@@ -33,7 +35,7 @@ export function RegionSelect({ region }: { region: string }) {
           </option>
         ))}
       </select>
-      {error ? <span className="region-err" role="alert">Couldn&apos;t switch region.</span> : null}
+      {error ? <span className="text-[12px] text-bad" role="alert">Couldn&apos;t switch region.</span> : null}
     </div>
   );
 }

@@ -3,52 +3,77 @@
 import Link from "next/link";
 import { bbstrip } from "@/components/markdown";
 import { SafeImage } from "@/components/safe-image";
+import { card, dotVariants } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import type { EarnRates } from "../calc/estimates";
 import { hoursHint } from "./hours-hint";
 import { PriceTag } from "./price-tag";
 import { basePrice, isDiscounted, isPending, lockReason, metaBits, originalBasePrice, type ShopItem } from "./shop-lib";
+import {
+  discountTag,
+  imgPlaceholder,
+  itemDesc,
+  itemImg,
+  itemMeta,
+  itemName,
+  priceClass,
+  priceHours,
+  priceWrap,
+  slotImg,
+} from "./shop-styles";
+
+/** Ribbon hanging off the top edge of a card. */
+const cornerTag = "absolute -top-[9px] z-2 px-[7px] py-[3px] font-pixel text-[10px] tracking-[1px] text-btn-ink";
+// LIMITED cards keep their gold ring through the card's hover/active lift.
+const limitedRing = cn(
+  "border-gold shadow-[0_0_0_1px_var(--gold),var(--drop)]",
+  "hover:shadow-[0_0_0_1px_var(--gold),var(--drop)] active:shadow-[0_0_0_1px_var(--gold),var(--drop)]",
+);
 
 function Foot({ item, canAfford, hint }: { item: ShopItem; canAfford: boolean; hint: string }) {
   if (item.locked && item.unlockPending) {
     return (
-      <div className="price-wrap">
-        <span className="price cant">NOT AVAILABLE</span>
-        <span className="price-hours">Available soon</span>
+      <div className={priceWrap}>
+        <span className={priceClass(true)}>NOT AVAILABLE</span>
+        <span className={priceHours}>Available soon</span>
       </div>
     );
   }
   if (item.locked) {
     return (
-      <div className="price-wrap">
+      <div className={priceWrap}>
         <PriceTag amount={basePrice(item)} from={!!item.config_options} cant locked />
-        <span className="price-hours">{lockReason(item)}</span>
+        <span className={priceHours}>{lockReason(item)}</span>
       </div>
     );
   }
   if (isPending(item)) {
     return (
-      <div className="price-wrap">
-        <span className="price cant">NOT AVAILABLE</span>
-        <span className="price-hours">{item.name === "Food Grant" ? "Available soon" : "Coming soon to this region"}</span>
+      <div className={priceWrap}>
+        <span className={priceClass(true)}>NOT AVAILABLE</span>
+        <span className={priceHours}>{item.name === "Food Grant" ? "Available soon" : "Coming soon to this region"}</span>
       </div>
     );
   }
   return (
     <>
-      <div className="price-wrap">
-        {isDiscounted(item) ? <span className="discount-tag">-{Math.round(Number(item.discount_percent))}% OFF</span> : null}
+      <div className={priceWrap}>
+        {isDiscounted(item) ? <span className={discountTag}>-{Math.round(Number(item.discount_percent))}% OFF</span> : null}
         <PriceTag
           amount={basePrice(item)}
           from={!!item.config_options}
           cant={!canAfford}
           was={isDiscounted(item) ? originalBasePrice(item) : undefined}
         />
-        {hint ? <span className="price-hours">{hint}</span> : null}
+        {hint ? <span className={priceHours}>{hint}</span> : null}
         {item.beacon_locked ? (
-          <span className="price-hours beacon-note">Uses a Beacon unlock ({item.beaconAvailable ?? 0} available)</span>
+          <span className={cn(priceHours, "text-gold")}>Uses a Beacon unlock ({item.beaconAvailable ?? 0} available)</span>
         ) : null}
       </div>
-      <span className={`dot ${canAfford ? "on" : "off"}`} title={canAfford ? "You can afford this" : "Keep shipping!"} />
+      <span
+        className={dotVariants({ tone: canAfford ? "on" : "off" })}
+        title={canAfford ? "You can afford this" : "Keep shipping!"}
+      />
     </>
   );
 }
@@ -67,17 +92,30 @@ export function ItemCard({
 }) {
   const meta = metaBits(item);
   return (
-    <div className={`card panel item-card${item.limited ? " limited" : ""}${item.locked ? " locked" : ""}`}>
-      <Link href={`/shop/${item.id}`} className="item-link" aria-label={item.name} />
-      {item.locked && !item.unlockPending ? <div className="corner-tag locked-tag">LOCKED</div> : null}
-      {item.limited ? <div className="corner-tag limited-tag">LIMITED</div> : null}
-      {item.is_new && !item.limited ? <div className="corner-tag new-tag">NEW</div> : null}
-      {item.stock && item.stock.length ? <div className="corner-tag stock-tag-corner">{item.stock[0].total} ONLY</div> : null}
-      <div className="item-img">
-        <SafeImage src={item.image_url} fallback={<span className="ph" />} />
+    <div
+      className={cn(
+        card,
+        "relative flex flex-col gap-[10px] px-[13px] pt-[13px] pb-[15px]",
+        item.limited && limitedRing,
+        item.locked && "brightness-[.82] saturate-[.45]",
+      )}
+    >
+      <Link href={`/shop/${item.id}`} className="absolute inset-0 z-1" aria-label={item.name} />
+      {item.locked && !item.unlockPending ? <div className={cn(cornerTag, "left-[9px] bg-faint")}>LOCKED</div> : null}
+      {item.limited ? <div className={cn(cornerTag, "right-[9px] bg-gold")}>LIMITED</div> : null}
+      {item.is_new && !item.limited ? <div className={cn(cornerTag, "right-[9px] bg-good")}>NEW</div> : null}
+      {item.stock && item.stock.length ? (
+        <div className={cn(cornerTag, "left-[9px] bg-teal")}>{item.stock[0].total} ONLY</div>
+      ) : null}
+      <div className={cn(itemImg, item.locked && "opacity-70")}>
+        <SafeImage src={item.image_url} className={slotImg} fallback={<span className={imgPlaceholder} />} />
         <button
           type="button"
-          className={`pin-btn${item.saved ? " on" : ""}`}
+          className={cn(
+            "absolute top-[6px] right-[6px] z-3 flex size-[26px] items-center justify-center",
+            "border-2 border-stroke bg-panel text-[14px] leading-none text-faint hover:border-gold hover:text-gold",
+            item.saved && "border-gold text-gold",
+          )}
           title={item.saved ? "Saved, click to unsave" : "Save this item"}
           aria-pressed={!!item.saved}
           onClick={onToggleSave}
@@ -85,10 +123,10 @@ export function ItemCard({
           {item.saved ? "★" : "☆"}
         </button>
       </div>
-      <div className="item-name">{item.name}</div>
-      <div className="item-desc">{bbstrip(item.description || "")}</div>
-      {meta.length ? <div className="item-meta">{meta.join(" · ")}</div> : null}
-      <div className="item-foot">
+      <div className={itemName}>{item.name}</div>
+      <div className={itemDesc}>{bbstrip(item.description || "")}</div>
+      {meta.length ? <div className={itemMeta}>{meta.join(" · ")}</div> : null}
+      <div className="mt-auto flex items-center justify-between">
         <Foot item={item} canAfford={canAfford} hint={hoursHint(basePrice(item), rates)} />
       </div>
     </div>

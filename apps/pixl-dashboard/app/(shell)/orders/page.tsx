@@ -1,7 +1,6 @@
 import { serverGet } from "@/lib/server-api";
 import { EmptyNote, Notice, PageHeader } from "@/components/ui/primitives";
 import { OrderCard, type Order } from "./order-card";
-import "./orders.css";
 
 export const metadata = { title: "Orders" };
 
@@ -25,7 +24,7 @@ export default async function OrdersPage() {
           HEAD TO THE SHOP AND SPEND SOME OF THOSE HARD-EARNED PIXELS.
         </EmptyNote>
       ) : (
-        <div className="orders-list">
+        <div className="mt-[10px] flex flex-col gap-[14px]">
           {orders.map((o) => (
             <OrderCard key={o.id} order={o} />
           ))}

@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { PixelIcon, ReIcon } from "@/components/pixel-icon";
+import { Button, buttonVariants, railButton } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { clearPlayerLocalState } from "@/lib/local-state";
 import { ICONS, MOBILE_PRIMARY, MORE_ICON, NAV_GROUPS, PALETTE_ICON } from "./nav-data";
 
@@ -11,6 +13,47 @@ const THEMES = [
   { id: "light", label: "Pixl Paper", panel: "#f5eed2", gold: "#ec3750" },
   { id: "dark", label: "Pixl Ink", panel: "#171615", gold: "#ff6b4a" },
 ];
+
+// Below 900px the sidebar becomes a bottom dock: secondary links hide there
+// and open from the MORE sheet instead.
+const navLinkClass = cn(
+  "group flex items-center gap-[10px] border-2 border-transparent px-[10px] py-[6px]",
+  "font-pixel text-[14.5px] font-medium tracking-[.8px] text-ink",
+  "transition-[color,background-color,border-color,translate] duration-[130ms]",
+  "hover:translate-x-[3px] hover:border-stroke hover:bg-ink hover:text-panel-deep",
+  "data-[active=true]:border-stroke data-[active=true]:bg-accent data-[active=true]:text-panel-deep",
+  "data-[active=true]:hover:bg-accent",
+  "max-[900px]:flex-1 max-[900px]:flex-col max-[900px]:justify-center max-[900px]:gap-[3px] max-[900px]:border-0",
+  "max-[900px]:px-[2px] max-[900px]:pt-[8px] max-[900px]:pb-[6px] max-[900px]:text-center",
+  "max-[900px]:text-[10px] max-[900px]:tracking-[.5px]",
+  "max-[900px]:hover:translate-none max-[900px]:hover:bg-transparent max-[900px]:hover:text-accent",
+  "max-[900px]:data-[active=true]:bg-transparent max-[900px]:data-[active=true]:text-accent",
+  "max-[900px]:data-[active=true]:shadow-[inset_0_3px_0_var(--accent)]",
+  "max-[900px]:data-[active=true]:hover:bg-transparent",
+);
+const navIconClass = cn(
+  "flex size-[26px] shrink-0 items-center justify-center border-2 border-stroke bg-panel-deep text-ink",
+  "transition-[background-color,color] duration-[130ms] [&_svg]:size-[14px] [&_svg]:shrink-0",
+  "max-[900px]:size-auto max-[900px]:border-0 max-[900px]:bg-transparent max-[900px]:text-current",
+  "max-[900px]:[&_svg]:size-[20px]",
+);
+// Links inside the mobile MORE sheet.
+const sheetLinkClass = cn(
+  "flex flex-col items-center justify-center gap-[5px] border-2 border-stroke bg-panel-deep px-[4px] py-[12px]",
+  "text-center font-pixel text-[11px] font-medium tracking-[.5px] text-ink",
+  "transition-[color,background-color] duration-[130ms] hover:bg-transparent hover:text-accent",
+  "data-[active=true]:bg-accent data-[active=true]:text-panel-deep",
+  "data-[active=true]:hover:bg-accent data-[active=true]:hover:text-panel-deep",
+);
+
+// Currency chips on the top rail.
+const chip = cn(
+  "flex cursor-default items-center gap-[8px] border-2 border-stroke bg-panel py-[5px] pr-[11px] pl-[6px]",
+  "text-[13px] tabular-nums",
+);
+const chipSlot = "flex size-[24px] shrink-0 items-center justify-center border-2 border-stroke";
+const chipValue = "font-sans text-[16px] font-bold tracking-[.2px] text-ink tabular-nums";
+const chipLabel = "text-[11px] tracking-[.5px] text-dim";
 
 function useDismiss(open: boolean, selector: string, close: () => void) {
   useEffect(() => {
@@ -66,8 +109,8 @@ export function ShellNav({
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  useDismiss(sheetOpen, ".sidebar", () => setSheetOpen(false));
-  useDismiss(themeMenuOpen, ".theme-picker", () => setThemeMenuOpen(false));
+  useDismiss(sheetOpen, "[data-shell-sidebar]", () => setSheetOpen(false));
+  useDismiss(themeMenuOpen, "[data-theme-picker]", () => setThemeMenuOpen(false));
 
   function togglePhantom() {
     const next = !phantom;
@@ -99,9 +142,10 @@ export function ShellNav({
       <Link
         key={slug}
         href={href}
-        className={`${slug === activeSlug ? "active" : ""}${secondary ? " secondary" : ""}`}
+        data-active={slug === activeSlug}
+        className={cn(navLinkClass, secondary && "max-[900px]:hidden")}
       >
-        <PixelIcon rects={ICONS[slug] ?? []} />
+        <PixelIcon rects={ICONS[slug] ?? []} className={navIconClass} />
         <span>{label}</span>
       </Link>
     );
@@ -109,19 +153,51 @@ export function ShellNav({
 
   return (
     <>
-      <aside className="sidebar">
-        <Link className="sb-logo" href="/dashboard" title="Pixl Dashboard">
+      <aside
+        data-shell-sidebar
+        className={cn(
+          "fixed top-0 bottom-0 left-0 z-40 flex w-[260px] flex-col gap-[4px] border-r-4 border-stroke bg-panel",
+          "px-[12px] py-[16px]",
+          "max-[900px]:top-auto max-[900px]:right-0 max-[900px]:h-[60px] max-[900px]:w-auto max-[900px]:flex-row",
+          "max-[900px]:gap-[2px] max-[900px]:border-t-4 max-[900px]:border-r-0 max-[900px]:px-[6px] max-[900px]:py-0",
+        )}
+      >
+        <Link
+          className={cn(
+            "mb-[6px] flex items-center px-[8px] pt-[6px] pb-[16px] font-pixel text-[26px] font-semibold",
+            "tracking-[1.5px] text-ink hover:text-gold-soft max-[900px]:hidden",
+          )}
+          href="/dashboard"
+          title="Pixl Dashboard"
+        >
           PIXL
         </Link>
-        <nav className="nav">
+        <nav
+          className={cn(
+            "flex flex-1 flex-col gap-[16px] overflow-y-auto",
+            "max-[900px]:flex-row max-[900px]:justify-around max-[900px]:gap-[2px] max-[900px]:overflow-visible",
+          )}
+        >
           {NAV_GROUPS.map((group) => (
-            <div className="nav-group" key={group.label}>
-              <div className="nav-label">{group.label}</div>
+            <div className="flex flex-col gap-[2px] max-[900px]:contents" key={group.label}>
+              <div
+                className={cn(
+                  "mb-[4px] px-[10px] font-pixel text-[10.5px] font-semibold tracking-[2.5px] text-muted",
+                  "max-[900px]:hidden",
+                )}
+              >
+                {group.label}
+              </div>
               {group.items.map((i) => navLink(i.slug, i.label, i.href, !MOBILE_PRIMARY.includes(i.slug)))}
             </div>
           ))}
           <button
-            className={`nav-more${sheetOpen ? " open" : ""}`}
+            className={cn(
+              "hidden flex-1 flex-col items-center justify-center gap-[3px] max-[900px]:flex",
+              "border-0 bg-transparent px-[2px] pt-[8px] pb-[6px] font-pixel text-[10px] tracking-[.5px] text-faint",
+              "transition-colors duration-[130ms] [&_svg]:size-[20px]",
+              sheetOpen && "text-accent shadow-[inset_0_3px_0_var(--accent)]",
+            )}
             type="button"
             aria-expanded={sheetOpen}
             onClick={() => setSheetOpen((v) => !v)}
@@ -129,46 +205,78 @@ export function ShellNav({
             <PixelIcon rects={MORE_ICON} />
             <span>MORE</span>
           </button>
-          <div className="nav-sheet" hidden={!sheetOpen}>
-            <div className="nav-sheet-grid">{overflow.map((i) => navLink(i.slug, i.label, i.href, false))}</div>
-          </div>
+          {sheetOpen ? (
+            <div
+              className={cn(
+                "fixed right-0 bottom-[60px] left-0 z-[41] hidden animate-sheet-up border-t-4 border-stroke bg-panel",
+                "px-[8px] pt-[10px] pb-[calc(10px+env(safe-area-inset-bottom,0px))] max-[900px]:block",
+              )}
+            >
+              <div className="grid grid-cols-3 gap-[6px]">
+                {overflow.map((i) => (
+                  <Link key={i.slug} href={i.href} data-active={i.slug === activeSlug} className={sheetLinkClass}>
+                    <PixelIcon rects={ICONS[i.slug] ?? []} className="[&_svg]:size-[20px]" />
+                    <span>{i.label}</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </nav>
-        <div className="sb-foot">
-          <a className="btn dark back-to-game" href={game} target="_blank" rel="noopener noreferrer">
-            <span className="arrow">◄</span> PLAY THE GAME
+        <div className="mt-[6px] flex flex-col gap-[8px] max-[900px]:hidden">
+          <a
+            className={cn(buttonVariants({ variant: "dark" }), "group")}
+            href={game}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <span className="inline-block transition-transform duration-150 group-hover:-translate-x-[3px]">◄</span>{" "}
+            PLAY THE GAME
           </a>
           {/* Clears journal drafts and tour progress from this browser, then posts. */}
           <form action="/api/auth/logout" method="post" onSubmit={() => clearPlayerLocalState()}>
-            <button className="btn ghost w-full" type="submit" title={`Signed in as ${displayName}`}>
+            <Button variant="ghost" className="w-full" type="submit" title={`Signed in as ${displayName}`}>
               LOG OUT
-            </button>
+            </Button>
           </form>
         </div>
       </aside>
-      <div className="toprail">
-        <div className="rest-chip" title="Core Integrity: total Restoration Energy earned by the whole community">
-          <span className="slot">
+      <div
+        className={cn(
+          "fixed top-0 right-0 left-[260px] z-[39] flex h-[54px] items-center justify-end gap-[10px] px-[20px]",
+          "border-b-4 border-stroke bg-panel-deep max-[900px]:left-0",
+        )}
+      >
+        <div
+          className={cn(chip, "max-[560px]:hidden")}
+          title="Core Integrity: total Restoration Energy earned by the whole community"
+        >
+          <span className={cn(chipSlot, "bg-teal [&_svg]:size-[15px]")}>
             <ReIcon />
           </span>
-          <span className="re">{communityRe.toLocaleString()}</span>
-          <span className="rl">CORE</span>
+          <span className={chipValue}>{communityRe.toLocaleString()}</span>
+          <span className={chipLabel}>CORE</span>
         </div>
-        <div className="re-chip" title="Your Restoration Energy">
-          <span className="slot">
+        <div className={chip} title="Your Restoration Energy">
+          <span className={cn(chipSlot, "bg-accent text-btn-ink [&_svg]:size-[15px]")}>
             <ReIcon />
           </span>
-          <span className="val">{re.toLocaleString()}</span>
-          <span className="rl">RE</span>
+          <span className={chipValue}>{re.toLocaleString()}</span>
+          <span className={cn(chipLabel, "max-[560px]:hidden")}>RE</span>
         </div>
-        <div className="wallet-chip" title="Your pixels">
-          <span className="slot">
+        <div className={chip} title="Your pixels">
+          <span className={cn(chipSlot, "bg-gold")}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/img/pixel.png" alt="px" />
+            <img className="size-[16px]" src="/img/pixel.png" alt="px" />
           </span>
-          <span className="px">{pixels.toLocaleString()}</span>
+          <span className={chipValue}>{pixels.toLocaleString()}</span>
         </div>
         <button
-          className="rail-btn font-toggle"
+          className={cn(
+            railButton,
+            "w-auto px-[10px] text-[12px] tracking-[.5px] whitespace-nowrap",
+            "aria-pressed:bg-ink aria-pressed:text-panel aria-pressed:hover:bg-ink aria-pressed:hover:text-panel",
+          )}
           type="button"
           title="Switch to Phantom Sans"
           aria-label="Phantom Sans font"
@@ -177,29 +285,44 @@ export function ShellNav({
         >
           PHANTOM SANS
         </button>
-        <div className="theme-picker">
+        <div className="relative" data-theme-picker>
           <button
-            className="theme-toggle"
+            className={railButton}
             type="button"
             title="Change theme"
             aria-expanded={themeMenuOpen}
             onClick={() => setThemeMenuOpen((v) => !v)}
           >
-            <PixelIcon rects={PALETTE_ICON} className="" />
+            <PixelIcon rects={PALETTE_ICON} />
           </button>
-          <div className="theme-menu" hidden={!themeMenuOpen}>
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className={`theme-opt${t.id === theme ? " active" : ""}`}
-                onClick={() => setTheme(t.id)}
-              >
-                <span className="swatch" style={{ background: t.panel, boxShadow: `inset 0 0 0 2px ${t.gold}` }} />
-                <span>{t.label}</span>
-              </button>
-            ))}
-          </div>
+          {themeMenuOpen ? (
+            <div
+              className={cn(
+                "absolute top-[calc(100%+6px)] right-0 z-60 flex min-w-[170px] flex-col overflow-hidden",
+                "border-2 border-stroke bg-panel shadow-drop",
+              )}
+            >
+              {THEMES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={cn(
+                    "flex w-full items-center gap-[9px] border-none bg-transparent px-[11px] py-[8px] text-left",
+                    "font-pixel text-[13.5px] tracking-[.3px] text-ink transition-colors duration-[120ms]",
+                    "hover:bg-accent hover:text-panel-deep",
+                    t.id === theme && "bg-ink text-panel-deep hover:bg-ink",
+                  )}
+                  onClick={() => setTheme(t.id)}
+                >
+                  <span
+                    className="size-[14px] shrink-0 border border-stroke"
+                    style={{ background: t.panel, boxShadow: `inset 0 0 0 2px ${t.gold}` }}
+                  />
+                  <span>{t.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
     </>

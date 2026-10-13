@@ -3,7 +3,8 @@
 // Catalog grid: search, sort, price tiers, categories, saved/unlocked
 // toggles, region switch. All filtering is over the server's item list.
 import { useMemo, useState } from "react";
-import { Notice } from "@/components/ui/primitives";
+import { autoGrid, divider, emptyNote, field, Notice, selectField } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { useAction } from "@/components/use-action";
 import { saveItem, unsaveItem } from "./actions";
 import type { EarnRates } from "../calc/estimates";
@@ -14,6 +15,14 @@ import { TrophyCard } from "./trophy-card";
 
 type Tier = "all" | "afford" | "under" | "over";
 type Sort = "featured" | "cheap" | "pricey" | "name";
+
+const tierBtn = (on: boolean) =>
+  cn(
+    "border-2 border-stroke bg-panel px-[12px] py-[6px] font-sans text-[12.5px] font-bold tracking-[.2px] text-faint",
+    "hover:border-faint hover:text-ink",
+    on && "border-transparent bg-gold text-btn-ink hover:border-transparent hover:text-btn-ink",
+  );
+const tiersRow = "mb-[16px] flex flex-wrap gap-[7px]";
 
 const TIERS: [Tier, string][] = [
   ["all", "ALL"],
@@ -93,10 +102,17 @@ export function ShopBrowser({
   const err = save.error || unsave.error;
 
   return (
-    <div className="shop">
-      <div className="shop-controls">
-        <input className="field" type="search" placeholder="Search the shelves..." value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search items" />
-        <select className="field" value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort">
+    <div>
+      <div className="mb-[14px] flex flex-wrap gap-[10px]">
+        <input
+          className={cn(field, "min-w-[200px] flex-1")}
+          type="search"
+          placeholder="Search the shelves..."
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          aria-label="Search items"
+        />
+        <select className={cn(selectField, "w-auto min-w-[150px]")} value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort">
           <option value="featured">FEATURED</option>
           <option value="cheap">PRICE ↑</option>
           <option value="pricey">PRICE ↓</option>
@@ -105,22 +121,22 @@ export function ShopBrowser({
         <RegionSelect region={region} />
       </div>
 
-      <div className="tiers">
+      <div className={tiersRow}>
         {TIERS.map(([v, l]) => (
-          <button key={v} type="button" className={`tier${tier === v ? " on" : ""}`} onClick={() => setTier(v)}>
+          <button key={v} type="button" className={tierBtn(tier === v)} onClick={() => setTier(v)}>
             {l}
           </button>
         ))}
-        <button type="button" className={`tier${unlockedOnly ? " on" : ""}`} onClick={() => setUnlockedOnly((v) => !v)}>
+        <button type="button" className={tierBtn(unlockedOnly)} onClick={() => setUnlockedOnly((v) => !v)}>
           UNLOCKED ONLY
         </button>
-        <button type="button" className={`tier${savedOnly ? " on" : ""}`} onClick={() => setSavedOnly((v) => !v)}>
+        <button type="button" className={tierBtn(savedOnly)} onClick={() => setSavedOnly((v) => !v)}>
           ★ SAVED
         </button>
       </div>
-      <div className="tiers">
+      <div className={tiersRow}>
         {CATEGORIES.map(([v, l]) => (
-          <button key={v} type="button" className={`tier${category === v ? " on" : ""}`} onClick={() => setCategory(v)}>
+          <button key={v} type="button" className={tierBtn(category === v)} onClick={() => setCategory(v)}>
             {l}
           </button>
         ))}
@@ -130,21 +146,21 @@ export function ShopBrowser({
 
       {trophies.length > 0 ? (
         <>
-          <div className="shop-section-h">
-            <span className="t">✦ RESTORATION REWARDS</span>
-            <span className="s">Earned by leveling up, not for sale</span>
+          <div className="mt-[8px] mb-[16px] flex flex-wrap items-baseline gap-[12px]">
+            <span className="font-pixel text-[18px] tracking-[1px] text-teal">✦ RESTORATION REWARDS</span>
+            <span className="text-[12.5px] text-faint">Earned by leveling up, not for sale</span>
           </div>
-          <div className="grid">
+          <div className={autoGrid}>
             {trophies.map((i) => (
               <TrophyCard key={i.id} item={i} xp={xp} state={trophyState(i, xp, claimedSet)} />
             ))}
           </div>
-          <div className="divider" />
+          <div className={divider} />
         </>
       ) : null}
 
       {list.length > 0 ? (
-        <div className="grid">
+        <div className={autoGrid}>
           {list.map((i) => (
             <ItemCard key={i.id} item={i} canAfford={canAfford(i)} rates={rates} onToggleSave={() => toggleSave(i)} />
           ))}
@@ -152,7 +168,7 @@ export function ShopBrowser({
       ) : null}
 
       {list.length + trophies.length === 0 ? (
-        <div className="empty-note">NOTHING ON THESE SHELVES.<br />TRY ANOTHER FILTER.</div>
+        <div className={emptyNote}>NOTHING ON THESE SHELVES.<br />TRY ANOTHER FILTER.</div>
       ) : null}
     </div>
   );

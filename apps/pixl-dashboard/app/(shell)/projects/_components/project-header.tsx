@@ -1,10 +1,12 @@
 import { SafeImage } from "@/components/safe-image";
-import { Badge, Notice } from "@/components/ui/primitives";
+import { Badge, Notice, pageTitle } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { hours, shortDate } from "../format";
 import { statusInfo, type BlackoutEntry, type Project } from "../types";
 import { BlackoutChip } from "./blackout-chip";
 import type { ProjectEstimate } from "../../calc/estimates";
 import { CopyLinkButton } from "./copy-link";
+import { projHero, projHeroImg, statusChip } from "./styles";
 
 /**
  * Title, status chips, hero image and reviewer notes. Every number shown is
@@ -29,16 +31,16 @@ export function ProjectHeader({
   collaborator?: boolean;
   estimate?: ProjectEstimate | null;
 }) {
-  const [label, cls] = statusInfo(project);
+  const [label, tone] = statusInfo(project);
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <h1 className="page-title !text-3xl">{project.name}</h1>
-        <span className={`chip ${cls}`}>{label}</span>
+        <h1 className={cn(pageTitle, "text-3xl")}>{project.name}</h1>
+        <span className={statusChip(tone)}>{label}</span>
         {collaborator ? <Badge>COLLABORATOR</Badge> : null}
-        <span className="chip teal" title={`Hackatime: ${hours(htSeconds)} · Journal: ${hours(journalSeconds)}`}>
+        <Badge tone="teal" title={`Hackatime: ${hours(htSeconds)} · Journal: ${hours(journalSeconds)}`}>
           {hours(htSeconds + journalSeconds)} TRACKED
-        </span>
+        </Badge>
         {estimate ? <EstimateChips estimate={estimate} /> : null}
         {project.pixels_earned ? <Badge tone="gold">+{Math.round(project.pixels_earned)} PX EARNED</Badge> : null}
         {project.is_peak ? (
@@ -52,8 +54,13 @@ export function ProjectHeader({
           <CopyLinkButton id={project.id} />
         </span>
       </div>
-      <div className="proj-hero mb-4">
-        <SafeImage player src={imageUrl} fallback={<span className="faint text-sm">No thumbnail yet</span>} />
+      <div className={projHero}>
+        <SafeImage
+          player
+          src={imageUrl}
+          className={projHeroImg}
+          fallback={<span className="text-sm text-faint">No thumbnail yet</span>}
+        />
       </div>
       {project.status === "needs_changes" && project.review_note ? (
         <Notice tone="bad" className="mb-3">
@@ -81,12 +88,12 @@ function EstimateChips({ estimate }: { estimate: ProjectEstimate }) {
   const pxNote = `At your current rate ($${estimate.usdPerHour.toFixed(2)}/hr). Rough estimate, actual review may differ.`;
   return (
     <>
-      <span className="chip teal" title={hoursNote} aria-label={`${hours(estimate.netHours * 3600)} new hours: ${hoursNote}`}>
+      <Badge tone="teal" title={hoursNote} aria-label={`${hours(estimate.netHours * 3600)} new hours: ${hoursNote}`}>
         {hours(estimate.netHours * 3600)} NEW
-      </span>
-      <span className="chip gold" title={pxNote} aria-label={`About ${estimate.px} pixels estimated. ${pxNote}`}>
+      </Badge>
+      <Badge tone="gold" title={pxNote} aria-label={`About ${estimate.px} pixels estimated. ${pxNote}`}>
         ≈{estimate.px} PX EST.
-      </span>
+      </Badge>
     </>
   );
 }

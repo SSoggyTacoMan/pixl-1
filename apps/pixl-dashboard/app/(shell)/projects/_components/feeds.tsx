@@ -1,3 +1,5 @@
+import { panel } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import { safeHttpUrl } from "@/lib/safe-url";
 import { shortDate, timeAgo } from "../format";
 
@@ -18,8 +20,8 @@ export function Feeds({ activity, news }: { activity: ActivityItem[]; news: News
   return (
     <div className="mt-6 grid gap-4 md:grid-cols-2">
       {activity.length ? (
-        <div className="feed panel">
-          <div className="feed-h">ACTION LOG</div>
+        <div className={cn(panel, "px-[14px] py-[12px]")}>
+          <div className="mb-[8px] font-pixel text-[13px] tracking-[2px]">ACTION LOG</div>
           {activity.map((a, i) => (
             <div key={i} className="mb-2 text-sm">
               <div>{a.text}</div>
@@ -29,8 +31,8 @@ export function Feeds({ activity, news }: { activity: ActivityItem[]; news: News
         </div>
       ) : null}
       {news.length ? (
-        <div className="feed panel">
-          <div className="feed-h">NEWS</div>
+        <div className={cn(panel, "px-[14px] py-[12px]")}>
+          <div className="mb-[8px] font-pixel text-[13px] tracking-[2px]">NEWS</div>
           {news.map((n, i) => {
             const href = safeHttpUrl(n.link_url);
             return (

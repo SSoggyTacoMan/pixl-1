@@ -1,10 +1,13 @@
 "use client";
 
 import { SafeImage } from "@/components/safe-image";
+import { field, panelDeep } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import type { FormState, SetForm } from "./editor-state";
 import { FileButton } from "./file-button";
 import { Disclosure, OpenLink, Row } from "./form-bits";
 import { fundingHoursText } from "./funding-hours";
+import { hint, smallButton } from "./styles";
 
 /** Hardware-only: funding request (BOM, cart screenshots, amount) and "finished build". */
 export function HardwareFields({
@@ -40,7 +43,7 @@ export function HardwareFields({
               onUploaded={(url) => set({ bomUrl: url })}
             />
           ) : (
-            <span className="hint">Create the project first, then upload its BOM.</span>
+            <span className={hint()}>Create the project first, then upload its BOM.</span>
           )}
         </Row>
         <Row label="CART SCREENSHOT(S), WITH SHIPPING">
@@ -53,12 +56,12 @@ export function HardwareFields({
           {form.cartUrls.length ? (
             <div className="mt-2 flex flex-wrap gap-2">
               {form.cartUrls.map((u, i) => (
-                <div key={`${u}-${i}`} className="panel-deep flex flex-col items-center gap-1 p-1">
+                <div key={`${u}-${i}`} className={cn(panelDeep, "flex flex-col items-center gap-1 p-1")}>
                   <SafeImage player src={u} className="h-16 w-24 object-cover" />
                   {!locked ? (
                     <button
                       type="button"
-                      className="btn ghost !px-2 !py-0 !text-xs"
+                      className={cn(smallButton, "py-0")}
                       onClick={() => set({ cartUrls: form.cartUrls.filter((_, j) => j !== i) })}
                     >
                       REMOVE
@@ -68,12 +71,12 @@ export function HardwareFields({
               ))}
             </div>
           ) : (
-            <span className="hint">Screenshot your cart(s) at the final step, shipping included. At least one required.</span>
+            <span className={hint()}>Screenshot your cart(s) at the final step, shipping included. At least one required.</span>
           )}
         </Row>
         <Row label="AMOUNT NEEDED (USD)">
           <input
-            className="field"
+            className={field}
             type="number"
             min={0}
             max={100000}
@@ -84,7 +87,7 @@ export function HardwareFields({
             onChange={(e) => set({ fundingUsd: e.target.value })}
           />
           {fundingHoursText(Number(form.fundingUsd) || 0, usdPerHour) ? (
-            <span className="hint" aria-live="polite">
+            <span className={hint()} aria-live="polite">
               {fundingHoursText(Number(form.fundingUsd) || 0, usdPerHour)}
             </span>
           ) : null}

@@ -5,9 +5,15 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Dialog } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/primitives";
 import { useAction } from "@/components/use-action";
+import { cn } from "@/lib/cn";
 import { importMacondo, importYsws } from "../collab-actions";
 import { projectError } from "../errors";
+import { hint, inviteBox, inviteBoxSub, inviteBoxTitle } from "./styles";
+
+const importPick =
+  "flex w-full flex-col gap-[2px] border-2 border-stroke bg-panel px-[10px] py-[8px] text-left text-ink disabled:opacity-50";
 
 export interface YswsShip {
   id: string;
@@ -43,16 +49,14 @@ export function ImportBox({ ships, macondo }: { ships: YswsShip[]; macondo: Maco
 
   return (
     <>
-      <div className="invite-box">
+      <div className={inviteBox}>
         <div>
-          <span className="invite-box-title">SHIPPED SOMETHING ELSEWHERE?</span>
-          <span className="invite-box-sub">
+          <span className={inviteBoxTitle}>SHIPPED SOMETHING ELSEWHERE?</span>
+          <span className={inviteBoxSub}>
             {count} project{count === 1 ? "" : "s"} available to import, keep building it here.
           </span>
         </div>
-        <button type="button" className="btn" onClick={() => setOpen(true)}>
-          IMPORT
-        </button>
+        <Button onClick={() => setOpen(true)}>IMPORT</Button>
       </div>
       <Dialog
         open={open}
@@ -60,13 +64,13 @@ export function ImportBox({ ships, macondo }: { ships: YswsShip[]; macondo: Maco
         title="IMPORT A PROJECT"
         description="Pick a project to bring in as a draft. Its links, description, thumbnail and available journal history get filled in for you. Historical hours don't carry over: only new time you track from here counts."
       >
-        {error ? <p className="hint bad mb-2">{error}</p> : null}
+        {error ? <p className={cn(hint("bad"), "mb-2")}>{error}</p> : null}
         <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto">
           {ships.map((s) => (
             <button
               key={`y${s.id}`}
               type="button"
-              className="import-pick"
+              className={importPick}
               disabled={busy}
               onClick={async () => done(await ysws.run({ entryId: String(s.id) }))}
             >
@@ -83,7 +87,7 @@ export function ImportBox({ ships, macondo }: { ships: YswsShip[]; macondo: Maco
             <button
               key={`m${p.ref}`}
               type="button"
-              className="import-pick"
+              className={importPick}
               disabled={busy}
               onClick={async () => done(await mac.run({ ref: p.ref }))}
             >
@@ -94,9 +98,9 @@ export function ImportBox({ ships, macondo }: { ships: YswsShip[]; macondo: Maco
           ))}
         </div>
         <div className="mt-3 flex justify-end">
-          <button type="button" className="btn dark" onClick={() => setOpen(false)}>
+          <Button variant="dark" onClick={() => setOpen(false)}>
             CANCEL
-          </button>
+          </Button>
         </div>
       </Dialog>
     </>

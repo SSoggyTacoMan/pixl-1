@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { SafeImage } from "@/components/safe-image";
-import { Notice } from "@/components/ui/primitives";
+import { Notice, pageTitle } from "@/components/ui/primitives";
+import { cn } from "@/lib/cn";
 import type { HtStats, Trial } from "../types";
 import { ProjectForm } from "./project-form";
+import { backLink, projHero, projHeroImg } from "./styles";
 import { TrialBrief } from "./trial-bits";
 import { useProjectForm } from "./use-project-form";
 
@@ -22,14 +24,14 @@ export function NewProject({
   const { form, set, save, saving, flash } = useProjectForm(null, trial?.id ?? null);
   return (
     <div>
-      <Link className="btn dark mb-4 inline-block" href="/projects">
+      <Link className={backLink} href="/projects">
         ← ALL PROJECTS
       </Link>
-      <h1 className="page-title mb-4">NEW PROJECT</h1>
+      <h1 className={cn(pageTitle, "mb-4")}>NEW PROJECT</h1>
       <TrialBrief trial={trial} />
       {form.imageUrl ? (
-        <div className="proj-hero mb-4">
-          <SafeImage player src={form.imageUrl} />
+        <div className={projHero}>
+          <SafeImage player src={form.imageUrl} className={projHeroImg} />
         </div>
       ) : null}
       {flash ? (

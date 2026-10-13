@@ -1,7 +1,6 @@
 import { loadStats, loadTrials, loadWalletRe } from "../data";
 import { usdPerHourFor } from "../../calc/estimates";
 import { NewProject } from "../_components/new-project";
-import "../projects.css";
 
 export const metadata = { title: "New project" };
 

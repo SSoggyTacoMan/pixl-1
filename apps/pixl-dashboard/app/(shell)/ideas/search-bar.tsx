@@ -3,6 +3,7 @@
 // Debounced title search: rewrites ?q= so the Server Component refetches.
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
+import { Input } from "@/components/ui/primitives";
 
 export function SearchBar({ initial }: { initial: string }) {
   const router = useRouter();
@@ -24,9 +25,9 @@ export function SearchBar({ initial }: { initial: string }) {
   }, [value, pathname, router]);
 
   return (
-    <div className="searchbar">
-      <input
-        className="field"
+    <div className="mb-[18px] flex gap-2.5">
+      <Input
+        className="flex-1"
         type="search"
         placeholder="Find an idea..."
         autoComplete="off"
