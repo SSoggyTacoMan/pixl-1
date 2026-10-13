@@ -8,10 +8,13 @@ import {
   NO_REVIEW,
   SECOND_PASS,
   EDIT_SUBMISSION,
+  FRAUD_REVIEW,
 } from "@/lib/guard";
 import { listAdmins, listHelpers, listFulfillers, getReviewPayoutSettings } from "@/lib/db";
 import {
   addReviewer,
+  addFraudReviewer,
+  removeFraudReviewer,
   addHelperAction,
   removeHelperAction,
   addFulfillerAction,
@@ -40,10 +43,10 @@ import {
 
 export const dynamic = "force-dynamic";
 
-// The team page. Four roles exist (see lib/roles.ts):
+// The team page. Five roles exist (see lib/roles.ts):
 // - Owners come from ADMIN_SLACK_IDS only, so they're shown read-only here.
 //   Nothing on this page (or anywhere in the dashboard) can make an owner.
-// - Reviewers, ticket helpers and fulfillers are managed below.
+// - Reviewers, fraud reviewers, ticket helpers and fulfillers are managed below.
 
 function SlackIdForm({
   action,
@@ -215,6 +218,16 @@ export default async function AdminsPage() {
             {reviewers.length === 0 && <EmptyRow colSpan={4} title="No reviewers yet" icon="checkmark" />}
           </Table>
         </Card>
+
+        <PeopleCard
+          title="Fraud reviewers"
+          icon="view"
+          ids={admins.filter((a) => a.permissions.includes(FRAUD_REVIEW)).map((a) => a.slack_id)}
+          add={addFraudReviewer}
+          addLabel="Add fraud reviewer"
+          remove={removeFraudReviewer}
+          note="Sees the Fraud reviews tab (Robert's scores) and nothing else. Final reviewers already see it."
+        />
 
         <PeopleCard
           title="Ticket helpers"

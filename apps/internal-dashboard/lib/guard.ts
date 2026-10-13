@@ -79,6 +79,7 @@ export function landingFor(access: AdminAccess): string {
   if (access.isReviewer) return "/review";
   if (access.isHelper) return "/tickets";
   if (access.isFulfiller) return "/fulfillment";
+  if (access.canFraudReview) return "/review/fraud-reviews";
   return "/removed";
 }
 

@@ -1,4 +1,3 @@
-import { redirect } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { listRobertReviews, listSecondReviewProjects, type RobertReviewRow } from "@/lib/db";
 import { slackHandles } from "@/lib/slack";
@@ -40,9 +39,10 @@ function maker(p: RobertReviewRow): string {
 // project actually gets decided; this is the full picture, including the
 // projects that already left Spot check.
 export default async function FraudReviewsPage() {
-  const access = await requirePage("reviewer");
-  await requireGuidelinesAck(access);
-  if (!access.canSecondPass) redirect("/review");
+  // Final reviewers, owners and fraud reviewers (the fraud_review marker).
+  const access = await requirePage({ review: "fraud" });
+  // The guidelines gate is for people who review; a fraud reviewer can't.
+  if (access.isReviewer) await requireGuidelinesAck(access);
 
   const viewer = access.session.slackId;
   const [live, hideReviewers] = await Promise.all([getLiveMode(), getHideReviewers()]);

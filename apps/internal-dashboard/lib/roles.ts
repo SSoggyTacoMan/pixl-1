@@ -2,13 +2,16 @@
 // no DB) so the role rules are unit-testable; lib/guard.ts feeds them the
 // session, the env and the table lookups.
 //
-// Four roles, nothing else:
+// Five roles, nothing else:
 // - Owner:     ADMIN_SLACK_IDS env only. Everything, incl. managing staff.
 //              There is no table that grants it, so nothing written to the
 //              database (by a dashboard bug or a stolen DATABASE_URL) can
 //              mint an owner.
 // - Reviewer:  an `admins` row holding "review". The row may also carry the
 //              review markers below and nothing else.
+// - Fraud reviewer: an `admins` row holding "fraud_review" and no "review".
+//              Sees the Fraud reviews tab and nothing else - no queue, no
+//              verdicts. Final reviewers and owners see that tab anyway.
 // - Helper:    `helpers` table (tickets).
 // - Fulfiller: `fulfillers` table (shop-order queue).
 
@@ -22,6 +25,8 @@ export const EDIT_SUBMISSION = "edit_submission";
 // Restrict a reviewer to one queue. Neither marker = both queues.
 export const REVIEW_HARDWARE_ONLY = "review_hardware_only";
 export const REVIEW_SOFTWARE_ONLY = "review_software_only";
+// Read-only access to the Fraud reviews tab (Robert's scores).
+export const FRAUD_REVIEW = "fraud_review";
 
 // The only values an admins.permissions array may hold. Anything else is
 // ignored here and stripped by migration 0215_owner_only_admins.sql.
@@ -32,6 +37,7 @@ export const REVIEWER_PERMISSIONS = [
   REVIEW_SOFTWARE_ONLY,
   EDIT_SUBMISSION,
   NO_REVIEW,
+  FRAUD_REVIEW,
 ] as const;
 
 export type ReviewQueueScope = "software" | "hardware" | "both";
@@ -76,6 +82,7 @@ export interface AdminAccess {
   isFulfiller: boolean;
   canSecondPass: boolean;
   canEditSubmission: boolean;
+  canFraudReview: boolean;
   reviewQueues: ReviewQueueScope;
 }
 
@@ -100,12 +107,13 @@ export function resolveAccess(session: Session, input: RoleInputs): AdminAccess 
     isFulfiller: isOwner || input.isFulfiller,
     canSecondPass,
     canEditSubmission,
+    canFraudReview: isOwner || canSecondPass || perms.includes(FRAUD_REVIEW),
     reviewQueues: reviewQueueScopeFor(perms),
   };
-  return isOwner || isReviewer || input.isHelper || input.isFulfiller ? access : null;
+  return isOwner || isReviewer || access.canFraudReview || input.isHelper || input.isFulfiller ? access : null;
 }
 
-// What a page, action or API route needs. "staff" = any of the four roles.
+// What a page, action or API route needs. "staff" = any role at all.
 export type Requirement =
   | "owner"
   | "reviewer"
@@ -113,7 +121,8 @@ export type Requirement =
   | "fulfiller"
   | "staff"
   | { review: "second_pass" }
-  | { review: "edit_submission" };
+  | { review: "edit_submission" }
+  | { review: "fraud" };
 
 // Owners pass every gate ("everything" per the spec). NO_REVIEW on an owner
 // only takes them out of review-queue listings; finer checks inside an action
@@ -125,10 +134,13 @@ export function satisfies(access: AdminAccess, req: Requirement): boolean {
   if (req === "helper") return access.isHelper;
   if (req === "fulfiller") return access.isFulfiller;
   if (req.review === "second_pass") return access.canSecondPass;
+  if (req.review === "fraud") return access.canFraudReview;
   return access.canEditSubmission;
 }
 
 export function describeRequirement(req: Requirement): string {
   if (typeof req === "string") return req;
-  return req.review === "second_pass" ? "final reviewer" : "edit submission";
+  if (req.review === "second_pass") return "final reviewer";
+  if (req.review === "fraud") return "fraud reviewer";
+  return "edit submission";
 }

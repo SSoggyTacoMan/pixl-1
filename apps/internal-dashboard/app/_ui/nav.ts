@@ -38,6 +38,7 @@ export function buildNav(access: AdminAccess, live: boolean): NavModel {
     [owner, { href: "/", label: "Overview", glyph: "dashboard-meter" }],
     [!owner && access.isReviewer, { href: "/review/stats", label: "My stats", glyph: "dashboard-meter" }],
     [reviewer, { href: "/review", label: "Review", glyph: "view" }],
+    [!reviewer && access.canFraudReview, { href: "/review/fraud-reviews", label: "Fraud reviews", glyph: "view" }],
     [reviewer, { href: "/projects", label: "Projects", glyph: "rep" }],
     [owner, { href: "/players", label: "Players", glyph: "people-3" }],
     [!owner && access.isHelper, { href: "/tickets", label: "Tickets", glyph: "support" }],

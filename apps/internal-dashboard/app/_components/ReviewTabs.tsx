@@ -7,25 +7,30 @@ import { useLiveMode } from "@/app/_components/LiveMode";
 
 export function ReviewTabs({
   isSuper,
-  canSecondPass,
+  canFraudReview,
+  fraudOnly,
   pending,
   spotCheckCount,
   proposedBanCount,
 }: {
   isSuper: boolean;
-  canSecondPass: boolean;
+  canFraudReview: boolean;
+  fraudOnly: boolean;
   pending?: number;
   spotCheckCount?: number;
   proposedBanCount?: number;
 }) {
   const pathname = usePathname();
   const live = useLiveMode();
-  const tabs: { href: string; label: string; count?: number }[] = [
-    { href: "/review", label: "Needs review", count: pending },
-    { href: "/review/reviewed", label: "Reviewed" },
-    { href: "/review/stats", label: "Stats" },
-  ];
-  if (canSecondPass) {
+  // A fraud reviewer sees the Fraud reviews tab and nothing else.
+  const tabs: { href: string; label: string; count?: number }[] = fraudOnly
+    ? []
+    : [
+        { href: "/review", label: "Needs review", count: pending },
+        { href: "/review/reviewed", label: "Reviewed" },
+        { href: "/review/stats", label: "Stats" },
+      ];
+  if (canFraudReview) {
     // Every score Robert's fraud reviewer has given, newest first, including
     // projects that already left Spot check.
     tabs.push({ href: "/review/fraud-reviews", label: "Fraud reviews" });
@@ -43,9 +48,9 @@ export function ReviewTabs({
   }
   // The guidelines gate only fires once per guidelines version, so this is
   // the way back in for anyone who skipped or wants a refresher.
-  tabs.push({ href: "/review/guidelines", label: "Guidelines" });
+  if (!fraudOnly) tabs.push({ href: "/review/guidelines", label: "Guidelines" });
 
-  const active = tabs.find((t) => t.href === pathname)?.href ?? "/review";
+  const active = tabs.find((t) => t.href === pathname)?.href ?? tabs[0]?.href;
 
   return (
     <div className="hc-tabs hc-tabs-fill mb-6" role="tablist">

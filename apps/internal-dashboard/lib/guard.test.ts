@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   EDIT_SUBMISSION,
+  FRAUD_REVIEW,
   NO_REVIEW,
   REVIEW,
   REVIEW_HARDWARE_ONLY,
@@ -98,6 +99,31 @@ describe("reviewer permissions are filtered to review-only values", () => {
     expect(a.canEditSubmission).toBe(true);
     expect(a.canSecondPass).toBe(false);
     expect(a.reviewQueues).toBe("hardware");
+  });
+});
+
+describe("fraud reviewers only reach the Fraud reviews tab", () => {
+  test("the fraud_review marker alone signs in with fraud access and nothing else", () => {
+    const a = resolveAccess(session("UFRAUD"), inputs({ adminPermissions: [FRAUD_REVIEW] }))!;
+    expect(a).not.toBeNull();
+    expect(a.canFraudReview).toBe(true);
+    expect(satisfies(a, { review: "fraud" })).toBe(true);
+    expect(a.isReviewer || a.canSecondPass || a.canEditSubmission).toBe(false);
+    for (const r of ["owner", "reviewer", "helper", "fulfiller"] as const) expect(satisfies(a, r)).toBe(false);
+    expect(satisfies(a, { review: "second_pass" })).toBe(false);
+    expect(satisfies(a, { review: "edit_submission" })).toBe(false);
+  });
+
+  test("final reviewers and owners see fraud reviews without the marker", () => {
+    const final = resolveAccess(session("UREV"), inputs({ adminPermissions: [REVIEW, SECOND_PASS] }))!;
+    expect(final.canFraudReview).toBe(true);
+    expect(resolveAccess(session("UOWNER1"), inputs())!.canFraudReview).toBe(true);
+  });
+
+  test("a plain first-pass reviewer does not see fraud reviews", () => {
+    const plain = resolveAccess(session("UREV"), inputs({ adminPermissions: [REVIEW] }))!;
+    expect(plain.canFraudReview).toBe(false);
+    expect(satisfies(plain, { review: "fraud" })).toBe(false);
   });
 });
 

@@ -101,6 +101,7 @@ import {
   EDIT_SUBMISSION,
   REVIEW_HARDWARE_ONLY,
   REVIEW_SOFTWARE_ONLY,
+  FRAUD_REVIEW,
   type AdminAccess,
   type ReviewQueueScope,
 } from "@/lib/guard";
@@ -3866,6 +3867,37 @@ export const removeReviewer = guardedAction("team.removeReviewer", "owner", asyn
   await setTeamPerms(access, slackId, existing?.name ?? "", permissions, "removed", reason);
   await dmRemoved(slackId, "You've been removed from the Pixl review team.", reason);
   redirect("/reviewers");
+});
+
+// Fraud reviewers only see the Fraud reviews tab (Robert's scores). Stored as
+// a FRAUD_REVIEW marker in their admins row, next to whatever else it holds.
+export const addFraudReviewer = guardedAction("team.addFraudReviewer", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim().toUpperCase();
+  if (!SLACK_ID_RE.test(slackId)) throw new Error("Enter a valid Slack member ID (starts with U).");
+  const existing = await getAdmin(slackId);
+  if (existing?.permissions.includes(FRAUD_REVIEW)) return;
+  await setTeamPerms(access, slackId, "", [...(existing?.permissions ?? []), FRAUD_REVIEW], "fraud reviewer added");
+  await dmTeam(
+    slackId,
+    `You've been added as a fraud reviewer on Pixl. You can see Robert's fraud scores here: ${DASH_URL}/review/fraud-reviews`,
+  );
+  revalidatePath("/admins");
+});
+
+export const removeFraudReviewer = guardedAction("team.removeFraudReviewer", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  if (!slackId) return;
+  const existing = await getAdmin(slackId);
+  if (!existing?.permissions.includes(FRAUD_REVIEW)) return;
+  await setTeamPerms(
+    access,
+    slackId,
+    existing.name,
+    existing.permissions.filter((p) => p !== FRAUD_REVIEW),
+    "fraud reviewer removed",
+  );
+  await dmTeam(slackId, "Your fraud reviewer access on Pixl has been removed. Contact the team if you think this is a mistake.");
+  revalidatePath("/admins");
 });
 
 // Helpers manage the ticket queue. Owners add/remove them from /admins (or
