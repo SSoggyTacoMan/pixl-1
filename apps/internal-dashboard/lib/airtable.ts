@@ -262,3 +262,44 @@ export async function pushProjectRecord(
   }
   return { ok: true, recordId: body.id };
 }
+
+export interface DeleteRecordsResult {
+  deleted: string[];
+  failed: string[];
+  error?: string;
+}
+
+// Deletes records from the staging base, one request each so one bad id can't
+// sink the rest. A 404 counts as deleted: the record is already gone. Used by
+// the player erasure (lib/erasure.ts); records already forwarded to Hack Club's
+// Unified YSWS DB are out of reach and have to be removed on their side.
+export async function deleteAirtableRecords(
+  recordIds: string[],
+  fetchImpl: typeof fetch = fetch,
+): Promise<DeleteRecordsResult> {
+  const ids = [...new Set(recordIds.filter((id) => /^rec[A-Za-z0-9]{14}$/.test(id)))];
+  const invalid = recordIds.filter((id) => !ids.includes(id));
+  if (ids.length === 0) return { deleted: [], failed: invalid };
+
+  const token = process.env.AIRTABLE_PIXL_YSWS_UNIFIED_TOKEN;
+  if (!token) {
+    return { deleted: [], failed: [...ids, ...invalid], error: "AIRTABLE_PIXL_YSWS_UNIFIED_TOKEN is not set" };
+  }
+
+  const deleted: string[] = [];
+  const failed: string[] = [...invalid];
+  for (const id of ids) {
+    try {
+      const res = await fetchImpl(`https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(AIRTABLE_TIMEOUT_MS),
+      });
+      if (res.ok || res.status === 404) deleted.push(id);
+      else failed.push(id);
+    } catch {
+      failed.push(id);
+    }
+  }
+  return { deleted, failed };
+}

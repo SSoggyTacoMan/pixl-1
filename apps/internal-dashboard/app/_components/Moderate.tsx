@@ -163,15 +163,15 @@ export function EditInfoForm({
   );
 }
 
-// Owners only. The account and everything tied to it (projects, bans,
-// violations, mod log) is gone for good once this submits.
+// Owners only. A full erasure (lib/erasure.ts): the account, everything tied
+// to it, and the copies the cascade misses are gone for good once this submits.
 export function DeleteAccountForm({ userId }: { userId: string }) {
   return (
     <form action={deletePlayerAccount} className="flex flex-wrap items-center gap-2">
       <input type="hidden" name="userId" value={userId} />
       <Input
         name="reason"
-        placeholder="Reason (sent to them before deletion)"
+        placeholder="Reason, e.g. data removal request (sent to them first)"
         maxLength={1000}
         className="min-w-48 flex-1"
         required
@@ -180,10 +180,10 @@ export function DeleteAccountForm({ userId }: { userId: string }) {
         variant="danger"
         size="sm"
         icon="delete"
-        pendingLabel="Deleting..."
-        confirm="Permanently delete this player's account? This can't be undone. Their projects, bans and history all go with it."
+        pendingLabel="Erasing..."
+        confirm="Erase this player's account and all their data? This can't be undone. Projects, orders, pixels, chat, tickets, Pixo's memory of them and their Airtable records all go."
       >
-        Delete account
+        Erase all data
       </ActionButton>
     </form>
   );

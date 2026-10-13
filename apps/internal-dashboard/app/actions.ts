@@ -75,6 +75,7 @@ import { SHOP_CATEGORIES, type ShopCategory } from "@/lib/shopCategories";
 import { kickOnlinePlayer, uploadSubmissionImage, uploadImageBuffer } from "@/lib/gameServer";
 import { sniffFormat } from "@/lib/imageSniff";
 import { dmOrEmail } from "@/lib/notify";
+import { erasePlayer, erasureSummary } from "@/lib/erasure";
 import { announceReview } from "@/lib/reviewChannel";
 import { REVIEW_REWARD_COOKIE, REVIEW_REWARD_MAX_AGE } from "@/lib/reviewReward";
 import { assertSafeExternalUrl } from "@/lib/urlSafety";
@@ -3957,10 +3958,10 @@ export const updatePlayerInfo = guardedAction("updatePlayerInfo", "owner", async
   revalidatePath(`/players/${userId}`);
 });
 
-// Owners only , irreversible. Every FK back to users(id) cascades (see
-// drizzle/0019_user_delete_cascade.sql), including mod_actions, so there's no
-// row left to log this against afterwards , console.log is the only record
-// that survives.
+// Owners only, irreversible: a full erasure, e.g. when a player asks for their
+// data to be removed. lib/erasure.ts clears what the users-row cascade misses.
+// guardedAction's audit_log row (target user:<id>, no PII) is the record that
+// survives; the log line below carries ids only, never the name or reason.
 export const deletePlayerAccount = guardedAction("deletePlayerAccount", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const userId = String(formData.get("userId") ?? "");
@@ -3978,19 +3979,20 @@ export const deletePlayerAccount = guardedAction("deletePlayerAccount", "owner",
     userId,
     "Pixl account deleted",
     [
-      "Your Pixl account has been deleted by an admin.",
+      "Your Pixl account and the data tied to it have been deleted.",
       `Reason: ${reason}`,
       "If you believe this is a mistake, reach out to the Pixl team.",
     ].join("\n\n"),
   );
   await kickOnlinePlayer(userId, "Your account was deleted");
 
-  const { error } = await db.from("users").delete().eq("id", userId);
-  if (error) throw new Error(error.message);
+  const result = await erasePlayer(userId);
 
-  console.log(`[admin] ${by} deleted account ${playerName} (${userId}): ${reason}`);
+  console.log(
+    `[admin] ${by} erased player ${userId} (airtable: ${result.airtableDeleted} deleted, ${result.airtableFailed.length} failed)`,
+  );
   revalidatePath("/players");
-  redirect(`/players?done=${encodeURIComponent(`Deleted ${playerName}'s account.`)}`);
+  redirect(`/players?done=${encodeURIComponent(erasureSummary(playerName, result))}`);
 });
 
 /// Upload a shop image to the Hack Club CDN through the server's

@@ -147,7 +147,8 @@ export default async function PlayerPage({ params }: { params: Promise<{ id: str
             <Card>
               <CardHeader title="Danger zone" icon="delete" />
               <p className="hc-caption mb-3 text-sm">
-                Deletes the account and everything tied to it. This can&apos;t be undone.
+                For data removal requests: erases the account and everything we hold about them, including chat,
+                tickets, Pixo&apos;s memory and their Airtable records. This can&apos;t be undone.
               </p>
               <DeleteAccountForm userId={user.id} />
             </Card>
