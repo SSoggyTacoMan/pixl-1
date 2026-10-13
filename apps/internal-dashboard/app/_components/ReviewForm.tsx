@@ -558,7 +558,10 @@ export function ReviewForm({
     typeof document !== "undefined" && document.visibilityState === "visible" && document.hasFocus();
   const submittedRef = useRef(false);
 
-  const baseHours = defaultHours ?? claimedHours;
+  // The default can come from an earlier reviewer (first or spot-check pass), so
+  // it may predate a journal deflation that has since lowered claimedHours. Never
+  // start above what can actually be credited (the input's own max).
+  const baseHours = Math.min(defaultHours ?? claimedHours, claimedHours);
   const [hours, setHours] = useState(baseHours);
   const [tierState, setTierState] = useState(tier);
   const deflated = hours < claimedHours;
