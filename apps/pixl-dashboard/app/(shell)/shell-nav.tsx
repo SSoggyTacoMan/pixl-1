@@ -19,17 +19,16 @@ const THEMES = [
 const navLinkClass = cn(
   "group flex items-center gap-[10px] border-2 border-transparent px-[10px] py-[6px]",
   "font-pixel text-[14.5px] font-medium tracking-[.8px] text-ink",
-  "transition-[color,background-color,border-color,translate] duration-[130ms]",
-  "hover:translate-x-[3px] hover:border-stroke hover:bg-ink hover:text-panel-deep",
+  // No hover state: the colours are pinned so the base a:hover gold doesn't show through.
+  "hover:text-ink",
   "data-[active=true]:border-stroke data-[active=true]:bg-accent data-[active=true]:text-panel-deep",
-  "data-[active=true]:hover:bg-accent",
+  "data-[active=true]:hover:text-panel-deep",
   "max-[900px]:flex-1 max-[900px]:flex-col max-[900px]:justify-center max-[900px]:gap-[3px] max-[900px]:border-0",
   "max-[900px]:px-[2px] max-[900px]:pt-[8px] max-[900px]:pb-[6px] max-[900px]:text-center",
   "max-[900px]:text-[10px] max-[900px]:tracking-[.5px]",
-  "max-[900px]:hover:translate-none max-[900px]:hover:bg-transparent max-[900px]:hover:text-accent",
   "max-[900px]:data-[active=true]:bg-transparent max-[900px]:data-[active=true]:text-accent",
   "max-[900px]:data-[active=true]:shadow-[inset_0_3px_0_var(--accent)]",
-  "max-[900px]:data-[active=true]:hover:bg-transparent",
+  "max-[900px]:data-[active=true]:hover:text-accent",
 );
 const navIconClass = cn(
   "flex size-[26px] shrink-0 items-center justify-center border-2 border-stroke bg-panel-deep text-ink",
@@ -156,7 +155,7 @@ export function ShellNav({
       <aside
         data-shell-sidebar
         className={cn(
-          "fixed top-0 bottom-0 left-0 z-40 flex w-[260px] flex-col gap-[4px] border-r-4 border-stroke bg-panel",
+          "fixed top-0 bottom-0 left-0 z-40 flex w-(--sidebar) flex-col gap-[4px] border-r-4 border-stroke bg-panel",
           "px-[12px] py-[16px]",
           "max-[900px]:top-auto max-[900px]:right-0 max-[900px]:h-[60px] max-[900px]:w-auto max-[900px]:flex-row",
           "max-[900px]:gap-[2px] max-[900px]:border-t-4 max-[900px]:border-r-0 max-[900px]:px-[6px] max-[900px]:py-0",
@@ -243,7 +242,7 @@ export function ShellNav({
       </aside>
       <div
         className={cn(
-          "fixed top-0 right-0 left-[260px] z-[39] flex h-[54px] items-center justify-end gap-[10px] px-[20px]",
+          "fixed top-0 right-0 left-(--sidebar) z-[39] flex h-[54px] items-center justify-end gap-[10px] px-[20px]",
           "border-b-4 border-stroke bg-panel-deep max-[900px]:left-0",
         )}
       >

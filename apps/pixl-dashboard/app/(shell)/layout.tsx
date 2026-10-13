@@ -47,7 +47,7 @@ export default async function ShellLayout({ children }: { children: React.ReactN
         communityRe={events ? Math.round(events.community_re) : 0}
       />
       {/* Clears the fixed sidebar and top rail (a bottom dock under 900px). */}
-      <div className="pt-[54px] pl-[260px] max-[900px]:pb-[64px] max-[900px]:pl-0">
+      <div className="pt-[54px] pl-(--sidebar) max-[900px]:pb-[64px] max-[900px]:pl-0">
         <main className={wrap}>{children}</main>
       </div>
     </>
