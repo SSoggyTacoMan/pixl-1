@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { cityCountry } from "@/lib/address-summary";
 import { buttonVariants, emptyNote } from "@/components/ui/primitives";
-import { serverApi } from "@/lib/server-api";
+import { publicGet, serverApi } from "@/lib/server-api";
+import { getSession } from "@/lib/session";
+import { loginUrl } from "@/lib/urls";
 import { normalizeItems, type ShopItemsResponse } from "../shop-lib";
 import { earnRates } from "../../calc/estimates";
 import { ItemDetail, type CheckoutEligibility } from "./item-detail";
@@ -34,10 +36,12 @@ export default async function ShopItemPage({
 }) {
   const [{ id }, sp] = await Promise.all([params, searchParams]);
   const itemId = Number(id);
+  // Signed out: public catalog only, nothing personal to fetch (see ShopPage).
+  const session = await getSession();
   const [data, wallet, elig] = await Promise.all([
-    serverApi<ShopItemsResponse>("/api/shop/items"),
-    serverApi<{ pixels: number }>("/api/profile/wallet"),
-    serverApi<EligibilityResponse>("/api/profile/eligibility"),
+    session ? serverApi<ShopItemsResponse>("/api/shop/items") : publicGet<ShopItemsResponse>("/api/shop/items"),
+    session ? serverApi<{ pixels: number }>("/api/profile/wallet") : null,
+    session ? serverApi<EligibilityResponse>("/api/profile/eligibility") : null,
   ]);
   const item = Number.isSafeInteger(itemId) ? normalizeItems(data?.items).find((i) => i.id === itemId) : undefined;
 
@@ -58,6 +62,7 @@ export default async function ShopItemPage({
           pixels={wallet ? Number(wallet.pixels) : null}
           eligibility={toCheckout(elig)}
           rates={earnRates()}
+          loginHref={session ? null : loginUrl(`/shop/${item.id}`)}
           verifyReturn={sp.addr_verified_return ? (sp.addr_verified === "1" ? "ok" : "failed") : null}
         />
       ) : (

@@ -88,7 +88,8 @@ export function ItemCard({
   canAfford: boolean;
   /** Per-hour earn rates computed server side (calc/estimates.ts). */
   rates: EarnRates | null;
-  onToggleSave: () => void;
+  /** Omitted when signed out: no save star. */
+  onToggleSave?: () => void;
 }) {
   const meta = metaBits(item);
   return (
@@ -109,19 +110,21 @@ export function ItemCard({
       ) : null}
       <div className={cn(itemImg, item.locked && "opacity-70")}>
         <SafeImage src={item.image_url} className={slotImg} fallback={<span className={imgPlaceholder} />} />
-        <button
-          type="button"
-          className={cn(
-            "absolute top-[6px] right-[6px] z-3 flex size-[26px] items-center justify-center",
-            "border-2 border-stroke bg-panel text-[14px] leading-none text-faint hover:border-gold hover:text-gold",
-            item.saved && "border-gold text-gold",
-          )}
-          title={item.saved ? "Saved, click to unsave" : "Save this item"}
-          aria-pressed={!!item.saved}
-          onClick={onToggleSave}
-        >
-          {item.saved ? "★" : "☆"}
-        </button>
+        {onToggleSave ? (
+          <button
+            type="button"
+            className={cn(
+              "absolute top-[6px] right-[6px] z-3 flex size-[26px] items-center justify-center",
+              "border-2 border-stroke bg-panel text-[14px] leading-none text-faint hover:border-gold hover:text-gold",
+              item.saved && "border-gold text-gold",
+            )}
+            title={item.saved ? "Saved, click to unsave" : "Save this item"}
+            aria-pressed={!!item.saved}
+            onClick={onToggleSave}
+          >
+            {item.saved ? "★" : "☆"}
+          </button>
+        ) : null}
       </div>
       <div className={itemName}>{item.name}</div>
       <div className={itemDesc}>{bbstrip(item.description || "")}</div>

@@ -21,6 +21,11 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = Object.freeze([
   { method: "GET", pattern: "/api/news" },
   { method: "GET", pattern: "/api/journals/public/:projectId/:token" },
   { method: "GET", pattern: "/api/shop/item/:id/public" },
+  // The shop catalog, read-only. Signed out it returns the US catalog with
+  // every personal field defaulted and reserved items dropped
+  // (scopePersonalItems in routes/shop.ts); buying, saving and claiming still
+  // need a session.
+  { method: "GET", pattern: "/api/shop/items" },
   { method: "GET", pattern: "/api/explore/players" },
   { method: "GET", pattern: "/api/explore/players/:id/public" },
   // The project list and a single project's page, read-only. Both return only

@@ -3,9 +3,11 @@ import { redirect } from "next/navigation";
 import { wrap } from "@/components/ui/primitives";
 import { serverApi, serverGet } from "@/lib/server-api";
 import { getSession } from "@/lib/session";
+import { isPublicShellPath } from "@/lib/public-pages";
 import { expiredUrl, sessionRejected } from "@/lib/session-expiry";
 import { GAME_URL } from "@/lib/urls";
 import { Gate } from "./gate";
+import { PublicShell } from "./public-shell";
 import { ShellNav } from "./shell-nav";
 
 interface Wallet {
@@ -24,7 +26,12 @@ export default async function ShellLayout({ children }: { children: React.ReactN
   // the same page; safeNext() re-checks it server side.
   const here = async () => (await headers()).get("x-pixl-path") ?? "/dashboard";
 
-  if (!session) return <Gate next={await here()} />;
+  if (!session) {
+    // The shop is browsable signed out (read-only); every other page gates.
+    const path = await here();
+    if (isPublicShellPath(path)) return <PublicShell next={path}>{children}</PublicShell>;
+    return <Gate next={path} />;
+  }
 
   const [walletRes, events] = await Promise.all([
     serverGet<Wallet>("/api/profile/wallet"),

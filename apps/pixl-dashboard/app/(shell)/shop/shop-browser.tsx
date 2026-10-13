@@ -38,6 +38,7 @@ export function ShopBrowser({
   region,
   pixels,
   rates,
+  signedIn,
 }: {
   items: ShopItem[];
   xp: number;
@@ -45,6 +46,8 @@ export function ShopBrowser({
   region: string;
   pixels: number | null;
   rates: EarnRates | null;
+  /** Signed out: browse only, so no region switch, saves or "affordable". */
+  signedIn: boolean;
 }) {
   const [items, setItems] = useState(initialItems);
   const [q, setQ] = useState("");
@@ -118,11 +121,11 @@ export function ShopBrowser({
           <option value="pricey">PRICE ↓</option>
           <option value="name">A–Z</option>
         </select>
-        <RegionSelect region={region} />
+        {signedIn ? <RegionSelect region={region} /> : null}
       </div>
 
       <div className={tiersRow}>
-        {TIERS.map(([v, l]) => (
+        {TIERS.filter(([v]) => signedIn || v !== "afford").map(([v, l]) => (
           <button key={v} type="button" className={tierBtn(tier === v)} onClick={() => setTier(v)}>
             {l}
           </button>
@@ -130,9 +133,11 @@ export function ShopBrowser({
         <button type="button" className={tierBtn(unlockedOnly)} onClick={() => setUnlockedOnly((v) => !v)}>
           UNLOCKED ONLY
         </button>
-        <button type="button" className={tierBtn(savedOnly)} onClick={() => setSavedOnly((v) => !v)}>
-          ★ SAVED
-        </button>
+        {signedIn ? (
+          <button type="button" className={tierBtn(savedOnly)} onClick={() => setSavedOnly((v) => !v)}>
+            ★ SAVED
+          </button>
+        ) : null}
       </div>
       <div className={tiersRow}>
         {CATEGORIES.map(([v, l]) => (
@@ -162,7 +167,7 @@ export function ShopBrowser({
       {list.length > 0 ? (
         <div className={autoGrid}>
           {list.map((i) => (
-            <ItemCard key={i.id} item={i} canAfford={canAfford(i)} rates={rates} onToggleSave={() => toggleSave(i)} />
+            <ItemCard key={i.id} item={i} canAfford={canAfford(i)} rates={rates} onToggleSave={signedIn ? () => toggleSave(i) : undefined} />
           ))}
         </div>
       ) : null}
