@@ -4,7 +4,10 @@ import { reviewerName } from "@/lib/liveMode";
 import { db, payoutTotalsBySlackId, type ReviewAuditRow } from "@/lib/db";
 import { ReviewVerdictChart, type VerdictWindow } from "@/app/_components/ReviewVerdictChart";
 import { slackIdFromLabel, summarizeWindow } from "@/lib/reviewStats";
-import { Badge, Card, CardHeader, EmptyRow, Muted, Table, TextLink, formatDate } from "@/app/_ui/ui";
+import { ActionButton, Badge, Card, CardHeader, EmptyRow, Flash, Muted, Table, TextLink, formatDate } from "@/app/_ui/ui";
+import { claimReviewerFoodGrant } from "@/app/actions";
+import { config } from "@/app/_generated/config";
+import { getReviewGrantView, progressLine, progressPct } from "@/lib/reviewGrants";
 import { reviewerPlayerId, reviewerPlayerIds } from "../reviewerLinks";
 
 export const dynamic = "force-dynamic";
@@ -29,9 +32,15 @@ function fmtDur(secs: number): string {
   return `${(secs / 3600).toFixed(1)}h`;
 }
 
-export default async function ReviewStatsPage() {
+export default async function ReviewStatsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string; ok?: string }>;
+}) {
   const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
+  const { error: flashError, ok: flashOk } = await searchParams;
+  const grant = await getReviewGrantView(access.session.slackId);
   // While live, other reviewers show as "Reviewer" (the Show reviewer names
   // button reveals them); masked here on the server so the real names never
   // reach the chart's client props.
@@ -113,6 +122,62 @@ export default async function ReviewStatsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <Flash error={flashError} ok={flashOk} />
+      {grant && (
+        <Card>
+          <CardHeader title="Your food grants" icon="purse-fill" />
+          <p className="hc-caption mb-3 text-sm">
+            Every review counts. A $20 food grant (220 px) unlocks at {grant.status.milestones.join(", ")} reviews, one
+            each, and you still buy it.
+          </p>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            {grant.status.milestones.map((m, i) => {
+              const reached = grant.status.reviews >= m;
+              const claimed = i < grant.status.claimed;
+              return (
+                <Badge key={m} tone={claimed ? "neutral" : reached ? "success" : "warning"}>
+                  {m} reviews: {claimed ? "claimed" : reached ? "ready" : `${m - grant.status.reviews} to go`}
+                </Badge>
+              );
+            })}
+          </div>
+          <div
+            className="mb-2 h-2 w-full overflow-hidden rounded-full bg-[var(--border)]"
+            role="progressbar"
+            aria-valuenow={progressPct(grant.status)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div className="h-full bg-[var(--hc-green)]" style={{ width: `${progressPct(grant.status)}%` }} />
+          </div>
+          <p className="mb-3 text-sm font-bold">{progressLine(grant.status)}</p>
+          {grant.status.available > 0 ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <form action={claimReviewerFoodGrant}>
+                <ActionButton icon="purse-fill" pendingLabel="Claiming..." disabled={!grant.itemId}>
+                  Claim a food grant (220 px)
+                </ActionButton>
+              </form>
+              <Muted className="text-sm">
+                {grant.status.available} available, or buy it from{" "}
+                {grant.itemId ? (
+                  <TextLink href={`${config.urls.site}/shop/${grant.itemId}`} external>
+                    the shop
+                  </TextLink>
+                ) : (
+                  "the shop"
+                )}
+                .
+              </Muted>
+            </div>
+          ) : (
+            <Muted className="text-sm">
+              {grant.status.next_at == null ? "You've claimed every grant." : "Nothing to claim right now."}
+            </Muted>
+          )}
+        </Card>
+      )}
+
       <Card>
         <CardHeader title="Verdicts over time" icon="analytics" />
         <p className="hc-caption mb-4 text-sm">Every review verdict across the whole team, by outcome.</p>

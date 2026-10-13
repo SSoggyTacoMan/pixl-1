@@ -63,6 +63,7 @@ import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/au
 import { decryptPII } from "@/lib/crypto";
 import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
 import { withAgeOverride } from "@/lib/ageOverrides";
+import { getReviewGrantView } from "@/lib/reviewGrants";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
 import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
 import { fetchHackatimeReport, fetchTrustFactor } from "@/lib/hackatime";
@@ -5980,4 +5981,30 @@ export const removeShowNTellEntry = guardedAction("removeShowNTellEntry", "owner
   const { error } = await db.from("show_n_tell_entries").delete().eq("id", id);
   if (error) throw new Error(error.message);
   revalidatePath("/show-n-tell");
+});
+
+// Buys the Reviewer Food Grant (drizzle/0222) for the reviewer who clicked,
+// from the review stats card. Same purchase as the shop's Buy button: the SQL
+// claim_review_grant re-checks under the buyer's row lock that a grant is
+// earned and unspent, then spends the 220 px. Only ever their own account.
+export const claimReviewerFoodGrant = guardedAction("claimReviewerFoodGrant", "reviewer", async (access): Promise<void> => {
+  const back = "/review/stats";
+  const fail = (message: string): never => redirect(`${back}?error=${encodeURIComponent(message)}`);
+  const view = await getReviewGrantView(access.session.slackId);
+  if (!view) return fail("No Pixl account found for you, log into Pixl once first.");
+  if (!view.itemId) return fail("The food grant isn't in the shop yet.");
+  if (view.status.available < 1) return fail("You don't have a food grant to claim yet.");
+  const { data, error } = await db.rpc("claim_review_grant", {
+    p_user_id: view.userId,
+    p_item_id: view.itemId,
+    p_note: "Claimed from the review dashboard",
+  });
+  if (error) throw new Error(error.message);
+  const result = (data ?? {}) as { ok?: boolean; error?: string; price?: number };
+  if (!result.ok) {
+    if (result.error === "insufficient") return fail(`Not enough pixels, the grant costs ${result.price ?? 220} px.`);
+    return fail("Couldn't claim it, try the shop instead.");
+  }
+  revalidatePath(back);
+  redirect(`${back}?ok=${encodeURIComponent("Food grant claimed, 220 px spent. The team will reach out about getting it to you.")}`);
 });

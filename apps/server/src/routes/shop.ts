@@ -95,7 +95,7 @@ async function regionFor(userId: string): Promise<string> {
 // with 0106 , fall back gracefully before each is applied so the catalog
 // keeps loading.
 const ITEM_COLUMNS =
-  "id, name, description, price, image_url, options, unlock_xp, config_options, region, category, unlock_trial_ids, manual_locked, lock_note, beacon_locked, discount_percent, created_at, reserved_user_id";
+  "id, name, description, price, image_url, options, unlock_xp, config_options, region, category, unlock_trial_ids, manual_locked, lock_note, beacon_locked, discount_percent, created_at, reserved_user_id, review_locked";
 const ITEM_COLUMNS_FALLBACK = "id, name, description, price, image_url, options";
 
 // How recently an item has to have been added to still be worth flagging as
@@ -174,7 +174,7 @@ async function fetchItems(filterIds?: number[], region?: string) {
     // A personal item (reserved_user_id) is not tied to a region, it is
     // scoped to its player by scopePersonalItems below instead.
     if (withRegion && region)
-      q = q.or(`region.eq.${orValue(region)},unlock_xp.gt.0,reserved_user_id.is.not.null`);
+      q = q.or(`region.eq.${orValue(region)},unlock_xp.gt.0,reserved_user_id.is.not.null,review_locked.eq.true`);
     return q.order("position", { ascending: true }).order("id", { ascending: true });
   };
   const first = await build(ITEM_COLUMNS, true);
@@ -350,6 +350,36 @@ async function beaconUnlocks(userId: string): Promise<{ available: number; owned
   return { available: Math.max((beaconCount ?? 0) - owned.size, 0), owned };
 }
 
+// The Reviewer Food Grant progress for one player, straight from
+// reviewer_food_grant_status (drizzle/0222): the SQL owns the milestones
+// (150, 200, 300, 400 reviews) so the dashboard and this route can't drift.
+// null when the function errors (migration not applied yet): the item then
+// just stays locked.
+export interface ReviewGrantStatus {
+  reviews: number;
+  earned: number;
+  claimed: number;
+  available: number;
+  next_at: number | null;
+  to_go: number | null;
+}
+
+async function reviewGrantStatus(userId: string): Promise<ReviewGrantStatus | null> {
+  const { data, error } = await db.rpc("reviewer_food_grant_status", { p_user_id: userId });
+  if (error || !data) {
+    if (error) console.error("[shop] reviewer_food_grant_status failed", error.message);
+    return null;
+  }
+  return data as ReviewGrantStatus;
+}
+
+export function reviewGrantLockNote(s: ReviewGrantStatus | null): string {
+  if (!s) return "Reviewers unlock this by reviewing projects.";
+  if (s.next_at == null) return `You've claimed every grant (${s.reviews} reviews).`;
+  const more = s.to_go ?? s.next_at - s.reviews;
+  return `Review ${more} more project${more === 1 ? "" : "s"} to unlock the next one (${s.reviews}/${s.next_at} reviews).`;
+}
+
 // Active catalog, plus mystery-merchant items while their event runs , those
 // stay inactive in the dashboard so they vanish the moment the event ends.
 // Trophy items (unlock_xp > 0) come back flagged with the player's own progress.
@@ -500,6 +530,19 @@ router.get("/api/shop/items", async (req, res) => {
       i.locked = beaconAvailable < 1;
       i.unlockPending = false;
       i.beaconAvailable = beaconAvailable;
+    }
+  }
+
+  // Review-locked items (the Reviewer Food Grant): locked until the player has
+  // a grant earned and not yet bought. The lock note carries their progress,
+  // clients show lock_note as-is. A manual lock above still wins.
+  if (items.some((i) => i.review_locked)) {
+    const grants = session ? await reviewGrantStatus(session.userId) : null;
+    for (const i of items) {
+      if (!i.review_locked || i.manual_locked) continue;
+      i.unlockPending = false;
+      i.locked = !grants || grants.available < 1;
+      if (i.locked) i.lock_note = reviewGrantLockNote(grants);
     }
   }
 
@@ -818,7 +861,7 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
   // outright, independent of any Trial.
   const { data: gateRow } = await db
     .from("shop_items")
-    .select("unlock_trial_ids, manual_locked, region, unlock_xp, beacon_locked, reserved_user_id")
+    .select("unlock_trial_ids, manual_locked, region, unlock_xp, beacon_locked, reserved_user_id, review_locked")
     .eq("id", id)
     .maybeSingle();
   if ((gateRow as { manual_locked?: boolean } | null)?.manual_locked)
@@ -833,7 +876,9 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
     return res.status(404).json({ ok: false, error: "unavailable" });
   const itemRegion = reservedFor ? undefined : (gateRow as { region?: string } | null)?.region;
   const itemUnlockXp = Number((gateRow as { unlock_xp?: number } | null)?.unlock_xp ?? 0);
-  if (itemRegion && itemUnlockXp <= 0 && regionMismatch(itemRegion, buyerRegion))
+  // Review-locked items are one row for every region (see drizzle/0222).
+  const reviewLocked = !!(gateRow as { review_locked?: boolean } | null)?.review_locked;
+  if (itemRegion && itemUnlockXp <= 0 && !reviewLocked && regionMismatch(itemRegion, buyerRegion))
     return res.status(403).json({ ok: false, error: "wrong_region", region: buyerRegion });
   const gateIds = Array.isArray((gateRow as { unlock_trial_ids?: unknown[] } | null)?.unlock_trial_ids)
     ? ((gateRow as { unlock_trial_ids: unknown[] }).unlock_trial_ids).map(Number).filter((n) => Number.isFinite(n) && n > 0)
@@ -844,16 +889,20 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
       return res.status(403).json({ ok: false, error: "locked" });
   }
 
-  const { data, error } = await db.rpc("buy_shop_item", {
-    p_user_id: session.userId,
-    p_item_id: id,
-    p_option: option,
-    p_config: config,
-    p_quantity: quantity,
-    p_note: note,
-    p_stock_choice: stockChoice,
-    p_buyer_region: buyerRegion,
-  });
+  // A review-locked item goes through claim_review_grant, which checks the
+  // player has a grant earned and unspent under their row lock, one per order.
+  const { data, error } = reviewLocked
+    ? await db.rpc("claim_review_grant", { p_user_id: session.userId, p_item_id: id, p_note: note })
+    : await db.rpc("buy_shop_item", {
+        p_user_id: session.userId,
+        p_item_id: id,
+        p_option: option,
+        p_config: config,
+        p_quantity: quantity,
+        p_note: note,
+        p_stock_choice: stockChoice,
+        p_buyer_region: buyerRegion,
+      });
   if (error) {
     console.error("[shop] buy failed", error);
     return res.status(500).json({ ok: false });

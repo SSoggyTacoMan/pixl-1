@@ -10,6 +10,7 @@ const {
   NEW_ITEM_DAYS,
   BUYERS_VISIBLE_MIN,
   approvedTrialIds,
+  reviewGrantLockNote,
 } = await import("./shop.js");
 
 describe("regionMismatch", () => {
@@ -153,5 +154,31 @@ describe("approvedTrialIds (Trial-gated unlocks)", () => {
   test("a reverted approval or a ban takes it away", () => {
     expect([...approvedTrialIds([p(1, 5, "draft")], [{ project_id: 1, amount: 120 }, { project_id: 1, amount: -120 }])]).toEqual([]);
     expect([...approvedTrialIds([p(1, 5, "approved", "2026-10-01")], [{ project_id: 1, amount: 120 }])]).toEqual([]);
+  });
+});
+
+describe("reviewGrantLockNote", () => {
+  const base = { reviews: 0, earned: 0, claimed: 0, available: 0, next_at: 150, to_go: 150 };
+
+  test("tells a signed-out or errored lookup to review projects", () => {
+    expect(reviewGrantLockNote(null)).toBe("Reviewers unlock this by reviewing projects.");
+  });
+
+  test("shows how far they are from the next grant", () => {
+    expect(reviewGrantLockNote({ ...base, reviews: 118, to_go: 32 })).toBe(
+      "Review 32 more projects to unlock the next one (118/150 reviews).",
+    );
+  });
+
+  test("is singular for the last review", () => {
+    expect(reviewGrantLockNote({ ...base, reviews: 149, to_go: 1 })).toBe(
+      "Review 1 more project to unlock the next one (149/150 reviews).",
+    );
+  });
+
+  test("says everything is claimed once past the last milestone", () => {
+    expect(
+      reviewGrantLockNote({ reviews: 410, earned: 4, claimed: 4, available: 0, next_at: null, to_go: null }),
+    ).toBe("You've claimed every grant (410 reviews).");
   });
 });
