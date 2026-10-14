@@ -438,6 +438,15 @@ async function recordSettledPayout(
   // without being paid or DMed for it. No payout row at all, same as the
   // "skip entirely" convention below for a verdict whose rate is 0.
   if (DM_EXCLUDED_SLACK_IDS.has(access.session.slackId)) return 0;
+  // A project is banned once: never pay a second ban on it, whoever gives it.
+  if (verdict === "banned") {
+    const { count } = await db
+      .from("review_payouts")
+      .select("id", { count: "exact", head: true })
+      .eq("project_id", projectId)
+      .eq("verdict", "banned");
+    if ((count ?? 0) > 0) return 0;
+  }
   const { full, blitzApplied } = await payoutBasePixels(verdict);
   if (full <= 0) return 0;
   const credited = await creditReviewerPixels(access.session.slackId, full);
@@ -1019,7 +1028,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   const { data: current } = await db
     .from("projects")
     .select(
-      "status, user_id, kind, name, description, image_url, first_pass_by, first_pass_hours, first_pass_verdict, second_pass_hours, second_pass_verdict, shipped_at, sidequest_id, trial_reward_choice, needs_funding, funding_usd, robert_project_id, robert_state",
+      "status, banned_at, user_id, kind, name, description, image_url, first_pass_by, first_pass_hours, first_pass_verdict, second_pass_hours, second_pass_verdict, shipped_at, sidequest_id, trial_reward_choice, needs_funding, funding_usd, robert_project_id, robert_state",
     )
     .eq("id", projectId)
     .single();
@@ -1065,6 +1074,11 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
     redirect(`${back}?error=${encodeURIComponent("You can't give the final verdict on a project you own or collaborate on.")}`);
   if (stage !== "shipped" && stage !== "second_review")
     redirect(`${back}?error=${encodeURIComponent("This project isn't awaiting review anymore.")}`);
+  // A ban leaves the status where it was (only banned_at is set), so without
+  // this a banned project could be opened again and banned again, paying the
+  // reviewer every time.
+  if (current.banned_at)
+    redirect(`${back}?error=${encodeURIComponent("This project is already banned.")}`);
   // A first-pass reviewer proposing a ban is a separate, older flow the fraud
   // triage redesign doesn't touch - it skips fraud triage entirely and goes
   // straight to a different canSecondPass reviewer confirming or overturning
@@ -1408,6 +1422,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
       })
       .eq("id", projectId)
       .in("status", ["shipped", "second_review"])
+      .is("banned_at", null)
       .select("id, name, user_id")
       .single();
     if (error || !project) {

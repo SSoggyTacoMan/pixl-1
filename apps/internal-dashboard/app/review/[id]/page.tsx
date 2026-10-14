@@ -199,6 +199,10 @@ export default async function ReviewDetail({
   // A reviewer restricted to one queue can't open a project from the other.
   // Treat it the same as a missing project rather than exposing that it exists.
   if (access.reviewQueues !== "both" && p.kind !== access.reviewQueues) notFound();
+  // Fraud review and Spot check (second pass) belong to final reviewers, fraud
+  // reviewers and owners. A normal reviewer gets the same "not found" as a
+  // missing project, so Robert's score and notes never reach them.
+  if ((p.status === "fraud_review" || p.status === "second_review") && !access.canFraudReview) notFound();
   // The Trial this project was shipped for, if the player flagged one at ship
   // time (joined in getProject). null = they built their own idea.
   const trial = (
@@ -229,6 +233,7 @@ export default async function ReviewDetail({
   const heldByMe = isHeld && p.hold_by?.match(/\(([^)]+)\)\s*$/)?.[1] === viewer;
   const canReview =
     !isHeld &&
+    !p.banned_at &&
     ((p.status === "shipped" && !isOwn) ||
       (isProposedBan && canSecondPass && !isOwn) ||
       (spotCheckStage && (access.isOwner || canSecondPass) && !isOwn));
