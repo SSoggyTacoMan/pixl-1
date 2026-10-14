@@ -750,6 +750,12 @@ export default async function ReviewDetail({
             />
           </Card>
         </>
+      ) : p.banned_at ? (
+        <Callout tone="danger" icon="important">
+          <strong>This project was banned{p.ban_by ? ` by ${p.ban_by}` : ""} on {formatDateTime(p.banned_at)}.</strong>{" "}
+          It can't be reviewed anymore and can never be shipped again.
+          {p.ban_reason && <span className="mt-1 block whitespace-pre-wrap break-words">Reason: {p.ban_reason}</span>}
+        </Callout>
       ) : isOwn ? (
         <EmptyState title="Your own submission" icon="private">
           Someone else has to review it.
