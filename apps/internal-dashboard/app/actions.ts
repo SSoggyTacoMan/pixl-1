@@ -1752,6 +1752,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
     creditNote: trialHeld
       ? `Your Trial prize is waiting, head to the project page to claim it (or take the pixels instead).`
       : undefined,
+    tier: tierUsed,
     fallback: finalFallback,
   });
   // The public post is the announcement; the detailed breakdown (hours
