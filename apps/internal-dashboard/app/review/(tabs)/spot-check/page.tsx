@@ -9,14 +9,14 @@ import { TelescreenReviewTable } from "../TelescreenReviewTable";
 
 export const dynamic = "force-dynamic";
 
-// Super-admin-only final-verdict queue: projects Robert already reviewed as
+// Final-verdict queue (owners and final reviewers): projects Robert already reviewed as
 // "not fraud" (see lib/robertSync.ts), waiting on the real approve & credit /
 // request changes / ban decision. Each row's project page shows Robert's
 // trust score and note alongside the full review form. Oldest first.
 export default async function SpotCheckPage() {
   const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
-  if (!access.isOwner) redirect("/review");
+  if (!access.isOwner && !access.canSecondPass) redirect("/review");
 
   const [rows, blackoutIds, hideReviewers] = await Promise.all([
     // includeClaimed: a project another reviewer has open stays listed (tagged), like /review.

@@ -42,6 +42,7 @@ import {
   releaseReviewHold,
   updateFundingAmount,
   skipRobertPass,
+  submitHardwareToRobert,
 } from "@/app/actions";
 import { ReviewPipelineSteps } from "@/app/_components/ReviewPipelineSteps";
 import { SecondPassChecklist } from "@/app/_components/SecondPassChecklist";
@@ -230,7 +231,7 @@ export default async function ReviewDetail({
     !isHeld &&
     ((p.status === "shipped" && !isOwn) ||
       (isProposedBan && canSecondPass && !isOwn) ||
-      (spotCheckStage && access.isOwner && !isOwn));
+      (spotCheckStage && (access.isOwner || canSecondPass) && !isOwn));
   // Reviewer-side unship (see unshipProject): available to final reviewers at
   // second pass or fraud review regardless of who could submit a verdict, and
   // never on your own project or while a hold is set.
@@ -673,6 +674,25 @@ export default async function ReviewDetail({
                 {p.robert_trust_score <= ROBERT_FRAUD_THRESHOLD ? ", in Robert's \"Fraud\" range" : ""}
               </p>
               {p.robert_note && <p className="mt-2 whitespace-pre-wrap break-words text-sm">{p.robert_note}</p>}
+            </Card>
+          )}
+          {spotCheckStage && p.kind === "hardware" && !p.robert_project_id && p.robert_trust_score == null && canSecondPass && (
+            <Card padding="compact">
+              <h3 className="hc-heading text-base">Robert fraud review</h3>
+              <p className="hc-caption mt-1 text-sm">
+                Hardware projects are not sent to Robert automatically. Send this one if you want a fraud review.
+              </p>
+              <form action={submitHardwareToRobert} className="mt-3">
+                <input type="hidden" name="projectId" value={p.id} />
+                <ActionButton
+                  variant="outline"
+                  size="sm"
+                  pendingLabel="Submitting..."
+                  confirm="Submit this hardware project to Robert? It leaves Spot check until Robert's review comes back."
+                >
+                  Submit to Robert
+                </ActionButton>
+              </form>
             </Card>
           )}
           <Card>

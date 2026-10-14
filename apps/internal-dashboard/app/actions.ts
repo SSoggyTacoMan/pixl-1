@@ -1086,12 +1086,12 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   } else if (stage === "second_review") {
     // A real approve/needs_changes/ban verdict at second_review is now the
     // Spot check step - it only fires once a second-pass reviewer has
-    // triaged the project "not fraud" (Robert's fraud review), and only a super
-    // gives it, same as the rest of Spot check's gating.
+    // triaged the project "not fraud" (Robert's fraud review), and only an owner
+    // or a final reviewer (second_pass) gives it.
     if (current.second_pass_verdict !== "not_fraud")
       redirect(`${back}?error=${encodeURIComponent("This still needs a fraud triage (Fraud / Not fraud) before a final verdict.")}`);
-    if (!access.isOwner)
-      redirect(`${back}?error=${encodeURIComponent("Only an owner gives the final verdict, in Spot check.")}`);
+    if (!access.isOwner && !access.canSecondPass)
+      redirect(`${back}?error=${encodeURIComponent("Only an owner or a final reviewer gives the final verdict, in Spot check.")}`);
   }
   if (!note)
     redirect(`${back}?error=${encodeURIComponent("Feedback is required for every verdict.")}`);
@@ -1207,6 +1207,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   // a second pass, so it falls through to bounce straight back to the maker.
   if ((stage === "shipped" && verdict !== "needs_changes") || rerouteToPipeline) {
     const proposedKey = verdict === "ban" ? "banned" : verdict;
+    const skipRobertForHardware = proposedKey === "approved" && (current as { kind?: string | null }).kind === "hardware";
     if (verdict === "approved") {
       const blackoutError = await applyBlackoutDecision({ projectId, formData, by, stage: "first_pass" });
       if (blackoutError) redirect(`${back}?error=${encodeURIComponent(blackoutError)}`);
@@ -1223,7 +1224,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
         // configured (see 0206_robert_fraud_review.sql). Submission below is
         // a no-op while unconfigured; the project just sits un-actionable
         // (see the Second pass tab) until it is.
-        status: proposedKey === "banned" ? "second_review" : "fraud_review",
+        status: proposedKey === "banned" || skipRobertForHardware ? "second_review" : "fraud_review",
         review_note: note,
         review_note_by: reviewer,
         approved_hours: approvedHours,
@@ -1238,11 +1239,13 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
         // mark and fraud-triage verdict left over from a previous cycle.
         spot_checked_at: null,
         spot_checked_by: "",
-        second_pass_by: "",
-        second_pass_at: null,
-        second_pass_note: "",
+        // A hardware approval skips Robert and parks in Spot check like a
+        // skipped Robert pass; "Submit to Robert" there sends it on request.
+        second_pass_by: skipRobertForHardware ? HARDWARE_SKIP_BY : "",
+        second_pass_at: skipRobertForHardware ? new Date().toISOString() : null,
+        second_pass_note: skipRobertForHardware ? HARDWARE_SKIP_NOTE : "",
         second_pass_hours: null,
-        second_pass_verdict: null,
+        second_pass_verdict: skipRobertForHardware ? "not_fraud" : null,
         // A submitted verdict supersedes any in-progress shared draft.
         review_draft: null,
         review_draft_by: "",
@@ -1292,7 +1295,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
       });
     }
     await logModAction(project.user_id, "project_first_pass", `${project.name}: proposed ${proposedKey.replace("_", " ")} , ${note}`, by);
-    if (proposedKey === "approved") await submitToRobert(projectId);
+    if (proposedKey === "approved" && !skipRobertForHardware) await submitToRobert(projectId);
     await flagReviewReward(rewardPx);
     const nextPath = await nextReviewPath(access, by, stage, projectId);
     revalidatePath("/review");
@@ -2056,6 +2059,74 @@ export const addProjectNote = guardedAction("addProjectNote", "reviewer", async 
 // Manually skips Robert's fraud review for a project parked in fraud_review
 // (e.g. no Hackatime data for Robert to score) and moves it straight to Spot
 // check, same shape as robertOutcome.ts's reviewPatch but with no score.
+// Hardware projects are not sent to Robert automatically (its scoring is built
+// around Hackatime data). They park in Spot check as if Robert had been
+// skipped, and a final reviewer can still send one with "Submit to Robert".
+const HARDWARE_SKIP_BY = "Hardware (not sent to Robert)";
+const HARDWARE_SKIP_NOTE = "Hardware project, not sent to Robert automatically.";
+
+// The "Submit to Robert" button on a hardware project sitting in Spot check:
+// moves it back to fraud_review and submits it. If the submission fails (for
+// example no journal entries) it goes back to Spot check with the error, so
+// the cron never retries a project that can't be built.
+export const submitHardwareToRobert = guardedAction("submitHardwareToRobert", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const back = `/review/${projectId}`;
+  if (!projectId) return;
+  if (!access.canSecondPass && !access.isOwner)
+    redirect(`${back}?error=${encodeURIComponent("Only a final reviewer or an owner can submit a project to Robert.")}`);
+  await authorizeProjectAction(access, projectId, back, {
+    ownMessage: "You can't submit a project you own or collaborate on.",
+  });
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({
+      status: "fraud_review",
+      second_pass_by: "",
+      second_pass_at: null,
+      second_pass_note: "",
+      second_pass_verdict: null,
+      robert_error: "",
+    })
+    .eq("id", projectId)
+    .eq("status", "second_review")
+    .eq("kind", "hardware")
+    .eq("second_pass_verdict", "not_fraud")
+    .is("robert_project_id", null)
+    .select("id, name, user_id")
+    .maybeSingle();
+  if (error) console.error("submitHardwareToRobert failed", projectId, error.message);
+  if (!project)
+    redirect(`${back}?error=${encodeURIComponent("This project can't be sent to Robert (not a hardware project in Spot check, or already submitted).")}`);
+
+  await submitToRobert(projectId);
+  const { data: after } = await db
+    .from("projects")
+    .select("robert_project_id, robert_error")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!after?.robert_project_id) {
+    await db
+      .from("projects")
+      .update({
+        status: "second_review",
+        second_pass_by: HARDWARE_SKIP_BY,
+        second_pass_at: new Date().toISOString(),
+        second_pass_note: HARDWARE_SKIP_NOTE,
+        second_pass_verdict: "not_fraud",
+      })
+      .eq("id", projectId)
+      .eq("status", "fraud_review");
+    redirect(`${back}?error=${encodeURIComponent(`Robert did not accept it: ${after?.robert_error || "submission failed"}.`)}`);
+  }
+
+  await logModAction(project.user_id as string, "project_robert_submitted", `${project.name}: sent to Robert by hand`, by);
+  revalidatePath("/review");
+  redirect(back);
+});
+
 export const skipRobertPass = guardedAction("skipRobertPass", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);

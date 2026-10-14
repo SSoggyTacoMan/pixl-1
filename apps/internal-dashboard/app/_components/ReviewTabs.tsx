@@ -7,6 +7,7 @@ import { useLiveMode } from "@/app/_components/LiveMode";
 
 export function ReviewTabs({
   isSuper,
+  canSpotCheck,
   canFraudReview,
   fraudOnly,
   pending,
@@ -14,6 +15,8 @@ export function ReviewTabs({
   proposedBanCount,
 }: {
   isSuper: boolean;
+  /** Owners and final reviewers (second_pass) work the Spot check queue. */
+  canSpotCheck: boolean;
   canFraudReview: boolean;
   fraudOnly: boolean;
   pending?: number;
@@ -40,7 +43,9 @@ export function ReviewTabs({
     // sits in second_review like any other second-pass work, but is easy to
     // miss there, so it gets its own read-only tab.
     tabs.push({ href: "/review/proposed-bans", label: "Proposed bans", count: proposedBanCount });
-    tabs.push({ href: "/review/spot-check", label: "Spot check", count: spotCheckCount });
+  }
+  if (canSpotCheck) tabs.push({ href: "/review/spot-check", label: "Spot check", count: spotCheckCount });
+  if (isSuper) {
     tabs.push({ href: "/review/log", label: "Reviewer log" });
     // Internal reviewer notes: the tab disappears while live (the page itself
     // also refuses to render).

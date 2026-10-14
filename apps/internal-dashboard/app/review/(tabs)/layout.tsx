@@ -17,10 +17,12 @@ export default async function ReviewLayout({ children }: { children: React.React
   const access = await requirePage("staff");
   if (!access.isReviewer && !access.canFraudReview) redirect(landingFor(access));
   const fraudOnly = !access.isReviewer && !access.isOwner;
+  // Spot check is worked by owners and final reviewers (second_pass).
+  const canSpotCheck = access.isOwner || access.canSecondPass;
   // "Needs review" is first-pass ("shipped") work only, for every viewer.
   const [pending, spotCheckCount, proposedBanCount, live, hideReviewers] = await Promise.all([
     fraudOnly ? Promise.resolve(undefined) : countPendingReviews({ viewer: access.session.slackId }),
-    access.isOwner ? countSpotCheckProjects() : Promise.resolve(undefined),
+    canSpotCheck ? countSpotCheckProjects() : Promise.resolve(undefined),
     access.isOwner ? countProposedBanProjects() : Promise.resolve(undefined),
     getLiveMode(),
     getHideReviewers(),
@@ -37,6 +39,7 @@ export default async function ReviewLayout({ children }: { children: React.React
       />
       <ReviewTabs
         isSuper={access.isOwner}
+        canSpotCheck={canSpotCheck}
         canFraudReview={access.canFraudReview}
         fraudOnly={fraudOnly}
         pending={pending}
