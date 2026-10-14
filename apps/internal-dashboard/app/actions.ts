@@ -1439,15 +1439,14 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
 
   const creditHours = approvedHours ?? claimedHours;
 
-  // A Trial's min-hours requirement is a hard floor on approval: if the
-  // credited hours (after any deflation) don't clear it, this can't be
-  // approved , the reviewer has to request changes instead.
+  // A Trial's min-hours requirement no longer blocks approval: credited below
+  // it, the ship is paid like any other (pixels for every hour, no Trial prize,
+  // nothing held), and the maker is told why. The rest of the approval then
+  // treats it as a plain project, so linkedTrial is dropped here.
+  let belowTrialMin: { name: string; minHours: number } | null = null;
   if (linkedTrial?.min_hours != null && creditHours < Number(linkedTrial.min_hours)) {
-    redirect(
-      `${back}?error=${encodeURIComponent(
-        `Credited hours (${creditHours}h) are below "${linkedTrial.name}"'s ${linkedTrial.min_hours}h minimum , use Request Changes instead, or credit at least ${linkedTrial.min_hours}h.`,
-      )}`,
-    );
+    belowTrialMin = { name: linkedTrial.name, minHours: Number(linkedTrial.min_hours) };
+    linkedTrial = null;
   }
 
   const finalBlackoutError = await applyBlackoutDecision({ projectId, formData, by, stage: "final" });
@@ -1590,6 +1589,8 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
     credited +=
       ` Your rate: ${dispRate} px/h ($${(dispRate * config.economy.pixelValueUsd).toFixed(2)}/hr) ,${reLine}`;
   } else if (linkedTrial) credited += ` Either way,${reLine}`;
+  if (belowTrialMin)
+    credited += ` Trial "${belowTrialMin.name}" needs ${belowTrialMin.minHours}h and this ship was credited ${creditHours}h, so you got the pixels for your hours but not the Trial prize.`;
   if (goalNote && deltaPx > 0) credited += goalNote;
   if (referralNote && deltaPx > 0) credited += referralNote;
   if (fundingPx > 0)
@@ -1754,7 +1755,9 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
     pixels: trialHeld ? trialBeyondPx : Math.max(deltaPx, 0),
     creditNote: trialHeld
       ? `Your Trial prize is waiting, head to the project page to claim it (or take the pixels instead).`
-      : undefined,
+      : belowTrialMin
+        ? `It was credited below the ${belowTrialMin.minHours}h Trial minimum, so these are plain pixels and there is no Trial prize.`
+        : undefined,
     tier: tierUsed,
     fallback: finalFallback,
   });

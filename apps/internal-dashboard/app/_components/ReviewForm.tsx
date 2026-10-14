@@ -1082,20 +1082,20 @@ export function ReviewForm({
             savedTier={tier}
             projectId={projectId}
             playerReBefore={playerReBefore}
-            forTrial={!!trial}
+            forTrial={!!trial && !(trial.minHours != null && hours < trial.minHours)}
             trialMinHours={trial?.minHours}
             trialName={trial?.name}
             fundingUsd={fundingUsd}
           />
           {trial?.minHours != null &&
             (hours < trial.minHours ? (
-              <Callout tone="danger" icon="important">
-                Trial &quot;{trial.name}&quot; needs {trial.minHours}h minimum to approve. The credited hours are below
-                that, so Approve will be blocked.
+              <Callout tone="neutral" icon="important">
+                Trial &quot;{trial.name}&quot; needs {trial.minHours}h for the prize. The credited hours are below
+                that, so you can still approve: the maker gets the pixels but no Trial prize.
               </Callout>
             ) : (
               <p className="hc-caption text-xs">
-                Trial &quot;{trial.name}&quot; needs {trial.minHours}h minimum to approve.
+                Trial &quot;{trial.name}&quot; needs {trial.minHours}h to earn the prize.
               </p>
             ))}
           {bounties.length > 0 && (
