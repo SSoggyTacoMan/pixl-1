@@ -11,17 +11,17 @@ afterEach(() => {
 /** Route table keyed by URL; anything unrouted 404s, like a real host would.
  *  Only the GitHub path still goes through fetch() - see the local-server
  *  tests below for the forgejo/gitlab (SSRF-guarded) paths. */
-function routeFetch(routes: Record<string, { status?: number; json?: unknown; text?: string }>) {
+function routeFetch(routes: Record<string, { status?: number; json?: unknown; text?: string; headers?: Record<string, string> }>) {
   const calls: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     calls.push(url);
     const r = routes[url];
     if (!r) return new Response("not found", { status: 404 });
-    if (r.text !== undefined) return new Response(r.text, { status: r.status ?? 200 });
+    if (r.text !== undefined) return new Response(r.text, { status: r.status ?? 200, headers: r.headers });
     return new Response(JSON.stringify(r.json ?? []), {
       status: r.status ?? 200,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...r.headers },
     });
   }) as typeof fetch;
   return calls;
@@ -99,6 +99,54 @@ describe("fetchCommits (github, unaffected by the SSRF guard - fixed api.github.
     expect(r.error).toBe("unsupported_host");
     expect(calls).toEqual([]);
   });
+
+  test("fetches page 1 of 100 commits by default and indicates hasMore via Link header", async () => {
+    const makeCommits = (count: number, prefix: string) =>
+      Array.from({ length: count }, (_, i) => ({
+        sha: `${prefix}${i}`.padStart(7, "0"),
+        commit: { message: `commit ${prefix} ${i}`, author: { name: "User", email: "u@example.com", date: "2026-09-01T10:00:00Z" } },
+        author: { login: "user" },
+        html_url: `https://github.com/org/repo/commit/${prefix}${i}`,
+      }));
+
+    const p1 = makeCommits(100, "a");
+    const p2 = makeCommits(100, "b");
+    const p3 = makeCommits(70, "c");
+    const calls = routeFetch({
+      "https://api.github.com/repos/org/repo/commits?per_page=100": {
+        json: p1,
+        headers: { link: '<https://api.github.com/repos/org/repo/commits?per_page=100&page=2>; rel="next"' },
+      },
+      "https://api.github.com/repos/org/repo/commits?per_page=100&page=2": {
+        json: p2,
+        headers: { link: '<https://api.github.com/repos/org/repo/commits?per_page=100&page=3>; rel="next"' },
+      },
+      "https://api.github.com/repos/org/repo/commits?per_page=100&page=3": {
+        json: p3,
+      },
+    });
+
+    const r1 = await fetchCommits("https://github.com/org/repo");
+    expect(r1.error).toBeNull();
+    expect(r1.commits).toHaveLength(100);
+    expect(r1.hasMore).toBe(true);
+
+    const r2 = await fetchCommits("https://github.com/org/repo", 100, 2);
+    expect(r2.error).toBeNull();
+    expect(r2.commits).toHaveLength(100);
+    expect(r2.hasMore).toBe(true);
+
+    const r3 = await fetchCommits("https://github.com/org/repo", 100, 3);
+    expect(r3.error).toBeNull();
+    expect(r3.commits).toHaveLength(70);
+    expect(r3.hasMore).toBe(false);
+
+    expect(calls).toEqual([
+      "https://api.github.com/repos/org/repo/commits?per_page=100",
+      "https://api.github.com/repos/org/repo/commits?per_page=100&page=2",
+      "https://api.github.com/repos/org/repo/commits?per_page=100&page=3",
+    ]);
+  });
 });
 
 // forgejo/gitlab (and the "unknown host, probe both" path) now go through
@@ -129,6 +177,50 @@ describe("fetchCommits (forgejo/gitlab, via a local server standing in for the r
     }
   });
 
+  test("pages forgejo commits by page parameter", async () => {
+    const p1 = Array.from({ length: 50 }, (_, i) => ({
+      sha: `a${i}`.padStart(7, "0"),
+      html_url: `https://codeberg.org/me/thing/commit/a${i}`,
+      commit: { message: `commit a ${i}`, author: { name: "Brandt", email: "b@example.com", date: "2026-09-01T10:00:00Z" } },
+      author: { login: "brandt" },
+      stats: { additions: 1, deletions: 1 },
+    }));
+    const p2 = Array.from({ length: 20 }, (_, i) => ({
+      sha: `b${i}`.padStart(7, "0"),
+      html_url: `https://codeberg.org/me/thing/commit/b${i}`,
+      commit: { message: `commit b ${i}`, author: { name: "Brandt", email: "b@example.com", date: "2026-09-01T10:00:00Z" } },
+      author: { login: "brandt" },
+      stats: { additions: 2, deletions: 0 },
+    }));
+    const { port, close } = await startServer((req, res) => {
+      if (req.url === "/api/v1/repos/me/thing/commits?limit=50&stat=true") return jsonServer(p1)(req, res);
+      if (req.url === "/api/v1/repos/me/thing/commits?limit=50&stat=true&page=2") return jsonServer(p2)(req, res);
+      res.writeHead(404).end();
+    });
+    try {
+      const lookupImpl = lookupOf({ address: "127.0.0.1", family: 4 });
+      const r1 = await fetchCommits(`https://gitea.example.test:${port}/me/thing`, 50, {
+        lookupImpl,
+        isBlockedIp: allowAll,
+        ca: httpsFixture.cert,
+      });
+      expect(r1.error).toBeNull();
+      expect(r1.commits).toHaveLength(50);
+      expect(r1.hasMore).toBe(true);
+
+      const r2 = await fetchCommits(`https://gitea.example.test:${port}/me/thing`, 50, 2, {
+        lookupImpl,
+        isBlockedIp: allowAll,
+        ca: httpsFixture.cert,
+      });
+      expect(r2.error).toBeNull();
+      expect(r2.commits).toHaveLength(20);
+      expect(r2.hasMore).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
   test("a self-hosted gitlab is found after forgejo's api answers 404", async () => {
     const { port, close } = await startServer((req, res) => {
       if (req.url === "/api/v4/projects/me%2Fthing/repository/commits?per_page=50&with_stats=true") {
@@ -145,6 +237,56 @@ describe("fetchCommits (forgejo/gitlab, via a local server standing in for the r
       });
       expect(r.provider).toBe("gitlab");
       expect(r.commits[0]).toMatchObject({ sha: "def5678", message: "fix the thing", author: "Someone" });
+    } finally {
+      await close();
+    }
+  });
+
+  test("pages gitlab commits by page parameter", async () => {
+    const p1 = Array.from({ length: 100 }, (_, i) => ({
+      id: `a${i}`.padStart(12, "0"),
+      short_id: `a${i}`.padStart(7, "0"),
+      title: `commit a ${i}`,
+      author_name: "Someone",
+      author_email: "s@example.com",
+      committed_date: "2026-09-02T10:00:00Z",
+      web_url: `https://gitlab.com/group/proj/-/commit/a${i}`,
+      stats: { additions: 1, deletions: 1 },
+    }));
+    const p2 = Array.from({ length: 20 }, (_, i) => ({
+      id: `b${i}`.padStart(12, "0"),
+      short_id: `b${i}`.padStart(7, "0"),
+      title: `commit b ${i}`,
+      author_name: "Someone",
+      author_email: "s@example.com",
+      committed_date: "2026-09-02T10:00:00Z",
+      web_url: `https://gitlab.com/group/proj/-/commit/b${i}`,
+      stats: { additions: 2, deletions: 0 },
+    }));
+    const { port, close } = await startServer((req, res) => {
+      if (req.url === "/api/v4/projects/group%2Fproj/repository/commits?per_page=100&with_stats=true") return jsonServer(p1)(req, res);
+      if (req.url === "/api/v4/projects/group%2Fproj/repository/commits?per_page=100&with_stats=true&page=2") return jsonServer(p2)(req, res);
+      res.writeHead(404).end();
+    });
+    try {
+      const lookupImpl = lookupOf({ address: "127.0.0.1", family: 4 });
+      const r1 = await fetchCommits(`https://glab.example.test:${port}/group/proj`, 100, {
+        lookupImpl,
+        isBlockedIp: allowAll,
+        ca: httpsFixture.cert,
+      });
+      expect(r1.error).toBeNull();
+      expect(r1.commits).toHaveLength(100);
+      expect(r1.hasMore).toBe(true);
+
+      const r2 = await fetchCommits(`https://glab.example.test:${port}/group/proj`, 100, 2, {
+        lookupImpl,
+        isBlockedIp: allowAll,
+        ca: httpsFixture.cert,
+      });
+      expect(r2.error).toBeNull();
+      expect(r2.commits).toHaveLength(20);
+      expect(r2.hasMore).toBe(false);
     } finally {
       await close();
     }

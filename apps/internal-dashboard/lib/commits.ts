@@ -55,6 +55,8 @@ export interface CommitResult {
    * the host rather than saying "GitHub" at a Codeberg user. */
   provider?: GitProvider;
   host?: string;
+  /** Whether the host indicates additional commits exist past this page. */
+  hasMore?: boolean;
 }
 
 export interface RepoRef {
@@ -195,14 +197,30 @@ function fail(ref: RepoRef, error: string, detail?: string): CommitResult {
   return { repo: ref.path, commits: [], error, detail, provider: ref.provider ?? undefined, host: ref.host };
 }
 
-async function fetchGithub(ref: RepoRef, limit: number): Promise<CommitResult> {
-  const r = await ghFetch(`https://api.github.com/repos/${ref.path}/commits?per_page=${limit}`, {
-    cache: "no-store",
-  });
+function mapGithubCommit(c: any): Commit {
+  const fullMessage = String(c.commit?.message ?? "");
+  const author = String(c.author?.login ?? c.commit?.author?.name ?? "?");
+  const email = String(c.commit?.author?.email ?? "");
+  return {
+    sha: String(c.sha ?? "").slice(0, 7),
+    message: fullMessage.split("\n")[0].slice(0, 200),
+    author,
+    date: String(c.commit?.author?.date ?? ""),
+    url: String(c.html_url ?? ""),
+    ai: looksAiAuthored(fullMessage, author, email) || undefined,
+  };
+}
+
+async function fetchGithub(ref: RepoRef, limit: number, page = 1): Promise<CommitResult> {
+  const perPage = Math.min(limit, 100);
+  const url =
+    page === 1
+      ? `https://api.github.com/repos/${ref.path}/commits?per_page=${perPage}`
+      : `https://api.github.com/repos/${ref.path}/commits?per_page=${perPage}&page=${page}`;
+
+  const r = await ghFetch(url, { cache: "no-store" });
   if (r.status === 404) return fail(ref, "not_found");
   if (isRateLimit(r)) return fail(ref, "rate_limited");
-  // Not a quota problem - surface what GitHub actually said instead of
-  // sending whoever reads this off chasing a rate limit that isn't there.
   if (r.status === 403) {
     let why = "";
     try {
@@ -211,122 +229,151 @@ async function fetchGithub(ref: RepoRef, limit: number): Promise<CommitResult> {
     return fail(ref, "forbidden", why);
   }
   if (!r.ok) return fail(ref, `http_${r.status}`);
-  const json = (await r.json()) as any[];
-  const commits = (Array.isArray(json) ? json : []).map((c) => {
-    const fullMessage = String(c.commit?.message ?? "");
-    const author = String(c.author?.login ?? c.commit?.author?.name ?? "?");
-    const email = String(c.commit?.author?.email ?? "");
-    return {
-      sha: String(c.sha ?? "").slice(0, 7),
-      message: fullMessage.split("\n")[0].slice(0, 200),
-      author,
-      date: String(c.commit?.author?.date ?? ""),
-      url: String(c.html_url ?? ""),
-      ai: looksAiAuthored(fullMessage, author, email) || undefined,
-    } satisfies Commit;
-  });
-  return { repo: ref.path, commits, error: null, provider: "github", host: ref.host };
+
+  let json: any[];
+  try {
+    json = (await r.json()) as any[];
+  } catch {
+    return fail(ref, "fetch_failed");
+  }
+  if (!Array.isArray(json)) return fail(ref, "fetch_failed");
+
+  const commits = json.map(mapGithubCommit);
+  const link = r.headers.get("link");
+  const hasMore = link ? link.includes('rel="next"') : commits.length === perPage;
+
+  return { repo: ref.path, commits, error: null, provider: "github", host: ref.host, hasMore };
+}
+
+function mapForgejoCommit(c: any): Commit {
+  const fullMessage = String(c.commit?.message ?? "");
+  const author = String(c.author?.login ?? c.commit?.author?.name ?? "?");
+  const email = String(c.commit?.author?.email ?? "");
+  return {
+    sha: String(c.sha ?? "").slice(0, 7),
+    message: fullMessage.split("\n")[0].slice(0, 200),
+    author,
+    date: String(c.commit?.author?.date ?? c.created ?? ""),
+    url: String(c.html_url ?? ""),
+    additions: c.stats ? Number(c.stats.additions) || 0 : undefined,
+    deletions: c.stats ? Number(c.stats.deletions) || 0 : undefined,
+    ai: looksAiAuthored(fullMessage, author, email) || undefined,
+  };
 }
 
 // Gitea/Forgejo. `stat=true` inlines per-commit additions/deletions, so
 // unlike GitHub this needs no follow-up request per commit.
-async function fetchForgejo(ref: RepoRef, limit: number, deps?: SsrfGuardDeps): Promise<CommitResult | null> {
-  const r = await forgejoFetch(
-    `https://${ref.host}/api/v1/repos/${ref.path}/commits?limit=${limit}&stat=true`,
-    ref.host,
-    deps,
-  );
-  // null means either the host failed the SSRF check (blocked/private target,
-  // or its DNS didn't resolve) or a genuine network error - either way there's
-  // nothing to retry with a different dialect for a *known* host, and an
-  // unknown host just moves on to the next probe below.
-  if (!r) return ref.provider ? fail(ref, "fetch_failed") : null;
-  if (r.status === 404) return ref.provider ? fail(ref, "not_found") : null;
-  if (r.status === 429) return fail(ref, "rate_limited");
-  if (r.status < 200 || r.status >= 300) return ref.provider ? fail(ref, `http_${r.status}`) : null;
-  const json = r.json;
-  if (!Array.isArray(json)) return null;
-  const commits = json.map((c) => {
-    const fullMessage = String(c.commit?.message ?? "");
-    const author = String(c.author?.login ?? c.commit?.author?.name ?? "?");
-    const email = String(c.commit?.author?.email ?? "");
-    return {
-      sha: String(c.sha ?? "").slice(0, 7),
-      message: fullMessage.split("\n")[0].slice(0, 200),
-      author,
-      date: String(c.commit?.author?.date ?? c.created ?? ""),
-      url: String(c.html_url ?? ""),
-      additions: c.stats ? Number(c.stats.additions) || 0 : undefined,
-      deletions: c.stats ? Number(c.stats.deletions) || 0 : undefined,
-      ai: looksAiAuthored(fullMessage, author, email) || undefined,
-    } satisfies Commit;
-  });
-  return { repo: ref.path, commits, error: null, provider: "forgejo", host: ref.host };
+async function fetchForgejo(ref: RepoRef, limit: number, page = 1, deps?: SsrfGuardDeps): Promise<CommitResult | null> {
+  const perPage = Math.min(limit, 50);
+  const commits: Commit[] = [];
+  const startP = (page - 1) * Math.ceil(limit / perPage) + 1;
+  const endP = startP + Math.ceil(limit / perPage);
+  let hasMore = false;
+
+  for (let p = startP; p < endP; p++) {
+    const url =
+      p === 1
+        ? `https://${ref.host}/api/v1/repos/${ref.path}/commits?limit=${perPage}&stat=true`
+        : `https://${ref.host}/api/v1/repos/${ref.path}/commits?limit=${perPage}&stat=true&page=${p}`;
+
+    const r = await forgejoFetch(url, ref.host, deps);
+    if (!r) return p === startP ? (ref.provider ? fail(ref, "fetch_failed") : null) : null;
+    if (r.status === 404) return p === startP ? (ref.provider ? fail(ref, "not_found") : null) : null;
+    if (r.status === 429) return fail(ref, "rate_limited");
+    if (r.status < 200 || r.status >= 300) return p === startP ? (ref.provider ? fail(ref, `http_${r.status}`) : null) : null;
+
+    const json = r.json;
+    if (!Array.isArray(json)) return p === startP ? null : null;
+    if (json.length === 0) {
+      hasMore = false;
+      break;
+    }
+
+    for (const c of json) {
+      commits.push(mapForgejoCommit(c));
+    }
+
+    if (json.length < perPage) {
+      hasMore = false;
+      break;
+    }
+    hasMore = true;
+  }
+
+  return { repo: ref.path, commits, error: null, provider: "forgejo", host: ref.host, hasMore };
+}
+
+function mapGitlabCommit(c: any): Commit {
+  const fullMessage = String(c.message ?? c.title ?? "");
+  const author = String(c.author_name ?? "?");
+  const email = String(c.author_email ?? "");
+  return {
+    sha: String(c.short_id ?? c.id ?? "").slice(0, 7),
+    message: fullMessage.split("\n")[0].slice(0, 200),
+    author,
+    date: String(c.committed_date ?? c.created_at ?? ""),
+    url: String(c.web_url ?? ""),
+    additions: c.stats ? Number(c.stats.additions) || 0 : undefined,
+    deletions: c.stats ? Number(c.stats.deletions) || 0 : undefined,
+    ai: looksAiAuthored(fullMessage, author, email) || undefined,
+  };
 }
 
 // GitLab wants the project path url-encoded into a single segment.
 // `with_stats=true` inlines additions/deletions, same as Forgejo.
-async function fetchGitlab(ref: RepoRef, limit: number, deps?: SsrfGuardDeps): Promise<CommitResult | null> {
+async function fetchGitlab(ref: RepoRef, limit: number, page = 1, deps?: SsrfGuardDeps): Promise<CommitResult | null> {
   const id = encodeURIComponent(ref.path);
-  const r = await gitlabFetch(
-    `https://${ref.host}/api/v4/projects/${id}/repository/commits?per_page=${limit}&with_stats=true`,
-    ref.host,
-    deps,
-  );
-  // null means either the host failed the SSRF check (blocked/private target,
-  // or its DNS didn't resolve) or a genuine network error - either way there's
-  // nothing to retry with a different dialect for a *known* host, and an
-  // unknown host just moves on to the next probe below.
+  const perPage = Math.min(limit, 100);
+  const url =
+    page === 1
+      ? `https://${ref.host}/api/v4/projects/${id}/repository/commits?per_page=${perPage}&with_stats=true`
+      : `https://${ref.host}/api/v4/projects/${id}/repository/commits?per_page=${perPage}&with_stats=true&page=${page}`;
+
+  const r = await gitlabFetch(url, ref.host, deps);
   if (!r) return ref.provider ? fail(ref, "fetch_failed") : null;
   if (r.status === 404) return ref.provider ? fail(ref, "not_found") : null;
   if (r.status === 429) return fail(ref, "rate_limited");
   if (r.status < 200 || r.status >= 300) return ref.provider ? fail(ref, `http_${r.status}`) : null;
   const json = r.json;
   if (!Array.isArray(json)) return null;
-  const commits = json.map((c) => {
-    const fullMessage = String(c.message ?? c.title ?? "");
-    const author = String(c.author_name ?? "?");
-    const email = String(c.author_email ?? "");
-    return {
-      sha: String(c.short_id ?? c.id ?? "").slice(0, 7),
-      message: fullMessage.split("\n")[0].slice(0, 200),
-      author,
-      date: String(c.committed_date ?? c.created_at ?? ""),
-      url: String(c.web_url ?? ""),
-      additions: c.stats ? Number(c.stats.additions) || 0 : undefined,
-      deletions: c.stats ? Number(c.stats.deletions) || 0 : undefined,
-      ai: looksAiAuthored(fullMessage, author, email) || undefined,
-    } satisfies Commit;
-  });
-  return { repo: ref.path, commits, error: null, provider: "gitlab", host: ref.host };
+  const commits = json.map(mapGitlabCommit);
+  const hasMore = commits.length === perPage;
+  return { repo: ref.path, commits, error: null, provider: "gitlab", host: ref.host, hasMore };
 }
+
+// ponytail: default limit is 100 commits per page; reviewer UI loads subsequent pages of 100 on demand.
+export const DEFAULT_COMMIT_LIMIT = 100;
 
 export async function fetchCommits(
   repoUrl: string | null,
-  limit = 50,
+  limit = DEFAULT_COMMIT_LIMIT,
+  pageOrDeps?: number | SsrfGuardDeps,
   deps?: SsrfGuardDeps,
 ): Promise<CommitResult> {
+  const page = typeof pageOrDeps === "number" ? Math.max(1, pageOrDeps) : 1;
+  const actualDeps = typeof pageOrDeps === "object" ? pageOrDeps : deps;
+
   if (!repoUrl) return { repo: null, commits: [], error: null };
   const ref = parseRepoRef(repoUrl);
   if (!ref) return { repo: null, commits: [], error: "unsupported_host" };
 
-  const cacheKey = `${ref.provider ?? "probe"}:${ref.host}/${ref.path}#${limit}`;
+  const cacheKey = `${ref.provider ?? "probe"}:${ref.host}/${ref.path}#${limit}@${page}`;
   const cached = commitsCache.get(cacheKey);
   if (cached && Date.now() - cached.at < COMMITS_CACHE_TTL_MS) return cached.result;
 
   let result: CommitResult;
   try {
     if (ref.provider === "github") {
-      result = await fetchGithub(ref, limit);
+      result = await fetchGithub(ref, limit, page);
     } else if (ref.provider === "gitlab") {
-      result = (await fetchGitlab(ref, limit, deps)) ?? fail(ref, "fetch_failed");
+      result = (await fetchGitlab(ref, limit, page, actualDeps)) ?? fail(ref, "fetch_failed");
     } else if (ref.provider === "forgejo") {
-      result = (await fetchForgejo(ref, limit, deps)) ?? fail(ref, "fetch_failed");
+      result = (await fetchForgejo(ref, limit, page, actualDeps)) ?? fail(ref, "fetch_failed");
     } else {
       // Unknown host: whichever dialect answers with a real commit array wins.
       result =
-        (await fetchForgejo(ref, limit, deps)) ??
-        (await fetchGitlab(ref, limit, deps)) ??
+        (await fetchForgejo(ref, limit, page, actualDeps)) ??
+        (await fetchGitlab(ref, limit, page, actualDeps)) ??
         fail(ref, "unsupported_host");
     }
   } catch {
