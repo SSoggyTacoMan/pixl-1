@@ -1322,6 +1322,9 @@ export function ReviewForm({
                 <Button type="button" variant="outline" onClick={undoVerdict}>
                   Undo
                 </Button>
+                <Button type="button" variant="success" onClick={sendVerdict}>
+                  Send now
+                </Button>
               </span>
             </Callout>
           )}
