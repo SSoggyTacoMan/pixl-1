@@ -871,6 +871,39 @@ export function ReviewForm({
   const [submitError, setSubmitError] = useState("");
   const [, startSubmit] = useTransition();
 
+  // Undo window: a verdict is only sent (and so only announced in Slack, DMed,
+  // credited) UNDO_SECONDS after the click, and Undo within that time cancels
+  // it. The FormData is captured at click time and held here until then.
+  const UNDO_SECONDS = 10;
+  const [undoLeft, setUndoLeft] = useState<number | null>(null);
+  const pendingFd = useRef<FormData | null>(null);
+
+  useEffect(() => {
+    if (undoLeft === null) return;
+    if (undoLeft <= 0) {
+      sendVerdict();
+      return;
+    }
+    const t = setTimeout(() => setUndoLeft((n) => (n === null ? null : n - 1)), 1000);
+    return () => clearTimeout(t);
+    // sendVerdict only reads refs and stable setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [undoLeft]);
+
+  // Leaving the page inside the window would drop the verdict silently.
+  useEffect(() => {
+    if (undoLeft === null) return;
+    const warn = (ev: BeforeUnloadEvent) => ev.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [undoLeft === null]);
+
+  const undoVerdict = () => {
+    pendingFd.current = null;
+    setUndoLeft(null);
+    setPendingVerdict(null);
+  };
+
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (pendingVerdict) return;
@@ -881,11 +914,20 @@ export function ReviewForm({
     const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const fd = new FormData(e.currentTarget, submitter);
     const verdict = String(fd.get("verdict") ?? "");
+    setSubmitError("");
+    setPendingVerdict(verdict);
+    pendingFd.current = fd;
+    setUndoLeft(UNDO_SECONDS);
+  };
+
+  const sendVerdict = () => {
+    const fd = pendingFd.current;
+    if (!fd) return;
+    pendingFd.current = null;
+    setUndoLeft(null);
     // Only flags the attempt; the unmount effect decides whether to clear the draft.
     submittedRef.current = true;
     if (serverDraftTimer.current) clearTimeout(serverDraftTimer.current);
-    setSubmitError("");
-    setPendingVerdict(verdict);
     startSubmit(async () => {
       try {
         await reviewProject(fd);
@@ -1271,6 +1313,18 @@ export function ReviewForm({
             label="If you request changes: DM me on Slack when the player ships this project again, so I can re-review it while I still remember it."
           />
           {submitError && <Callout tone="danger" icon="important">{submitError}</Callout>}
+          {undoLeft !== null && (
+            <Callout tone="neutral" icon="clock">
+              <span className="flex flex-wrap items-center gap-3">
+                <span>
+                  Sending your verdict in {undoLeft}s. Nothing is posted or credited until then.
+                </span>
+                <Button type="button" variant="outline" onClick={undoVerdict}>
+                  Undo
+                </Button>
+              </span>
+            </Callout>
+          )}
           <VerdictButtons
             secondPass={secondPass}
             pendingVerdict={pendingVerdict}
