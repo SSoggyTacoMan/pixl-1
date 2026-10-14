@@ -7,6 +7,7 @@ import {
   NO_REVIEW,
   SECOND_PASS,
   EDIT_SUBMISSION,
+  AI_DRAFT,
 } from "@/lib/guard";
 import {
   getAdmin,
@@ -16,7 +17,14 @@ import {
   auditFlags,
   type ReviewerStats,
 } from "@/lib/db";
-import { removeReviewer, setSecondPass, setEditSubmission, setReviewQueueAccess } from "@/app/actions";
+import {
+  removeReviewer,
+  setSecondPass,
+  setEditSubmission,
+  setReviewQueueAccess,
+  setAiDraft,
+  messageReviewer,
+} from "@/app/actions";
 import { slackHandle } from "@/lib/slack";
 import {
   ActionButton,
@@ -27,6 +35,7 @@ import {
   DescriptionList,
   EmptyRow,
   Field,
+  Flash,
   Input,
   Mono,
   Muted,
@@ -34,6 +43,7 @@ import {
   Stat,
   StatGrid,
   Table,
+  Textarea,
   TextLink,
   formatDate,
   formatDateTime,
@@ -75,9 +85,16 @@ const QUEUE_SCOPES = [
   { key: "both", label: "Both" },
 ] as const;
 
-export default async function ReviewerPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ReviewerPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ error?: string; ok?: string }>;
+}) {
   await requirePage("owner");
   const { id } = await params;
+  const { error: flashError, ok: flashOk } = await searchParams;
   const slackId = decodeURIComponent(id);
 
   const admin = await getAdmin(slackId);
@@ -102,6 +119,7 @@ export default async function ReviewerPage({ params }: { params: Promise<{ id: s
   const envGrantsSecondPass = secondPassIds.length === 0 ? isSuper : secondPassIds.includes(slackId);
   const hasSecondPass = !!admin?.permissions.includes(SECOND_PASS);
   const queueScope = reviewQueueScopeFor(admin?.permissions);
+  const hasAiDraft = !!admin?.permissions.includes(AI_DRAFT);
 
   return (
     <div className="flex flex-col gap-6">
@@ -123,9 +141,12 @@ export default async function ReviewerPage({ params }: { params: Promise<{ id: s
             {isSuper && <Badge tone="danger">Owner</Badge>}
             {(hasSecondPass || envGrantsSecondPass) && <Badge tone="success">Second pass</Badge>}
             {admin?.permissions.includes(EDIT_SUBMISSION) && <Badge tone="info">Edits submissions</Badge>}
+            {(hasAiDraft || isSuper) && <Badge tone="info">AI draft</Badge>}
           </>
         }
       />
+
+      <Flash error={flashError} ok={flashOk} />
 
       <StatGrid>
         <Stat label="Reviews all-time" value={s.reviews} />
@@ -213,6 +234,21 @@ export default async function ReviewerPage({ params }: { params: Promise<{ id: s
           </Card>
 
           <Card>
+            <CardHeader title="Message" icon="send" />
+            <form action={messageReviewer} className="flex flex-col gap-3">
+              <input type="hidden" name="slackId" value={slackId} />
+              <Field label="Direct message" hint={`Sent to ${display} on Slack, from you.`}>
+                <Textarea name="message" required maxLength={1500} rows={4} placeholder="Write your message" />
+              </Field>
+              <div>
+                <ActionButton icon="send" pendingLabel="Sending...">
+                  Send message
+                </ActionButton>
+              </div>
+            </form>
+          </Card>
+
+          <Card>
             <CardHeader title="Queue access" icon="list" />
             <p className="hc-caption mb-3 text-sm">
               Which review queue{queueScope === "both" ? "s" : ""} {display} can see and claim from.
@@ -280,6 +316,24 @@ export default async function ReviewerPage({ params }: { params: Promise<{ id: s
                   ) : (
                     <ActionButton variant="outline" size="sm" pendingLabel="Saving...">
                       Allow editing submission details
+                    </ActionButton>
+                  )}
+                </form>
+              )}
+              {/* AI draft of review notes: owners always have it, a reviewer
+                  needs this grant. */}
+              {!isSuper && admin && (
+                <form action={setAiDraft}>
+                  <input type="hidden" name="slackId" value={slackId} />
+                  <input type="hidden" name="name" value={display} />
+                  <input type="hidden" name="enable" value={hasAiDraft ? "0" : "1"} />
+                  {hasAiDraft ? (
+                    <ActionButton variant="ghost" size="sm" pendingLabel="Removing...">
+                      Remove AI draft access
+                    </ActionButton>
+                  ) : (
+                    <ActionButton variant="outline" size="sm" pendingLabel="Saving...">
+                      Allow AI draft review
                     </ActionButton>
                   )}
                 </form>

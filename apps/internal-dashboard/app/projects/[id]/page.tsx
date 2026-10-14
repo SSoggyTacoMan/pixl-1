@@ -718,15 +718,34 @@ export default async function ProjectPage({
                 <div className={DIVIDER}>
                   <h3 className="hc-heading text-sm">Deflate approved hours</h3>
                   <p className="hc-caption mb-2 mt-1 text-xs">
-                    Lowers this project&apos;s credited hours after approval, e.g. when Hack Club HQ flagged an
-                    over-claim in Airtable. Claws back pixels for the owner (and, proportionally, any accepted
-                    collaborators) down to what the new hours are worth, DMs everyone affected with your reason, and
-                    cancels any pending order that can no longer be covered. Only ever lowers hours. Current:{" "}
-                    {project.approved_hours ?? totalHours}h.
+                    Lowers credited hours after approval, e.g. when Hack Club HQ flagged an over-claim in
+                    Airtable. Fill in the new hours only for the people who should lose hours, a blank box leaves
+                    that person alone. Claws back their pixels down to what the new hours are worth, DMs them
+                    your reason, and cancels any pending order that can no longer be covered. Only ever lowers
+                    hours.
                   </p>
                   <form action={deflateProjectHours} className="flex flex-col gap-2">
                     <input type="hidden" name="projectId" value={project.id} />
-                    <Input name="newHours" type="number" step="0.1" min="0" required placeholder="New hours" className="w-32" />
+                    <div className="flex flex-col gap-1.5">
+                      <label className="flex items-center gap-2 text-sm">
+                        <Input name="hours_owner" type="number" step="0.1" min="0" placeholder="New hours" className="w-32" />
+                        <span>
+                          {project.users ? ownerName(null) : project.user_id}
+                          <span className="hc-caption"> (owner, now {project.approved_hours ?? totalHours}h)</span>
+                        </span>
+                      </label>
+                      {collaborators
+                        .filter((c) => c.status === "accepted" && Number(c.approved_hours) > 0)
+                        .map((c) => (
+                          <label key={c.id} className="flex items-center gap-2 text-sm">
+                            <Input name={`hours_${c.id}`} type="number" step="0.1" min="0" placeholder="New hours" className="w-32" />
+                            <span>
+                              {c.users ? liveName(live, c.users, builderNameFor(access, c.users)) : c.user_id}
+                              <span className="hc-caption"> (collaborator, now {Number(c.approved_hours)}h)</span>
+                            </span>
+                          </label>
+                        ))}
+                    </div>
                     <Textarea
                       name="reason"
                       required
@@ -738,7 +757,7 @@ export default async function ProjectPage({
                         variant="danger"
                         size="sm"
                         pendingLabel="Deflating..."
-                        confirm="Deflate this project's hours? This immediately claws back pixels (and may cancel pending orders) for the owner and any collaborators, and DMs them why."
+                        confirm="Deflate this project's hours? This immediately claws back pixels (and may cancel pending orders) for the people you filled in, and DMs them why."
                       >
                         Deflate hours
                       </ActionButton>

@@ -493,6 +493,7 @@ export function ReviewForm({
   currentDescription,
   currentImageUrl,
   isSuper = false,
+  canAiDraft = false,
   canEditSubmission = false,
   serverDraft,
 }: {
@@ -529,8 +530,10 @@ export function ReviewForm({
   currentName?: string;
   currentDescription?: string | null;
   currentImageUrl?: string | null;
-  /** Owner: gates the "Generate AI draft" button (shown to everyone, clickable for owners). */
+  /** Owner: gates the owner-only parts of the form. */
   isSuper?: boolean;
+  /** Gates the "Generate AI draft" button (shown to everyone, clickable for owners and reviewers granted it). */
+  canAiDraft?: boolean;
   /** Whether the viewer may edit the submission's details at any review stage. */
   canEditSubmission?: boolean;
   /** The shared server-side draft (saveReviewDraft). Used only when this
@@ -1086,13 +1089,13 @@ export function ReviewForm({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={!isSuper || aiPending}
+                disabled={!canAiDraft || aiPending}
                 onClick={runAiDraft}
-                title={isSuper ? undefined : "Only owners can generate this. Ask one to run it for you."}
+                title={canAiDraft ? undefined : "You don't have access to this. Ask an owner to enable it for you."}
               >
                 {aiPending ? "Generating…" : "Generate AI draft"}
               </Button>
-              {!isSuper && <span className="hc-caption text-xs">Only owners can click this</span>}
+              {!canAiDraft && <span className="hc-caption text-xs">Ask an owner to enable this for you</span>}
             </div>
             <p className="hc-caption text-xs">
               Reads the repo, commits, journals and Hackatime data and drafts the fields below for you to check and

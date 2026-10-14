@@ -99,6 +99,7 @@ import {
   NO_REVIEW,
   SECOND_PASS,
   EDIT_SUBMISSION,
+  AI_DRAFT,
   REVIEW_HARDWARE_ONLY,
   REVIEW_SOFTWARE_ONLY,
   FRAUD_REVIEW,
@@ -933,15 +934,15 @@ async function creditBeneficiary(
   return { totalPx, deltaPx, pxRate, xpBefore, goalNote, referralNote, alreadyPx, projectRe, goalMult, fundingPx, baseUsdRate };
 }
 
-// Admin-only: drafts review notes with AI (Claude Sonnet via OpenRouter, see
+// Drafts review notes with AI (Claude Sonnet via OpenRouter, see
 // lib/aiReview.ts) from the same objective facts a reviewer already has open
 // on the page - commits, journals, Hackatime numbers, trust factor, cross-YSWS
 // duplicate check. The button is visible to every reviewer (so they know the
-// feature exists and can ask an admin to run it), but only owners
-// actually generate a draft - this never proposes a verdict or
+// feature exists), but only owners and reviewers an owner granted the
+// AI_DRAFT permission (reviewer page) actually generate a draft - this never proposes a verdict or
 // credited hours, and nothing it returns is saved/submitted on its own, the
 // reviewer copies whatever they want into the real form fields themselves.
-export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftAction", "owner", async (access, projectId: number,
+export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftAction", { review: "ai_draft" }, async (access, projectId: number,
   reviewerHours?: number,): Promise<AiReviewDraft> => {
   if (!projectId) throw new Error("Missing project id");
 
@@ -2698,26 +2699,18 @@ export const deflateProjectHours = guardedAction("deflateProjectHours", "owner",
 
   const oldHours =
     project.approved_hours != null ? Number(project.approved_hours) : await claimedHoursFor(projectId);
-  const rawNewHours = Number(String(formData.get("newHours") ?? "").trim());
-  const newHours = Math.round(rawNewHours * 10) / 10;
-  if (!Number.isFinite(newHours) || newHours < 0 || newHours >= oldHours)
-    redirect(
-      `${back}?error=${encodeURIComponent(`New hours must be a number from 0 up to (but not including) the current ${oldHours}h.`)}`,
-    );
 
-  const ratio = newHours / oldHours;
-  const tier = Number(project.level) || 1;
-
-  // Hardware funding grants dock a flat pixel amount off the owner's payout
-  // (see creditBeneficiary's fundingPx) - repriceForHours only rebuilds the
-  // GROSS per-hour figure, so that same deduction has to come back off here
-  // too, or a funded project's "corrected" total comes out too high and
-  // creditProjectPixels ends up crediting MORE pixels instead of clawing
-  // back (funding_deducted_px is owner-only, never applies to collaborators).
-  const fundingDeductedPx = Number(project.funding_deducted_px) || 0;
-  const grossOwnerPx = await repriceForHours(project.user_id, projectId, newHours, tier);
-  const newOwnerPx = Math.max(grossOwnerPx - fundingDeductedPx, 0);
-  await creditProjectPixels(project.user_id, projectId, newOwnerPx, newHours, by);
+  // One hours box per person (hours_owner / hours_<collaborator row id>): only
+  // the people whose box is filled in are deflated, a blank box leaves that
+  // person's hours and pixels alone. Hours are what each person is credited
+  // with after the change.
+  const parseHours = (key: string): number | null | "bad" => {
+    const raw = String(formData.get(key) ?? "").trim();
+    if (!raw) return null;
+    const n = Math.round(Number(raw) * 10) / 10;
+    return Number.isFinite(n) && n >= 0 ? n : "bad";
+  };
+  const ownerNewHours = parseHours("hours_owner");
 
   const { data: collabRows } = await db
     .from("project_collaborators")
@@ -2727,26 +2720,55 @@ export const deflateProjectHours = guardedAction("deflateProjectHours", "owner",
   const collaborators = (collabRows ?? []) as
     { id: number; user_id: string; approved_hours: number | null }[];
 
+  const collabTargets: { id: number; user_id: string; cOldHours: number; cNewHours: number }[] = [];
+  let badInput = ownerNewHours === "bad" || (typeof ownerNewHours === "number" && ownerNewHours >= oldHours);
+  for (const c of collaborators) {
+    const n = parseHours(`hours_${c.id}`);
+    if (n == null) continue;
+    const cOldHours = Number(c.approved_hours) || 0;
+    if (n === "bad" || cOldHours <= 0 || n >= cOldHours) {
+      badInput = true;
+      continue;
+    }
+    collabTargets.push({ id: c.id, user_id: c.user_id, cOldHours, cNewHours: n });
+  }
+  const deflateOwner = typeof ownerNewHours === "number";
+  if (badInput || (!deflateOwner && collabTargets.length === 0))
+    redirect(
+      `${back}?error=${encodeURIComponent("Fill in the new hours for at least one person, each a number from 0 up to (but not including) their current hours.")}`,
+    );
+
+  const tier = Number(project.level) || 1;
   const orderNote =
     "If this left you without enough pixels to cover an order you'd already placed, that order was automatically cancelled and any leftover pixels refunded.";
 
-  for (const c of collaborators) {
-    const cOldHours = Number(c.approved_hours) || 0;
-    if (cOldHours <= 0) continue;
-    const cNewHours = Math.round(cOldHours * ratio * 10) / 10;
-    const cNewPx = await repriceForHours(c.user_id, projectId, cNewHours, tier);
-    await creditProjectPixels(c.user_id, projectId, cNewPx, cNewHours, by);
-    await db.from("project_collaborators").update({ approved_hours: cNewHours }).eq("id", c.id);
+  if (deflateOwner) {
+    // Hardware funding grants dock a flat pixel amount off the owner's payout
+    // (see creditBeneficiary's fundingPx) - repriceForHours only rebuilds the
+    // GROSS per-hour figure, so that same deduction has to come back off here
+    // too, or a funded project's "corrected" total comes out too high and
+    // creditProjectPixels ends up crediting MORE pixels instead of clawing
+    // back (funding_deducted_px is owner-only, never applies to collaborators).
+    const fundingDeductedPx = Number(project.funding_deducted_px) || 0;
+    const grossOwnerPx = await repriceForHours(project.user_id, projectId, ownerNewHours, tier);
+    const newOwnerPx = Math.max(grossOwnerPx - fundingDeductedPx, 0);
+    await creditProjectPixels(project.user_id, projectId, newOwnerPx, ownerNewHours, by);
+  }
+
+  for (const c of collabTargets) {
+    const cNewPx = await repriceForHours(c.user_id, projectId, c.cNewHours, tier);
+    await creditProjectPixels(c.user_id, projectId, cNewPx, c.cNewHours, by);
+    await db.from("project_collaborators").update({ approved_hours: c.cNewHours }).eq("id", c.id);
 
     const cBody =
-      `"${project.name}"'s credited hours were corrected from ${cOldHours}h to ${cNewHours}h , your pixels for it were adjusted to match.\n\n` +
+      `"${project.name}"'s credited hours were corrected from ${c.cOldHours}h to ${c.cNewHours}h , your pixels for it were adjusted to match.\n\n` +
       `Reason: ${reason}\n\n${orderNote}\n\nIf you think this is a mistake, contact the Pixl team.`;
     await db.from("notifications").insert({ user_id: c.user_id, title: "Project hours corrected", body: cBody });
     await dmOrEmail(c.user_id, "Project hours corrected", cBody);
     await logModAction(
       c.user_id,
       "project_hours_deflated",
-      `${project.name}: collaborator ${cOldHours}h → ${cNewHours}h , ${reason}`,
+      `${project.name}: collaborator ${c.cOldHours}h → ${c.cNewHours}h , ${reason}`,
       by,
     );
   }
@@ -2754,7 +2776,7 @@ export const deflateProjectHours = guardedAction("deflateProjectHours", "owner",
   const { error } = await db
     .from("projects")
     .update({
-      approved_hours: newHours,
+      ...(deflateOwner ? { approved_hours: ownerNewHours } : {}),
       deflation_reason: reason,
       hours_deflated_at: new Date().toISOString(),
       hours_deflated_by: by,
@@ -2767,27 +2789,29 @@ export const deflateProjectHours = guardedAction("deflateProjectHours", "owner",
     user_id: project.user_id,
     reviewer: by,
     verdict: "hours_deflated",
-    note: reason,
+    note: deflateOwner ? reason : `${reason} (collaborator hours only)`,
     audit_note: "",
     claimed_hours: oldHours,
-    approved_hours: newHours,
+    approved_hours: deflateOwner ? ownerNewHours : oldHours,
   });
   if (auditError) console.error("deflateProjectHours audit insert failed", auditError.message);
 
-  const ownerBody =
-    `"${project.name}"'s approved hours were corrected from ${oldHours}h to ${newHours}h , your pixels for it were adjusted to match.\n\n` +
-    `Reason: ${reason}\n\n${orderNote}\n\nIf you think this is a mistake, contact the Pixl team.`;
-  const { error: notifyError } = await db
-    .from("notifications")
-    .insert({ user_id: project.user_id, title: "Project hours corrected", body: ownerBody });
-  if (notifyError) console.error("deflateProjectHours notification failed", notifyError.message);
-  await dmOrEmail(project.user_id, "Project hours corrected", ownerBody);
-  await logModAction(
-    project.user_id,
-    "project_hours_deflated",
-    `${project.name}: ${oldHours}h → ${newHours}h , ${reason}`,
-    by,
-  );
+  if (deflateOwner) {
+    const ownerBody =
+      `"${project.name}"'s approved hours were corrected from ${oldHours}h to ${ownerNewHours}h , your pixels for it were adjusted to match.\n\n` +
+      `Reason: ${reason}\n\n${orderNote}\n\nIf you think this is a mistake, contact the Pixl team.`;
+    const { error: notifyError } = await db
+      .from("notifications")
+      .insert({ user_id: project.user_id, title: "Project hours corrected", body: ownerBody });
+    if (notifyError) console.error("deflateProjectHours notification failed", notifyError.message);
+    await dmOrEmail(project.user_id, "Project hours corrected", ownerBody);
+    await logModAction(
+      project.user_id,
+      "project_hours_deflated",
+      `${project.name}: ${oldHours}h → ${ownerNewHours}h , ${reason}`,
+      by,
+    );
+  }
 
   revalidatePath(back);
 });
@@ -3808,6 +3832,50 @@ export const setEditSubmission = guardedAction("team.setEditSubmission", "owner"
         ].join("\n\n")
       : "Your access to edit submission details on the Pixl review dashboard has been removed. You can still review as usual. Contact the team if you think this is a mistake.",
   );
+});
+
+// Let a reviewer generate the AI draft of review notes (see
+// generateAiReviewDraftAction): an AI_DRAFT marker in their admins row. They
+// have to be on the team already.
+export const setAiDraft = guardedAction("team.setAiDraft", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const name = String(formData.get("name") ?? "").trim();
+  const enable = formData.get("enable") === "1";
+  if (!slackId) return;
+  const existing = await getAdmin(slackId);
+  if (!existing) return;
+  const already = existing.permissions.includes(AI_DRAFT);
+  if (enable === already) return;
+  const kept = existing.permissions.filter((p) => p !== AI_DRAFT);
+  await setTeamPerms(
+    access,
+    slackId,
+    name,
+    enable ? [...kept, AI_DRAFT] : kept,
+    enable ? "AI draft access granted" : "AI draft access removed",
+  );
+  await dmTeam(
+    slackId,
+    enable
+      ? "You can now generate AI drafts on the Pixl review dashboard. On a project's review page, step 2 has a \"Generate AI draft\" button: it drafts the notes for you to check and edit. It never picks a verdict or hours."
+      : "Your access to the AI draft on the Pixl review dashboard has been removed. You can still review as usual.",
+  );
+});
+
+// A direct message from the team to one reviewer, sent from their page. Only
+// to someone on the team (an admins row or an owner), so it can't be used to
+// DM arbitrary Slack ids. The text isn't stored in the audit log, only that it
+// was sent.
+export const messageReviewer = guardedAction("team.messageReviewer", "owner", async (access, formData: FormData): Promise<void> => {
+  const slackId = String(formData.get("slackId") ?? "").trim();
+  const message = String(formData.get("message") ?? "").trim().slice(0, 1500);
+  if (!slackId || !message) return;
+  const back = `/reviewers/${encodeURIComponent(slackId)}`;
+  const fail = (text: string): never => redirect(`${back}?error=${encodeURIComponent(text)}`);
+  if (!(await getAdmin(slackId)) && !ownerSlackIds().includes(slackId)) fail("That person isn't on the review team.");
+  const sent = await dmUser(slackId, `Message from ${access.session.name} on the Pixl team:\n\n${message}`);
+  if (!sent) fail("The DM couldn't be sent (Slack or Pixo is unreachable). Nothing was delivered.");
+  redirect(`${back}?ok=${encodeURIComponent("Message sent.")}`);
 });
 
 // Restrict a reviewer to one queue (software/hardware), or clear the

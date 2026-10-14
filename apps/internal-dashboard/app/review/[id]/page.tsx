@@ -694,6 +694,7 @@ export default async function ReviewDetail({
               defaultHours={formDefaultHours}
               journalDeflatedHours={journalDeflatedHours}
               isSuper={access.isOwner}
+              canAiDraft={access.canAiDraft}
               canEditSubmission={access.canEditSubmission}
               secondPass={spotCheckStage || isProposedBan}
               bounties={bounties}
