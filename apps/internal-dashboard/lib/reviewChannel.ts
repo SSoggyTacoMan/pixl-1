@@ -31,6 +31,8 @@ export interface ReviewMessageInput {
   pixels?: number;
   /** Extra sentence for the final approval (e.g. a held Trial prize). */
   creditNote?: string;
+  /** Project tier (1-4) the final approval was credited at, named in the post when set. */
+  tier?: number;
 }
 
 export function escapeMrkdwn(text: string): string {
@@ -72,6 +74,7 @@ export function buildReviewMessage(input: ReviewMessageInput): string {
       : "No new pixels this time since this project already earned its pixels, but you can keep building projects!";
   return (
     `${hello} The Pixl fraud squad and the Pixl mayor were amazed by your project ${project} and decided to approve it fully and pushed it to the core! ${granted}` +
+    `${input.tier ? ` It was approved at *tier ${input.tier}*.` : ""}` +
     `${input.creditNote ? ` ${input.creditNote}` : ""} Here is what the final review said:\n\n` +
     `${quote(input.note)}\n\n` +
     `This approval was made by ${reviewer}, ${thread}`
@@ -111,6 +114,7 @@ export interface ReviewAnnouncement {
   revealName: boolean;
   pixels?: number;
   creditNote?: string;
+  tier?: number;
   /** What each player used to get by DM, sent only if the public post fails. */
   fallback: { userId: string; title: string; body: string }[];
 }
@@ -147,6 +151,7 @@ export async function announceReview(a: ReviewAnnouncement): Promise<boolean> {
         reviewerSlackId: reviewer,
         pixels: a.pixels,
         creditNote: a.creditNote,
+        tier: a.tier,
       });
       if (await postToReviewChannel(message, ccReply(reviewer))) return true;
       failure = "Pixorpheus could not post it";

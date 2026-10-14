@@ -48,3 +48,9 @@ test("an anonymous reviewer is called a reviewer, never tagged", () => {
 test("escaping helpers", () => {
   expect(escapeMrkdwn("a & <b>")).toBe("a &amp; &lt;b&gt;");
 });
+
+test("the final approval names the tier only when it is given", () => {
+  const base = { kind: "final" as const, playerSlackIds: ["U0AAAAAAAA"], projectName: "P", projectUrl: null, note: "n", reviewerSlackId: null, pixels: 10 };
+  expect(buildReviewMessage({ ...base, tier: 3 })).toContain("approved at *tier 3*");
+  expect(buildReviewMessage(base)).not.toContain("tier");
+});
