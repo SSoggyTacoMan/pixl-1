@@ -25,6 +25,11 @@ export function shopError(code: string, details?: ActionDetails): string {
   if (code === "not_eligible" && d.xp != null && d.need != null) {
     return `Not yet, you're at ${Math.floor(d.xp)} / ${d.need} XP.`;
   }
+  if (code === "wrong_region" && d.region && d.itemRegion) {
+    const mine = d.region.replaceAll("_", " ").toUpperCase();
+    const theirs = d.itemRegion.replaceAll("_", " ").toUpperCase();
+    return `This one is sold in ${theirs}, but your delivery address is in ${mine}. Switch your shop region to ${mine} (top of the shop) to buy it.`;
+  }
   if (code === "wrong_region" && d.region) {
     return `That item doesn't ship to your region (${d.region.toUpperCase()}).`;
   }

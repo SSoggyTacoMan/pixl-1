@@ -11,6 +11,9 @@ describe("shopError", () => {
   test("trophy XP and region", () => {
     expect(shopError("not_eligible", { xp: 41.9, need: 100 })).toBe("Not yet, you're at 41 / 100 XP.");
     expect(shopError("wrong_region", { region: "eu" })).toContain("(EU)");
+    expect(shopError("wrong_region", { region: "ASIA", itemRegion: "EUROPE" })).toBe(
+      "This one is sold in EUROPE, but your delivery address is in ASIA. Switch your shop region to ASIA (top of the shop) to buy it.",
+    );
     expect(shopError("sold_out")).toBe("That option just sold out, pick another.");
   });
 });

@@ -21,15 +21,18 @@ export interface ActionDetails {
   hcaStatus?: string;
   /** Buyer region code (shop wrong_region). */
   region?: string;
+  /** Region the item is sold in (shop wrong_region). */
+  itemRegion?: string;
 }
 
 const NUMBER_FIELDS = ["need", "have", "hours", "xp", "balance", "price"] as const;
 const MAX_ABS = 1e12;
 
 // [server key, details key, allowed pattern]
-const STRING_FIELDS: ReadonlyArray<readonly [string, "hcaStatus" | "region", RegExp]> = [
+const STRING_FIELDS: ReadonlyArray<readonly [string, "hcaStatus" | "region" | "itemRegion", RegExp]> = [
   ["hca_status", "hcaStatus", /^[a-z_]{1,32}$/],
   ["region", "region", /^[A-Za-z_-]{1,32}$/],
+  ["item_region", "itemRegion", /^[A-Za-z_-]{1,32}$/],
 ];
 
 export function pickDetails(data: unknown): ActionDetails | undefined {

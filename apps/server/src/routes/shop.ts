@@ -889,7 +889,7 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
   // Review-locked items are one row for every region (see drizzle/0222).
   const reviewLocked = !!(gateRow as { review_locked?: boolean } | null)?.review_locked;
   if (itemRegion && itemUnlockXp <= 0 && !reviewLocked && regionMismatch(itemRegion, buyerRegion))
-    return res.status(403).json({ ok: false, error: "wrong_region", region: buyerRegion });
+    return res.status(403).json({ ok: false, error: "wrong_region", region: buyerRegion, item_region: itemRegion });
   const gateIds = Array.isArray((gateRow as { unlock_trial_ids?: unknown[] } | null)?.unlock_trial_ids)
     ? ((gateRow as { unlock_trial_ids: unknown[] }).unlock_trial_ids).map(Number).filter((n) => Number.isFinite(n) && n > 0)
     : [];
