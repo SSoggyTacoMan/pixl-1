@@ -1094,7 +1094,12 @@ export default async function ReviewDetail({
         <ButtonLink href="/review" variant="ghost" size="sm" icon="view-back">
           Review queue
         </ButtonLink>
-        {live && <ShowReviewerNames hidden={hideReviewers} />}
+        <div className="flex flex-wrap items-center gap-3">
+          <ButtonLink href={`/projects/${p.id}`} variant="outline" size="sm">
+            Open in project view
+          </ButtonLink>
+          {live && <ShowReviewerNames hidden={hideReviewers} />}
+        </div>
       </div>
 
       {(error || !claim.ok) && (

@@ -236,9 +236,12 @@ export default async function ProjectPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <ButtonLink href="/projects" variant="ghost" size="sm" icon="view-back">
           Projects
+        </ButtonLink>
+        <ButtonLink href={`/review/${project.id}`} variant="outline" size="sm">
+          Open in review view
         </ButtonLink>
       </div>
 
