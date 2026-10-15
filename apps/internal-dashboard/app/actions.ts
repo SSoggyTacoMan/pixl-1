@@ -2145,6 +2145,76 @@ export const submitHardwareToRobert = guardedAction("submitHardwareToRobert", "r
   redirect(back);
 });
 
+// Spot check: throw away Robert's review and send the project back to him.
+// The old review is only deleted once Robert has accepted the new submission;
+// if he doesn't (down, not configured, a submission that can't be built), the
+// old review is put back exactly as it was and the reviewer sees why.
+const ROBERT_RESET_COLUMNS =
+  "robert_project_id, robert_state, robert_trust_score, robert_note, robert_reviewed_at, robert_submitted_at, robert_error, robert_outcome, robert_outcome_at, second_pass_by, second_pass_at, second_pass_note, second_pass_hours, second_pass_verdict";
+
+export const resendToRobert = guardedAction("resendToRobert", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const back = `/review/${projectId}`;
+  if (!projectId) return;
+  if (!access.canSecondPass && !access.isOwner)
+    redirect(`${back}?error=${encodeURIComponent("Only a final reviewer or an owner can send a project back to Robert.")}`);
+  await authorizeProjectAction(access, projectId, back, {
+    ownMessage: "You can't send a project you own or collaborate on back to Robert.",
+  });
+
+  const { data: old } = await db
+    .from("projects")
+    .select(ROBERT_RESET_COLUMNS)
+    .eq("id", projectId)
+    .eq("status", "second_review")
+    .is("banned_at", null)
+    .maybeSingle();
+  if (!old || old.second_pass_verdict !== "not_fraud")
+    redirect(`${back}?error=${encodeURIComponent("This project isn't in Spot check with a Robert review to replace.")}`);
+
+  const { data: project, error } = await db
+    .from("projects")
+    .update({
+      status: "fraud_review",
+      robert_project_id: null,
+      robert_state: null,
+      robert_trust_score: null,
+      robert_note: "",
+      robert_reviewed_at: null,
+      robert_submitted_at: null,
+      robert_error: "",
+      robert_outcome: "",
+      robert_outcome_at: null,
+      second_pass_by: "",
+      second_pass_at: null,
+      second_pass_note: "",
+      second_pass_hours: null,
+      second_pass_verdict: null,
+    })
+    .eq("id", projectId)
+    .eq("status", "second_review")
+    .select("id, name, user_id")
+    .maybeSingle();
+  if (error) console.error("resendToRobert failed", projectId, error.message);
+  if (!project) redirect(`${back}?error=${encodeURIComponent("This project moved on, try again from its page.")}`);
+
+  await submitToRobert(projectId);
+  const { data: after } = await db
+    .from("projects")
+    .select("robert_project_id, robert_error")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (!after?.robert_project_id) {
+    await db.from("projects").update({ ...old, status: "second_review" }).eq("id", projectId).eq("status", "fraud_review");
+    redirect(`${back}?error=${encodeURIComponent(`Robert did not accept it, the old review was kept: ${after?.robert_error || "submission failed"}.`)}`);
+  }
+
+  await logModAction(project.user_id as string, "project_robert_resent", `${project.name}: Robert's review deleted and the project sent back to Robert`, by);
+  revalidatePath("/review");
+  redirect(back);
+});
+
 export const skipRobertPass = guardedAction("skipRobertPass", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);

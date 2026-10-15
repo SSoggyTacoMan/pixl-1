@@ -43,6 +43,7 @@ import {
   updateFundingAmount,
   skipRobertPass,
   submitHardwareToRobert,
+  resendToRobert,
 } from "@/app/actions";
 import { ReviewPipelineSteps } from "@/app/_components/ReviewPipelineSteps";
 import { SecondPassChecklist } from "@/app/_components/SecondPassChecklist";
@@ -679,6 +680,19 @@ export default async function ReviewDetail({
                 {p.robert_trust_score <= ROBERT_FRAUD_THRESHOLD ? ", in Robert's \"Fraud\" range" : ""}
               </p>
               {p.robert_note && <p className="mt-2 whitespace-pre-wrap break-words text-sm">{p.robert_note}</p>}
+              {canSecondPass && (
+                <form action={resendToRobert} className="mt-3">
+                  <input type="hidden" name="projectId" value={p.id} />
+                  <ActionButton
+                    variant="outline"
+                    size="sm"
+                    pendingLabel="Sending..."
+                    confirm="Delete Robert's review and send this project back to Robert? It leaves Spot check until his new review comes back. If Robert doesn't accept it, the old review is kept."
+                  >
+                    Delete and resend to Robert
+                  </ActionButton>
+                </form>
+              )}
             </Card>
           )}
           {spotCheckStage && p.kind === "hardware" && !p.robert_project_id && p.robert_trust_score == null && canSecondPass && (
