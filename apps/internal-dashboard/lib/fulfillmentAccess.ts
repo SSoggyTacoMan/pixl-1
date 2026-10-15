@@ -44,3 +44,38 @@ export function isOwnOrder(order: OrderOwnership, slackId: string): boolean {
 export function canFlagOrder(order: OrderOwnership, viewer: FulfillmentViewer): boolean {
   return viewer.isOwner || claimedBy(order, viewer.session.slackId);
 }
+
+export function canOpenFulfillmentTab(tab: string, viewer: Pick<FulfillmentViewer, "isOwner">): boolean {
+  return tab !== "fulfillers" || viewer.isOwner;
+}
+
+export interface OrderActionContext {
+  status: string;
+  flagged: boolean;
+  hasBuyerSlack: boolean;
+  mine: boolean;
+  ownOrder: boolean;
+  canManage: boolean;
+}
+
+export interface VisibleOrderActions {
+  primary: boolean;
+  flag: boolean;
+  contact: boolean;
+  edit: boolean;
+  any: boolean;
+}
+
+export function visibleOrderActions(c: OrderActionContext): VisibleOrderActions {
+  const actionable = c.status !== "done" && c.status !== "cancelled";
+  let primary = false;
+  if (actionable) {
+    if (c.status === "shipped") primary = c.canManage;
+    else if (!c.mine && c.status !== "pending") primary = c.canManage;
+    else primary = true;
+  }
+  const flag = actionable && c.status !== "shipped" && (c.mine || c.canManage) && (!c.flagged || c.canManage);
+  const contact = actionable && c.hasBuyerSlack;
+  const edit = c.canManage && c.status !== "pending" && c.status !== "cancelled";
+  return { primary, flag, contact, edit, any: primary || flag || contact || edit };
+}

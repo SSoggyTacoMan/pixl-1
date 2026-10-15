@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { decryptPII } from "./crypto";
 import { reForProject } from "@/app/_generated/config";
 import { parseAuditNote } from "./auditNote";
+import { foldOrderCounts, type OrderCounts } from "./fulfillmentView";
 import { reviewerName } from "./liveMode";
 import { slackIdFromActorName } from "./reviewAccess";
 import { PRECHECK_HIDE_MS, isPrecheckRunning } from "./precheck";
@@ -2598,8 +2599,8 @@ export interface ShopOrderRow {
   // known-working link instead of hunting for one. Only populated by
   // listShopOrders (the fulfillment page's query); null elsewhere.
   item_source_url: string | null;
-  item_image_url: string | null;
-  item_category: ShopCategory | null;
+  item_image_url?: string | null;
+  item_category?: ShopCategory | null;
 }
 
 // Shop orders players placed with pixels, newest first. Player name + Slack are
@@ -2778,22 +2779,16 @@ export async function countPendingOrders(): Promise<number> {
   return count ?? 0;
 }
 
-export async function shopOrderStatusCounts(): Promise<Record<OrderStatus | "flagged" | "all", number>> {
-  const statuses = [...ORDER_STAGES, "cancelled"] as OrderStatus[];
-  const count = async (apply: (q: ReturnType<typeof base>) => unknown) => {
-    const { count: n, error } = (await apply(base())) as { count: number | null; error: { message: string } | null };
-    if (error) console.error("shopOrderStatusCounts", error.message);
-    return n ?? 0;
-  };
-  const base = () => db.from("shop_orders").select("id", { count: "exact", head: true });
-  const [all, flagged, ...perStatus] = await Promise.all([
-    count((q) => q),
-    count((q) => q.not("flagged_at", "is", null)),
-    ...statuses.map((s) => count((q) => q.eq("status", s))),
-  ]);
-  const out = { all, flagged } as Record<OrderStatus | "flagged" | "all", number>;
-  statuses.forEach((s, i) => (out[s] = perStatus[i]));
-  return out;
+export async function shopOrderStatusCounts(): Promise<OrderCounts> {
+  try {
+    const rows = await sql`
+      select status, count(*)::int as n, (count(*) filter (where flagged_at is not null))::int as flagged
+      from shop_orders group by status`;
+    return foldOrderCounts(rows as unknown as { status: string; n: number; flagged: number }[]);
+  } catch (e) {
+    console.error("shopOrderStatusCounts", (e as Error).message);
+    return foldOrderCounts([]);
+  }
 }
 
 export interface FeedItem {

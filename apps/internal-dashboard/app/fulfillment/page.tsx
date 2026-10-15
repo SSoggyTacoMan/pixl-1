@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { requirePage } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
 import { LiveBlocked } from "@/app/_components/LiveBlocked";
@@ -14,7 +15,7 @@ import {
   type BuyerDetails,
   type ShopEconomySummary,
 } from "@/lib/db";
-import { canSeeBuyerDetails, isOwnOrder } from "@/lib/fulfillmentAccess";
+import { canOpenFulfillmentTab, canSeeBuyerDetails, isOwnOrder } from "@/lib/fulfillmentAccess";
 import { addFulfillerAction, removeFulfillerAction } from "@/app/actions";
 import { config } from "@/app/_generated/config";
 import {
@@ -157,11 +158,13 @@ export default async function FulfillmentPage({
   const me = access.session.slackId;
   const { status, mine, q, order: orderParam } = await searchParams;
   const active: TabKey = TAB_KEYS.includes(status as TabKey) ? (status as TabKey) : "pending";
-  const mineOnly = mine === "1";
+  if (!canOpenFulfillmentTab(active, access)) redirect("/fulfillment");
+  const keepMine = mine === "1";
   const query = (q ?? "").trim().slice(0, 100);
   const showingFulfillers = active === "fulfillers";
   const showingLeaderboard = active === "leaderboard";
   const showingQueue = !showingFulfillers && !showingLeaderboard;
+  const mineOnly = keepMine && showingQueue;
 
   // "My queue" is a fixed cross-stage view, not a filter on the selected tab:
   // every order this fulfiller has claimed that isn't done yet. Filtering the
@@ -221,7 +224,7 @@ export default async function FulfillmentPage({
     const params = new URLSearchParams();
     const st = next.status ?? active;
     if (st !== "pending") params.set("status", st);
-    if ((next.mine ?? mineOnly) && st !== "fulfillers" && st !== "leaderboard") params.set("mine", "1");
+    if (next.mine ?? keepMine) params.set("mine", "1");
     const qv = next.q ?? query;
     if (qv) params.set("q", qv);
     if (next.order !== undefined) params.set("order", String(next.order));
@@ -246,16 +249,22 @@ export default async function FulfillmentPage({
         description="Process player requests, place orders, and keep everything moving. Claim one to place the real order; tracking is DM'd to the buyer when it ships, and an order can be cancelled for a refund until someone claims it."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {showingQueue && (
+            {showingQueue ? (
               <ButtonLink href={hrefFor({ mine: !mineOnly })} variant={mineOnly ? "primary" : "outline"} size="sm" icon="list">
                 {mineOnly ? "Back to all orders" : "My queue"}
               </ButtonLink>
+            ) : (
+              <ButtonLink href={hrefFor({ status: "pending" })} variant="primary" size="sm" icon="list">
+                Back to requests
+              </ButtonLink>
             )}
-            <ButtonLink href={hrefFor({ status: "leaderboard", mine: false })} variant={showingLeaderboard ? "primary" : "outline"} size="sm" icon="leader">
-              Leaderboard
-            </ButtonLink>
-            {access.isOwner && (
-              <ButtonLink href={hrefFor({ status: "fulfillers", mine: false })} variant={showingFulfillers ? "primary" : "outline"} size="sm" icon="person">
+            {!showingLeaderboard && (
+              <ButtonLink href={hrefFor({ status: "leaderboard" })} variant="outline" size="sm" icon="leader">
+                Leaderboard
+              </ButtonLink>
+            )}
+            {access.isOwner && !showingFulfillers && (
+              <ButtonLink href={hrefFor({ status: "fulfillers" })} variant="outline" size="sm" icon="person">
                 Fulfillers
               </ButtonLink>
             )}

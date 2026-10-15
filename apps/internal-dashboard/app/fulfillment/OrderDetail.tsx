@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { BuyerDetails, OrderStatus, ShopOrderRow } from "@/lib/db";
 import { ORDER_STAGES } from "@/lib/db";
-import { isSafeUrl } from "@/lib/safeUrl";
+import { visibleOrderActions } from "@/lib/fulfillmentAccess";
 import {
   Badge,
   ButtonLink,
@@ -131,6 +131,14 @@ export function OrderDetail({
 }) {
   const actionable = o.status !== "done" && o.status !== "cancelled";
   const budget = usdBudget(o.price);
+  const visible = visibleOrderActions({
+    status: o.status,
+    flagged: Boolean(o.flagged_at),
+    hasBuyerSlack: Boolean(o.player_slack),
+    mine,
+    ownOrder,
+    canManage,
+  });
   const overBudget = o.actual_cost_usd !== null && Number(o.actual_cost_usd) > Number(budget);
 
   const facts: [ReactNode, ReactNode][] = [];
@@ -253,19 +261,19 @@ export function OrderDetail({
         </TextLink>
       )}
 
-      {(actionable || canManage) && (
+      {visible.any && (
         <Panel title="Actions" icon="bolt">
           <div className="flex flex-col gap-3">
-            {actionable && <OrderActions order={o} mine={mine} ownOrder={ownOrder} canManage={canManage} />}
-            {actionable && o.status !== "shipped" && (mine || canManage) && <FlagControls order={o} canManage={canManage} budget={budget} />}
-            {actionable && o.player_slack && isSafeUrl(slackLink(o.player_slack)) && (
+            {visible.primary && <OrderActions order={o} mine={mine} ownOrder={ownOrder} canManage={canManage} />}
+            {visible.flag && <FlagControls order={o} canManage={canManage} budget={budget} />}
+            {visible.contact && o.player_slack && (
               <div>
                 <ButtonLink href={slackLink(o.player_slack)} external variant="outline" size="sm" icon="message">
                   Contact buyer
                 </ButtonLink>
               </div>
             )}
-            {canManage && o.status !== "pending" && o.status !== "cancelled" && <EditFulfillmentInfo order={o} />}
+            {visible.edit && <EditFulfillmentInfo order={o} />}
           </div>
         </Panel>
       )}

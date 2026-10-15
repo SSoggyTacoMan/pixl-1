@@ -1,3 +1,5 @@
+import { config } from "@/app/_generated/config";
+
 // Centralized guard for rendering a database-controlled URL (repo_url,
 // demo_url, ...) as a real <a href>/<img src>/etc. React's JSX escaping only
 // protects HTML TEXT content - a plain `<a href={value}>` is NOT sanitized
@@ -43,5 +45,25 @@ export function safeRedirectPath(raw: unknown, fallback: string): string {
     return u.pathname + u.search + u.hash;
   } catch {
     return fallback;
+  }
+}
+
+// Shop thumbnails: Hack Club CDN (mirrors apps/server imageUrls.ts) and the Pixl site only.
+const IMAGE_HOSTS: readonly string[] = [
+  "cdn.hackclub.com",
+  "hc-cdn.hel1.your-objectstorage.com",
+  "assets.hackclub.com",
+  new URL(config.urls.site).hostname,
+];
+
+export function isSafeImageUrl(url: string | null | undefined): url is string {
+  const s = String(url ?? "").trim();
+  if (!s || s.length > 500 || /["'<>\s\\]/.test(s)) return false;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "https:" || u.username || u.password || u.port) return false;
+    return IMAGE_HOSTS.includes(u.hostname.toLowerCase());
+  } catch {
+    return false;
   }
 }

@@ -1,15 +1,27 @@
 import Link from "next/link";
 import type { ShopOrderRow } from "@/lib/db";
 import { SHOP_CATEGORY_LABELS } from "@/lib/shopCategories";
-import { isSafeUrl } from "@/lib/safeUrl";
+import { isSafeImageUrl } from "@/lib/safeUrl";
 import { Badge, Icon, type Tone } from "@/app/_ui/ui";
 import { SlackHandle } from "./SlackHandle";
 import { STAGE_LABEL, STAGE_TONE, ageLabel, lastUpdated, usdBudget } from "./shared";
 
 export function ItemThumb({ src, size = 40 }: { src: string | null | undefined; size?: number }) {
   const style = { width: size, height: size };
-  if (isSafeUrl(src)) {
-    return <img src={src} alt="" width={size} height={size} style={style} className="fw-thumb" />;
+  if (isSafeImageUrl(src)) {
+    return (
+      <img
+        src={src}
+        alt=""
+        width={size}
+        height={size}
+        style={style}
+        className="fw-thumb"
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+      />
+    );
   }
   return (
     <span style={style} className="fw-thumb fw-thumb-empty hc-muted" aria-hidden>

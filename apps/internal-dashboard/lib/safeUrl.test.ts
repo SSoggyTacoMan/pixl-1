@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isSafeUrl, safeRedirectPath } from "./safeUrl";
+import { isSafeImageUrl, isSafeUrl, safeRedirectPath } from "./safeUrl";
 
 describe("isSafeUrl", () => {
   test("rejects dangerous schemes", () => {
@@ -51,5 +51,33 @@ describe("safeRedirectPath", () => {
     expect(safeRedirectPath("/foo\\bar", "/review")).toBe("/review");
     expect(safeRedirectPath("/review\r\nSet-Cookie: x=1", "/review")).toBe("/review");
     expect(safeRedirectPath("/review\u2028x", "/review")).toBe("/review");
+  });
+});
+
+describe("isSafeImageUrl", () => {
+  test("accepts the Pixl site and Hack Club CDN hosts", () => {
+    expect(isSafeImageUrl("https://pixl.hackclub.com/shop/keyboard.webp")).toBe(true);
+    expect(isSafeImageUrl("https://cdn.hackclub.com/abc/item.webp")).toBe(true);
+    expect(isSafeImageUrl("https://hc-cdn.hel1.your-objectstorage.com/x/item.webp")).toBe(true);
+    expect(isSafeImageUrl("https://assets.hackclub.com/icon.png")).toBe(true);
+  });
+  test("rejects dangerous schemes", () => {
+    expect(isSafeImageUrl("javascript:alert(1)")).toBe(false);
+    expect(isSafeImageUrl("data:image/png;base64,AAAA")).toBe(false);
+  });
+  test("rejects loopback, private and unexpected hosts", () => {
+    expect(isSafeImageUrl("https://localhost/a.png")).toBe(false);
+    expect(isSafeImageUrl("https://127.0.0.1/a.png")).toBe(false);
+    expect(isSafeImageUrl("https://192.168.1.10/a.png")).toBe(false);
+    expect(isSafeImageUrl("https://10.0.0.5/a.png")).toBe(false);
+    expect(isSafeImageUrl("https://evil.example/a.png")).toBe(false);
+  });
+  test("rejects plain http, credentials, ports, lookalikes and relative paths", () => {
+    expect(isSafeImageUrl("http://pixl.hackclub.com/a.png")).toBe(false);
+    expect(isSafeImageUrl("https://user:pw@cdn.hackclub.com/a.png")).toBe(false);
+    expect(isSafeImageUrl("https://cdn.hackclub.com:8443/a.png")).toBe(false);
+    expect(isSafeImageUrl("https://cdn.hackclub.com.evil.example/a.png")).toBe(false);
+    expect(isSafeImageUrl("/label/pixorpheus.png")).toBe(false);
+    expect(isSafeImageUrl(null)).toBe(false);
   });
 });
