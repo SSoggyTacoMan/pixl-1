@@ -45,6 +45,7 @@ import {
   submitHardwareToRobert,
   resendToRobert,
 } from "@/app/actions";
+import { DoubleDipBanner } from "@/app/_components/DoubleDipBanner";
 import { ReviewPipelineSteps } from "@/app/_components/ReviewPipelineSteps";
 import { SecondPassChecklist } from "@/app/_components/SecondPassChecklist";
 import { hackatimeCutoffUnix, hackatimeCutoffLabel } from "@/app/_generated/config";
@@ -1161,11 +1162,7 @@ export default async function ReviewDetail({
 
           {projectLinks}
 
-          {p.system_note && (
-            <Callout tone="info" icon="info">
-              {p.system_note}
-            </Callout>
-          )}
+          <DoubleDipBanner systemNote={p.system_note} />
           <PrecheckCallout view={precheckView(p)} />
           {!p.used_ai && (
             <Suspense fallback={null}>

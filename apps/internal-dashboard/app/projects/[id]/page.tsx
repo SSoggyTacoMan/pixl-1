@@ -1,4 +1,5 @@
 /* eslint-disable @next/next/no-img-element */
+import { DoubleDipBanner } from "@/app/_components/DoubleDipBanner";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { requirePage, can } from "@/lib/guard";
@@ -333,11 +334,7 @@ export default async function ProjectPage({
               </div>
             </Callout>
           )}
-          {project.system_note && (
-            <Callout tone="info" icon="info">
-              <span className="font-bold">{project.system_note}</span>
-            </Callout>
-          )}
+          <DoubleDipBanner systemNote={project.system_note} />
           {project.hours_deflated_at && (
             <Callout tone="warning" icon="important">
               <div className="font-bold">
@@ -459,7 +456,7 @@ export default async function ProjectPage({
 
           <ProjectNotes projectId={project.id} notes={notes} />
 
-          {canSeeReviews && (project.robert_project_id || project.robert_trust_score != null) && (
+          {canSeeReviews && access.canFraudReview && (project.robert_project_id || project.robert_trust_score != null) && (
             <Card>
               <CardHeader title="Robert fraud review" icon="search-magic" />
               {project.robert_trust_score != null ? (
