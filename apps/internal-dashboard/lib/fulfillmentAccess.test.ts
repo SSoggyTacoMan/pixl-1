@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canFlagOrder, canSeeBuyerDetails, canViewLabel, claimedBy, isOwnOrder } from "./fulfillmentAccess";
+import { canFlagOrder, canOpenFulfillmentTab, canSeeBuyerDetails, canViewLabel, claimedBy, isOwnOrder, visibleOrderActions } from "./fulfillmentAccess";
 import { PUBLIC_FALLBACK_NAME, PUBLIC_USER_COLUMNS, publicOwnerLabel } from "./publicLabels";
 
 const fulfiller = (slackId: string, isOwner = false) => ({ isOwner, session: { slackId } });
@@ -52,5 +52,46 @@ describe("H1: public stats never show legal names", () => {
   });
   test("the public users embed is display_name only", () => {
     expect(PUBLIC_USER_COLUMNS).toBe("display_name");
+  });
+});
+
+describe("fulfillment tabs and the actions panel", () => {
+  test("only owners may open the fulfiller manager", () => {
+    expect(canOpenFulfillmentTab("fulfillers", { isOwner: false })).toBe(false);
+    expect(canOpenFulfillmentTab("fulfillers", { isOwner: true })).toBe(true);
+    expect(canOpenFulfillmentTab("leaderboard", { isOwner: false })).toBe(true);
+    expect(canOpenFulfillmentTab("pending", { isOwner: false })).toBe(true);
+  });
+
+  const base = { flagged: false, hasBuyerSlack: true, mine: true, ownOrder: false };
+  const panel = (status: string, canManage: boolean, over: Partial<typeof base> = {}) =>
+    visibleOrderActions({ ...base, ...over, status, canManage });
+
+  test("cancelled orders have no actions for anyone", () => {
+    expect(panel("cancelled", true).any).toBe(false);
+    expect(panel("cancelled", false).any).toBe(false);
+  });
+  test("done orders only offer the owner an edit", () => {
+    expect(panel("done", false).any).toBe(false);
+    expect(panel("done", true)).toMatchObject({ primary: false, edit: true, any: true });
+  });
+  test("pending: claim is offered, edit is not", () => {
+    expect(panel("pending", false, { mine: false })).toMatchObject({ primary: true, edit: false });
+  });
+  test("shipped: only owners can close it", () => {
+    expect(panel("shipped", false).primary).toBe(false);
+    expect(panel("shipped", true).primary).toBe(true);
+    expect(panel("shipped", false).flag).toBe(false);
+  });
+  test("someone else's claimed order is read-only for a fulfiller", () => {
+    const p = panel("ordered", false, { mine: false, hasBuyerSlack: false });
+    expect(p.any).toBe(false);
+  });
+  test("an owner can take over someone else's order", () => {
+    expect(panel("credited", true, { mine: false }).primary).toBe(true);
+  });
+  test("a flagged order can only be unflagged by an owner", () => {
+    expect(panel("ordered", false, { flagged: true, hasBuyerSlack: false }).flag).toBe(false);
+    expect(panel("ordered", true, { flagged: true }).flag).toBe(true);
   });
 });

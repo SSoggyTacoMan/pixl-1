@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { decryptPII } from "./crypto";
 import { reForProject } from "@/app/_generated/config";
 import { parseAuditNote } from "./auditNote";
+import { foldOrderCounts, type OrderCounts } from "./fulfillmentView";
 import { reviewerName } from "./liveMode";
 import { slackIdFromActorName } from "./reviewAccess";
 import { PRECHECK_HIDE_MS, isPrecheckRunning } from "./precheck";
@@ -2598,6 +2599,8 @@ export interface ShopOrderRow {
   // known-working link instead of hunting for one. Only populated by
   // listShopOrders (the fulfillment page's query); null elsewhere.
   item_source_url: string | null;
+  item_image_url?: string | null;
+  item_category?: ShopCategory | null;
 }
 
 // Shop orders players placed with pixels, newest first. Player name + Slack are
@@ -2623,16 +2626,26 @@ export async function listShopOrders(status?: string, limit = 500): Promise<Shop
   );
   const itemIds = [...new Set(rows.map((r) => r.item_id).filter((id): id is number => id != null))];
   const items = itemIds.length
-    ? await db.from("shop_items").select("id, price_source_url").in("id", itemIds)
+    ? await db.from("shop_items").select("id, price_source_url, image_url, category").in("id", itemIds)
     : { data: [] };
-  const sourceUrls = new Map(
-    (items.data ?? []).map((i) => [i.id as number, (i.price_source_url as string | null) ?? null]),
+  const itemInfo = new Map(
+    (items.data ?? []).map((i) => [
+      i.id as number,
+      {
+        source: (i.price_source_url as string | null) ?? null,
+        image: (i.image_url as string | null) || null,
+        category: (i.category as ShopCategory | null) ?? null,
+      },
+    ]),
   );
   for (const r of rows) {
     r.player_name = playerLabel(names.get(r.user_id), r.user_id);
     r.player_display_name = (names.get(r.user_id)?.display_name ?? "").trim() || "Player";
     r.player_slack = names.get(r.user_id)?.slack_id ?? null;
-    r.item_source_url = r.item_id != null ? (sourceUrls.get(r.item_id) ?? null) : null;
+    const info = r.item_id != null ? itemInfo.get(r.item_id) : undefined;
+    r.item_source_url = info?.source ?? null;
+    r.item_image_url = info?.image ?? null;
+    r.item_category = info?.category ?? null;
   }
   return rows;
 }
@@ -2764,6 +2777,18 @@ export async function countPendingOrders(): Promise<number> {
     return 0;
   }
   return count ?? 0;
+}
+
+export async function shopOrderStatusCounts(): Promise<OrderCounts> {
+  try {
+    const rows = await sql`
+      select status, count(*)::int as n, (count(*) filter (where flagged_at is not null))::int as flagged
+      from shop_orders group by status`;
+    return foldOrderCounts(rows as unknown as { status: string; n: number; flagged: number }[]);
+  } catch (e) {
+    console.error("shopOrderStatusCounts", (e as Error).message);
+    return foldOrderCounts([]);
+  }
 }
 
 export interface FeedItem {
