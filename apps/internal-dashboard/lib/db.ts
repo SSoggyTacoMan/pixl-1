@@ -1,3 +1,4 @@
+import { projectNumber } from "./projectNumber";
 import { queueWaitStartMs, type QueueWaitInput } from "./queueWait";
 import { DEFAULT_STAFF_SETTINGS, parseStaffSettings, type StaffSettings } from "./staffSettings";
 import { randomBytes } from "node:crypto";
@@ -3160,21 +3161,33 @@ export async function listProjects(
   query?: string,
   opts: { archived?: boolean; includeArchived?: boolean } = {},
 ): Promise<ProjectWithUser[]> {
-  let q = db
-    .from("projects")
-    .select("*, users(id, display_name, real_name, slack_id)")
-    .order("created_at", { ascending: false })
-    .limit(500);
-  // archived: only archived. includeArchived: both. default: only active.
-  if (opts.archived) q = q.not("archived_at", "is", null);
-  else if (!opts.includeArchived) q = q.is("archived_at", null);
-  if (query) q = q.ilike("name", `%${query}%`);
-  const { data, error } = await q;
-  if (error) {
-    console.error("listProjects", error.message);
+  const base = () => {
+    let q = db
+      .from("projects")
+      .select("*, users(id, display_name, real_name, slack_id)")
+      .order("created_at", { ascending: false })
+      .limit(500);
+    // archived: only archived. includeArchived: both. default: only active.
+    if (opts.archived) q = q.not("archived_at", "is", null);
+    else if (!opts.includeArchived) q = q.is("archived_at", null);
+    return q;
+  };
+  let byName = base();
+  if (query) byName = byName.ilike("name", `%${query}%`);
+  // A bare number ("747" or "#747") also finds the project with that id.
+  const number = projectNumber(query);
+  const [named, byId] = await Promise.all([
+    byName,
+    number !== null ? base().eq("id", number) : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (named.error) {
+    console.error("listProjects", named.error.message);
     return [];
   }
-  return (data ?? []) as ProjectWithUser[];
+  if (byId.error) console.error("listProjects by id", byId.error.message);
+  const exact = (byId.data ?? []) as ProjectWithUser[];
+  const seen = new Set(exact.map((p) => Number(p.id)));
+  return [...exact, ...((named.data ?? []) as ProjectWithUser[]).filter((p) => !seen.has(Number(p.id)))];
 }
 
 export async function listIdeas(query?: string): Promise<IdeaWithUser[]> {
@@ -3355,11 +3368,14 @@ export async function globalSearch(
   opts: { players: boolean; projects: boolean },
 ): Promise<SearchResults> {
   const clean = query.replace(/[,()%*\\]/g, " ").trim();
-  if (clean.length < 2) return { players: [], projects: [] };
+  const number = projectNumber(query);
+  // A single digit is too short to search names with, but is still a project number.
+  if (clean.length < 2 && number === null) return { players: [], projects: [] };
   const like = `%${clean}%`;
+  const nameSearch = clean.length >= 2;
 
-  const [playersRes, projectsRes] = await Promise.all([
-    opts.players
+  const [playersRes, projectsRes, projectById] = await Promise.all([
+    opts.players && nameSearch
       ? db
           .from("users")
           .select("id, display_name, real_name, slack_id")
@@ -3367,7 +3383,7 @@ export async function globalSearch(
           .order("created_at", { ascending: false })
           .limit(6)
       : Promise.resolve({ data: [], error: null }),
-    opts.projects
+    opts.projects && nameSearch
       ? db
           .from("projects")
           .select("id, name, status, user_id, users(display_name)")
@@ -3376,13 +3392,25 @@ export async function globalSearch(
           .order("created_at", { ascending: false })
           .limit(6)
       : Promise.resolve({ data: [], error: null }),
+    opts.projects && number !== null
+      ? db
+          .from("projects")
+          .select("id, name, status, user_id, users(display_name)")
+          .is("archived_at", null)
+          .eq("id", number)
+      : Promise.resolve({ data: [], error: null }),
   ]);
   if (playersRes.error) console.error("globalSearch players", playersRes.error.message);
   if (projectsRes.error) console.error("globalSearch projects", projectsRes.error.message);
+  if (projectById.error) console.error("globalSearch project by id", projectById.error.message);
 
+  // The project with that number first, then the name matches.
+  const exact = (projectById.data ?? []) as unknown as SearchResults["projects"];
+  const seen = new Set(exact.map((p) => Number(p.id)));
+  const named = ((projectsRes.data ?? []) as unknown as SearchResults["projects"]).filter((p) => !seen.has(Number(p.id)));
   return {
     players: (playersRes.data ?? []) as SearchResults["players"],
-    projects: (projectsRes.data ?? []) as unknown as SearchResults["projects"],
+    projects: [...exact, ...named],
   };
 }
 

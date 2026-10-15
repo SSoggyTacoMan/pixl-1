@@ -125,7 +125,7 @@ export default async function ProjectsPage({
 
       <Flash error={error} ok={ok} />
 
-      <FilterBar q={q} placeholder="Search project names">
+      <FilterBar q={q} placeholder="Search by name or project number">
         {archived && <input type="hidden" name="view" value="archived" />}
       </FilterBar>
 
