@@ -61,7 +61,7 @@ import {
 } from "@/lib/db";
 import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { decryptPII } from "@/lib/crypto";
-import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord, robertNoteLine } from "@/lib/airtable";
+import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
 import { withAgeOverride } from "@/lib/ageOverrides";
 import { getReviewGrantView } from "@/lib/reviewGrants";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
@@ -2599,7 +2599,7 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
   const { data: project, error: projectError } = await db
     .from("projects")
     .select(
-      "id, status, banned_at, rejected_at, repo_url, demo_url, description, image_url, approved_hours, system_note, user_id, airtable_record_id, hackatime_projects, robert_trust_score, robert_note",
+      "id, status, banned_at, rejected_at, repo_url, demo_url, description, image_url, approved_hours, system_note, user_id, airtable_record_id, hackatime_projects",
     )
     .eq("id", projectId)
     .single();
@@ -2616,15 +2616,7 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
     .limit(1)
     .maybeSingle();
   if (auditError) return { ok: false, error: "Could not look up the approval note - try again." };
-  const parsedSections = parseAuditNote(audit?.audit_note ?? "");
-  // Robert's fraud score and note ride along at the end of the notes, so the
-  // Airtable row shows what the fraud review found.
-  const auditSections = {
-    ...parsedSections,
-    NOTES: [parsedSections.NOTES, robertNoteLine(project.robert_trust_score, project.robert_note)]
-      .filter(Boolean)
-      .join("\n\n"),
-  };
+  const auditSections = parseAuditNote(audit?.audit_note ?? "");
 
   // Only worth a link (and a token) when there's actually something to show -
   // most projects use Hackatime, not journals, for their hours evidence.

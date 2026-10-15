@@ -303,12 +303,3 @@ export async function deleteAirtableRecords(
   }
   return { deleted, failed };
 }
-
-// The Robert (fraud review) score and note as one line for the end of the
-// "Additional Justification" field, so whoever reads the Airtable row sees
-// what the fraud review found. Empty when Robert never scored the project.
-export function robertNoteLine(score: number | string | null | undefined, note: string | null | undefined): string {
-  if (score === null || score === undefined || score === "") return "";
-  const text = (note ?? "").trim();
-  return `Robert fraud review: ${score}/10${text ? `. ${text}` : ""}`;
-}
