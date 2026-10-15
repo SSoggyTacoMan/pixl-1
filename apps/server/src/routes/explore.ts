@@ -89,48 +89,66 @@ router.get("/api/explore/players", async (req, res) => {
   });
 });
 
-// Top pixel balances for the in-game leaderboard. Read-only; balances are
-// server-authoritative so this can't be gamed from the client.
+// What counts as "earned" on the pixel leaderboard: approvals, bounties,
+// reviewer payouts, referral rewards and fulfiller payouts, net of their own
+// corrections (a deflated approval or a voided payout subtracts). Spending,
+// shop refunds and manual grants or deductions are not earnings, so buying
+// something never drops anyone down the board. Constants only: this list is
+// inlined into the SQL.
+export const EARNING_REASONS = [
+  "project_approved",
+  "bounty",
+  "review_payout",
+  "review_payout_backfill",
+  "review_payout_voided",
+  "review_payout_cut",
+  "review_reverted",
+  "referral_reward",
+  "fulfillment_payout",
+  "operation_blackout",
+] as const;
+const EARNED_CTE = `with e as (
+  select user_id, sum(amount) as earned from pixel_transactions
+  where reason in (${EARNING_REASONS.map((r) => `'${r}'`).join(", ")})
+  group by user_id having sum(amount) > 0
+)`;
+
+// Top players by total pixels earned (not current balance, so spending in
+// the shop doesn't cost anyone their rank). Read-only, aggregated in SQL.
 router.get("/api/explore/leaderboard", async (req, res) => {
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  const { data, error } = await db
-    .from("users")
-    .select("id, display_name, skin, pixels")
-    .gt("pixels", 0)
-    .order("pixels", { ascending: false })
-    .limit(25);
-  if (error) {
-    console.error("[explore] leaderboard failed", error);
+  let top: Record<string, unknown>[];
+  let mine: Record<string, unknown>[];
+  try {
+    [top, mine] = await Promise.all([
+      leaderboardDeps.query(
+        `${EARNED_CTE} select e.user_id::text as id, u.display_name, u.skin, e.earned
+         from e join users u on u.id = e.user_id order by e.earned desc, e.user_id limit $1`,
+        [LEADERBOARD_SIZE],
+      ),
+      leaderboardDeps.query(
+        `${EARNED_CTE} select e.earned, (select count(*) from e e2 where e2.earned > e.earned)::int + 1 as rank
+         from e where e.user_id = $1::uuid`,
+        [session.userId],
+      ),
+    ]);
+  } catch (error) {
+    console.error("[explore] leaderboard failed", (error as Error).message);
     return res.status(500).json({ ok: false });
   }
-  const players = (data ?? []).map((u, i) => ({
+  const players = top.map((u, i) => ({
     rank: i + 1,
-    id: u.id,
+    id: String(u.id),
     display_name: u.display_name,
     skin: u.skin,
-    pixels: Math.round(Number(u.pixels) || 0),
-    you: u.id === session.userId,
+    pixels: Math.round(Number(u.earned) || 0),
+    you: String(u.id) === session.userId,
   }));
-
-  let yourRank = players.find((p) => p.you)?.rank ?? 0;
-  let yourPixels = players.find((p) => p.you)?.pixels ?? -1;
-  if (yourPixels < 0) {
-    const { data: me } = await db
-      .from("users")
-      .select("pixels")
-      .eq("id", session.userId)
-      .single();
-    yourPixels = Math.round(Number(me?.pixels) || 0);
-    if (yourPixels > 0) {
-      const { count } = await db
-        .from("users")
-        .select("id", { count: "exact", head: true })
-        .gt("pixels", yourPixels);
-      yourRank = (count ?? 0) + 1;
-    }
-  }
+  const me = mine[0];
+  const yourPixels = me ? Math.round(Number(me.earned) || 0) : 0;
+  const yourRank = me ? Number(me.rank) || 0 : 0;
 
   // During a leaderboard sprint, a second board counts only pixels earned
   // inside the event window (approvals and bounties - nothing manual).

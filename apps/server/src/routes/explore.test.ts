@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { db } from "../db/pgCompat.js";
-import exploreRouter, { leaderboardDeps, MAX_SEARCH_LENGTH, PUBLIC_PROJECT_COLUMNS, searchText } from "./explore.js";
+import exploreRouter, { EARNING_REASONS, leaderboardDeps, MAX_SEARCH_LENGTH, PUBLIC_PROJECT_COLUMNS, searchText } from "./explore.js";
 
 // Same catalog projects.ts's toPlayerProject keeps off player-facing
 // responses - reviewer identity/notes, ban/hold, Robert/fraud, internal IDs,
@@ -113,7 +113,10 @@ describe("explore bounds", () => {
     expect(searchText(["x"])).toBe("");
   });
 
-  async function board(path: string) {
+  async function board(
+    path: string,
+    opts?: { query?: (text: string) => Record<string, unknown>[]; dbData?: unknown[] },
+  ) {
     const { createServer } = await import("node:http");
     const express = (await import("express")).default;
     const { issueSessionToken } = await import("../auth/session.js");
@@ -123,14 +126,15 @@ describe("explore bounds", () => {
     const realFrom = db.from;
     leaderboardDeps.query = async (text, params) => {
       queries.push({ text, params });
+      if (opts?.query) return opts.query(text);
       return text.includes("limit $1")
         ? [{ id: "u-top", total: 12, rewarded: 10, pixels: 50, n: 7 }]
         : [{ id: "u-me", total: 2, rewarded: 0, pixels: 0, n: 1 }];
     };
     db.from = (() => {
       const c: Record<string, unknown> = {};
-      for (const m of ["select", "in"]) c[m] = () => c;
-      c.then = (r: (v: unknown) => unknown) => Promise.resolve({ data: [{ id: "u-top", display_name: "Top" }], error: null }).then(r);
+      for (const m of ["select", "in", "lte", "gt", "is", "eq", "gte", "lt"]) c[m] = () => c;
+      c.then = (r: (v: unknown) => unknown) => Promise.resolve({ data: opts?.dbData ?? [{ id: "u-top", display_name: "Top" }], error: null }).then(r);
       return c;
     }) as unknown as typeof db.from;
     const app = express();
@@ -163,5 +167,33 @@ describe("explore bounds", () => {
     expect(r.queries.every((q) => /group by/i.test(q.text))).toBe(true);
     expect(r.body.players).toEqual([{ rank: 1, display_name: "Top", value: 7, you: false }]);
     expect(r.body.yourValue).toBe(1);
+  });
+
+  test("the pixel board ranks by pixels earned, not balance", async () => {
+    const r = await board("/api/explore/leaderboard", {
+      dbData: [],
+      query: (text) =>
+        text.includes("limit $1")
+          ? [
+              { id: "u-top", display_name: "Top", skin: "cvc:1", earned: "1234.40" },
+              { id: "u-me", display_name: "Me", skin: "cvc:2", earned: "20.00" },
+            ]
+          : [{ earned: "20.00", rank: 2 }],
+    });
+    expect(r.queries.every((q) => /pixel_transactions/.test(q.text) && !/users\s*\.\s*pixels|\bu\.pixels\b/.test(q.text))).toBe(true);
+    expect(r.queries[0].params).toEqual([25]);
+    expect(r.body.players).toEqual([
+      { rank: 1, id: "u-top", display_name: "Top", skin: "cvc:1", pixels: 1234, you: false },
+      { rank: 2, id: "u-me", display_name: "Me", skin: "cvc:2", pixels: 20, you: true },
+    ]);
+    expect(r.body.yourRank).toBe(2);
+    expect(r.body.yourPixels).toBe(20);
+  });
+
+  test("spending and refunds are not earnings", () => {
+    for (const reason of ["shop_purchase", "shop_refund", "manual_grant", "manual_deduction"]) {
+      expect(EARNING_REASONS as readonly string[]).not.toContain(reason);
+    }
+    expect(EARNING_REASONS).toContain("project_approved");
   });
 });
