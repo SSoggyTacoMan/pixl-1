@@ -1,17 +1,20 @@
 import { Suspense } from "react";
 import { requirePage, can } from "@/lib/guard";
 import { getLiveMode } from "@/lib/liveModeServer";
-import { listProjects, collaboratorsByProject } from "@/lib/db";
+import { listProjects, collaboratorsByProject, db } from "@/lib/db";
+import { sendMissingToAirtable } from "@/app/actions";
 import { builderNameFor, redactBuilderUser } from "@/lib/reviewAccess";
 import { slackHandles } from "@/lib/slack";
 import { isSafeUrl } from "@/lib/safeUrl";
 import { BeaconBadge } from "@/app/_components/ProjectBadges";
 import {
+  ActionButton,
   Badge,
   ButtonLink,
   Card,
   EmptyRow,
   FilterBar,
+  Flash,
   Icon,
   Mono,
   Muted,
@@ -46,14 +49,14 @@ async function OwnerName({
 export default async function ProjectsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; view?: string }>;
+  searchParams: Promise<{ q?: string; view?: string; ok?: string; error?: string }>;
 }) {
   const access = await requirePage("reviewer");
   const live = await getLiveMode();
   // Admins see archived projects mixed into the main list; plain reviewers
   // only see active ones.
   const isAdmin = can(access, "owner");
-  const { q, view } = await searchParams;
+  const { q, view, ok, error } = await searchParams;
   const archived = view === "archived";
   // Legal names are for owners/final reviewers only (lib/reviewAccess.ts),
   // stripped here before anything renders.
@@ -69,6 +72,17 @@ export default async function ProjectsPage({
     ? Promise.resolve(new Map<string, string>())
     : slackHandles(projects.map((p) => p.users?.slack_id));
   const collaborators = await collaboratorsByProject(projects.map((p) => p.id));
+  // Approved projects that never got an Airtable row (owners only).
+  let missingAirtable = 0;
+  if (access.isOwner) {
+    const { data: approved } = await db
+      .from("projects")
+      .select("id, airtable_record_id")
+      .eq("status", "approved")
+      .is("banned_at", null)
+      .is("rejected_at", null);
+    missingAirtable = (approved ?? []).filter((r: { airtable_record_id: string | null }) => !r.airtable_record_id).length;
+  }
 
   const headers = ["Project", "Status", "Owner", "Links", ...(live ? [] : ["Hackatime"]), "Created"];
 
@@ -85,6 +99,18 @@ export default async function ProjectsPage({
                 Export approved (CSV)
               </a>
             )}
+            {access.isOwner && missingAirtable > 0 && (
+              <form action={sendMissingToAirtable}>
+                <ActionButton
+                  variant="outline"
+                  size="sm"
+                  pendingLabel="Sending..."
+                  confirm={`Send up to 25 of the ${missingAirtable} approved projects that have no Airtable row yet? Projects already in Airtable are not touched.`}
+                >
+                  Send {missingAirtable} missing to Airtable
+                </ActionButton>
+              </form>
+            )}
             <ButtonLink
               href={archived ? "/projects" : "/projects?view=archived"}
               variant="outline"
@@ -96,6 +122,8 @@ export default async function ProjectsPage({
           </>
         }
       />
+
+      <Flash error={error} ok={ok} />
 
       <FilterBar q={q} placeholder="Search project names">
         {archived && <input type="hidden" name="view" value="archived" />}

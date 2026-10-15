@@ -5,6 +5,7 @@ import {
   githubUsernameFromRepoUrl,
   groupProjectNote,
   pushProjectRecord,
+  robertNoteLine,
 } from "./airtable";
 
 const baseInput = {
@@ -277,5 +278,18 @@ describe("duplicateOverrideNote", () => {
     expect(group["Optional - Override Duplicate Justification"]).toContain("Submitters: Ada and Bo.");
     const solo = buildAirtableFields({ ...baseInput, systemNote: duplicateOverrideNote("", ["Ada"]) });
     expect("Optional - Override Duplicate Justification" in solo).toBe(false);
+  });
+});
+
+describe("robertNoteLine", () => {
+  test("score and note", () => {
+    expect(robertNoteLine(8, " Hackatime looks good to me. ")).toBe("Robert fraud review: 8/10. Hackatime looks good to me.");
+  });
+  test("score without a note", () => {
+    expect(robertNoteLine("6", "")).toBe("Robert fraud review: 6/10");
+  });
+  test("never scored", () => {
+    expect(robertNoteLine(null, "x")).toBe("");
+    expect(robertNoteLine(undefined, null)).toBe("");
   });
 });

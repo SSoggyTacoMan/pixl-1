@@ -61,7 +61,7 @@ import {
 } from "@/lib/db";
 import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { decryptPII } from "@/lib/crypto";
-import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
+import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord, robertNoteLine } from "@/lib/airtable";
 import { withAgeOverride } from "@/lib/ageOverrides";
 import { getReviewGrantView } from "@/lib/reviewGrants";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
@@ -2599,7 +2599,7 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
   const { data: project, error: projectError } = await db
     .from("projects")
     .select(
-      "id, status, banned_at, rejected_at, repo_url, demo_url, description, image_url, approved_hours, system_note, user_id, airtable_record_id, hackatime_projects",
+      "id, status, banned_at, rejected_at, repo_url, demo_url, description, image_url, approved_hours, system_note, user_id, airtable_record_id, hackatime_projects, robert_trust_score, robert_note",
     )
     .eq("id", projectId)
     .single();
@@ -2616,7 +2616,15 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
     .limit(1)
     .maybeSingle();
   if (auditError) return { ok: false, error: "Could not look up the approval note - try again." };
-  const auditSections = parseAuditNote(audit?.audit_note ?? "");
+  const parsedSections = parseAuditNote(audit?.audit_note ?? "");
+  // Robert's fraud score and note ride along at the end of the notes, so the
+  // Airtable row shows what the fraud review found.
+  const auditSections = {
+    ...parsedSections,
+    NOTES: [parsedSections.NOTES, robertNoteLine(project.robert_trust_score, project.robert_note)]
+      .filter(Boolean)
+      .join("\n\n"),
+  };
 
   // Only worth a link (and a token) when there's actually something to show -
   // most projects use Hackatime, not journals, for their hours evidence.
@@ -2801,6 +2809,47 @@ export const sendProjectToAirtable = guardedAction("sendProjectToAirtable", "own
   }
 
   revalidatePath(back);
+});
+
+// Owner button on the Projects page: pushes every approved project that has no
+// Airtable row yet, using the same push as the automatic one on approval. A
+// batch per click (each push reads Hackatime and writes Airtable), oldest id
+// first, so clicking again continues where it stopped. Never touches projects
+// that already have a row.
+const AIRTABLE_BACKLOG_BATCH = 25;
+
+export const sendMissingToAirtable = guardedAction("sendMissingToAirtable", "owner", async (): Promise<void> => {
+  const { data: rows, error } = await db
+    .from("projects")
+    .select("id, name, airtable_record_id")
+    .eq("status", "approved")
+    .is("banned_at", null)
+    .is("rejected_at", null)
+    .order("id", { ascending: true });
+  if (error) redirect(`/projects?error=${encodeURIComponent("Could not list the projects to send. Try again.")}`);
+  const missing = (rows ?? []).filter((r: { airtable_record_id: string | null }) => !r.airtable_record_id);
+  const batch = missing.slice(0, AIRTABLE_BACKLOG_BATCH);
+
+  let sent = 0;
+  const failed: string[] = [];
+  for (const row of batch as { id: number; name: string }[]) {
+    const result = await pushProjectToAirtable(row.id);
+    if (result.ok) sent++;
+    else {
+      failed.push(`#${row.id}`);
+      console.error("sendMissingToAirtable", row.id, result.error);
+      // Stop at once if Airtable itself is refusing (bad token, no access):
+      // the rest would all fail the same way.
+      if (/401|403|not set|NOT_AUTHORIZED|INVALID_PERMISSIONS/i.test(result.error ?? "")) break;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  const left = missing.length - sent;
+  revalidatePath("/projects");
+  const summary = `Sent ${sent} project${sent === 1 ? "" : "s"} to Airtable. ${left} still without a row${
+    failed.length ? `. Failed: ${failed.join(", ")}` : ""
+  }.`;
+  redirect(failed.length ? `/projects?error=${encodeURIComponent(summary)}` : `/projects?ok=${encodeURIComponent(summary)}`);
 });
 
 // A beneficiary's pixel payout for `hours` on this project, as if `hours` had
