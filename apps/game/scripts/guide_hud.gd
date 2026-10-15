@@ -276,7 +276,7 @@ func _show_page(n: int) -> void:
 func _build_pages() -> void:
 	_pages.append(_page_body([
 		_para("Pixl is a tiny multiplayer world where you build real projects to level up and unlock real-world rewards."),
-		_para("Walk around the village, meet other hack clubbers, and turn the hours you spend coding into pixels."),
+		_para("Walk around the village and lobbies, meet other hack clubbers and turn the hours you spend coding into pixels to spend in the shop!"),
 		_spacer(),
 		_hint("Use Next (or the arrow keys) to flip through this guide.")
 	]))

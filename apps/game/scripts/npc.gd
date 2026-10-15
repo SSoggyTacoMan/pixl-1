@@ -337,7 +337,7 @@ func _start_trial_quest() -> void:
 		play_teleport_fx()
 		await get_tree().create_timer(0.35).timeout
 		set_present(false)
-		Dialogue.open(npc_name, ["Then it's yours. Get building, I'll be around your village if you need me."])
+		Dialogue.open(npc_name, ["Then it's all yours, go to build it and don't worry, I'll be around the village if you need me!"])
 		Dialogue.closed.connect(func(): WebPages.open("projects"), CONNECT_ONE_SHOT)
 	elif choice == "own":
 		Dialogue.open(npc_name, ["Off-map, huh? The frontier respects that. Build your own thing, same loop, ship it when it's ready."])

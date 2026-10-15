@@ -20,7 +20,7 @@ const COLOR_DM := Color(0.85, 0.72, 1)
 var _lines: Array[Dictionary] = []
 const COMMANDS := [
 	["/w", "/w <name> <message>", "whisper someone privately"],
-	["/pixo", "/pixo <question>", "ask Pixo anything, only you see the reply"],
+	["/pixo", "/pixo <question>", "Ask anything to Pixorpheus, you only can see the answer"],
 ]
 var _suggest: PanelContainer
 var _suggest_list: VBoxContainer
@@ -320,7 +320,7 @@ func _on_js_paste(args: Array) -> void:
 	_input.insert_text_at_caret(text)
 
 func _on_js_paste_fail(_args: Array) -> void:
-	add_system("Couldn't paste , your browser blocked clipboard access.")
+	add_system("Couldn't paste, your browser blocked clipboard access.")
 
 func _on_submit(text: String) -> void:
 	var t := text.strip_edges()

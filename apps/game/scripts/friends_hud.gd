@@ -175,7 +175,7 @@ func _build_ui() -> void:
 
 	var how := Label.new()
 	how.theme_type_variation = &"InfoText"
-	how.text = "Send a request by searching, or click a player in the world."
+	how.text = "You can send a request by searching, or you can also click a player in the world."
 	how.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(how)
 

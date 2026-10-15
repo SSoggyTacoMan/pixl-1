@@ -16,20 +16,13 @@ signal finished
 const THEME := preload("res://themes/main_theme.tres")
 const CINEMATIC := preload("res://scenes/intro_cinematic.tscn")
 const ACCENT_GOLD := Color(0.85098, 0.643137, 0.25098)
-const PIXO := "Pixo"
+# All of Pixo's words live in onboarding_dialogues.gd, edit them there.
+const TEXT := preload("res://scripts/onboarding_dialogues.gd")
+const PIXO := TEXT.SPEAKER
 
-# Experience answers → the id stored server-side + Pixo's reply.
-const EXPERIENCE_OPTIONS := [
-	"I'm just starting out.",
-	"I've shipped a few things.",
-	"I build all the time.",
-]
+# Experience answers → the id stored server-side (the labels and Pixo's replies
+# are in TEXT, same order).
 const EXPERIENCE_IDS := ["beginner", "intermediate", "advanced"]
-const EXPERIENCE_REPLY := {
-	"beginner": "Perfect. Everyone starts somewhere. I'll walk you through the first one, step by step.",
-	"intermediate": "Nice. I'll point you at something with a bit of bite and stay out of your way.",
-	"advanced": "Good. Then I'll skip the hand-holding. The Core could use someone like you.",
-}
 
 # Config
 var mock := false
@@ -101,36 +94,24 @@ func _run_cinematic() -> void:
 	cine.queue_free()
 
 func _greeting() -> void:
-	await _say([
-		"Oh, you actually came. Good. I wasn't sure anyone would.",
-		"I'm Pixo. I've kept this little Hub lit since the Static hit. It's the last stable ground we've got.",
-		"Everything past the edge is frozen. Saloons stopped mid-song. Trains halted on the rails. Whole districts gone to pixels.",
-		"We can bring it back. That's not a hope, it's how this place works. But I can't do it alone, and neither can the Core.",
-		"First things first, though. Let's get you sorted.",
-	])
+	await _say(TEXT.GREETING)
 
 func _naming() -> void:
 	while true:
-		await _say([
-			"So, what should everyone call you around here?",
-			"Names matter. It's the first thing the world remembers about you.",
-		])
+		await _say(TEXT.NAMING_ASK)
 		var name: String = await _prompt_name()
 		var result: Dictionary = await _submit_name(name)
 		if result.get("ok", false):
 			captured_name = String(result.get("name", name))
-			await _say(["%s. Alright, the Hub knows you now." % captured_name])
+			await _say([TEXT.NAME_ACCEPTED % captured_name])
 			return
 		# Rejected, Pixo softens it, then we loop back to ask again.
 		await _say([_soften_name_error(String(result.get("reason", "")))])
 
 func _experience() -> void:
 	Dialogue.ask(PIXO,
-		[
-			"One more thing, so I know how much to explain. Be honest: there's no wrong answer.",
-			"How much have you built before?",
-		],
-		PackedStringArray(EXPERIENCE_OPTIONS),
+		TEXT.EXPERIENCE_ASK,
+		PackedStringArray(TEXT.EXPERIENCE_OPTIONS),
 		PackedStringArray(EXPERIENCE_IDS))
 	var picked: Array = await Dialogue.chosen
 	var id := String(picked[1]) if picked.size() > 1 else "beginner"
@@ -138,33 +119,23 @@ func _experience() -> void:
 		id = "beginner"
 	captured_experience = id
 	await _post_experience(id)
-	await _say([EXPERIENCE_REPLY.get(id, EXPERIENCE_REPLY["beginner"])])
+	await _say([TEXT.EXPERIENCE_REPLY.get(id, TEXT.EXPERIENCE_REPLY["beginner"])])
 
 func _loop_patter() -> void:
-	await _say([
-		"Here's the whole deal. See that dark spire? That's the Core: it used to power all of Origin. Now it's a sealed vault, holding everything we ever made.",
-		"You bring it back by building. Real things: a website, a bot, a game, whatever's yours. The jobs are called Trials.",
-		"Every hour of real work you ship becomes Restoration Energy. That's what thaws the world and wakes the Core.",
-		"And when the Core wakes, it hands back what it's been keeping: real gear, real rewards. That part isn't a metaphor.",
-		"Ship enough and you'll feel it: the more you build, the more each hour pays. Pixels for you, energy for all of us.",
-	])
+	await _say(TEXT.LOOP_PATTER)
 
 # Universal hand-off: the Trials live out in the regions, not the Hub. Point the
 # player through the Lobbies to the frontier to meet Ridit, then hand control to
 # the FirstProjectGuide checklist. Building your own idea instead is always fine.
 func _direct_to_frontier() -> void:
 	Dialogue.ask(PIXO,
-		[
-			"The Trials themselves aren't here in the Hub, they're out past the edge, in the regions.",
-			"Head through the Lobbies to reach the frontier, and find Ridit out there. He keeps the Dustline, and he's holding a first Trial for you.",
-			"Take his, or build something entirely your own, the Core recognizes both. Either way the loop's the same: build it, ship it, watch the world thaw.",
-		],
-		PackedStringArray(["Open the Lobbies", "I'll head out myself"]),
+		TEXT.FRONTIER_PITCH,
+		PackedStringArray(TEXT.FRONTIER_OPTIONS),
 		PackedStringArray(["lobbies", "later"]))
 	var picked: Array = await Dialogue.chosen
 	var choice := String(picked[1]) if picked.size() > 1 else "later"
-	await _say(["Oh, one more thing: that opening you just watched was drawn by noct. Genuinely great artist, go hire them if you ever need art done."])
-	await _say(["I'll pin a checklist to your screen so you never lose the thread. First stop, find Ridit."])
+	await _say(TEXT.CINEMATIC_CREDIT)
+	await _say(TEXT.CHECKLIST_NOTE)
 	# Awaited: start() emits `finished` right after this returns, which frees
 	# this node (see village.gd's flow.finished.connect -> queue_free), an
 	# un-awaited call here let that teardown cancel the in-flight HTTPRequest
@@ -228,14 +199,14 @@ func _build_name_overlay() -> void:
 	margin.add_child(body)
 
 	var info := Label.new()
-	info.text = "What should everyone call you?"
+	info.text = TEXT.NAME_BOX_TITLE
 	info.theme_type_variation = &"TitleText"
 	info.add_theme_font_size_override("font_size", 22)
 	body.add_child(info)
 
 	_name_edit = LineEdit.new()
 	_name_edit.text = NetworkManager.display_name
-	_name_edit.placeholder_text = "Your name"
+	_name_edit.placeholder_text = TEXT.NAME_BOX_PLACEHOLDER
 	_name_edit.max_length = 24
 	_name_edit.text_submitted.connect(func(_t): _submit_name_overlay())
 	body.add_child(_name_edit)
@@ -253,13 +224,13 @@ func _build_name_overlay() -> void:
 
 	var keep := Button.new()
 	keep.theme_type_variation = &"GreyButton"
-	keep.text = "Keep \"%s\"" % NetworkManager.display_name if NetworkManager.display_name != "" else "Skip"
+	keep.text = TEXT.NAME_BOX_KEEP % NetworkManager.display_name if NetworkManager.display_name != "" else TEXT.NAME_BOX_SKIP
 	keep.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	keep.pressed.connect(func(): _finish_name(NetworkManager.display_name))
 	buttons.add_child(keep)
 
 	_name_save = Button.new()
-	_name_save.text = "That's me"
+	_name_save.text = TEXT.NAME_BOX_SAVE
 	_name_save.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_name_save.pressed.connect(_submit_name_overlay)
 	buttons.add_child(_name_save)
@@ -290,9 +261,9 @@ func _show_name_warn(text: String) -> void:
 
 func _soften_name_error(reason: String) -> String:
 	if reason.to_lower().contains("okay here") or reason.to_lower().contains("friendly"):
-		return "Hah, let's keep it friendly, yeah? The little ones look up to us. Try another."
+		return TEXT.NAME_REJECTED_FRIENDLY
 	if reason == "":
-		return "Hm, that one won't stick. Try another?"
+		return TEXT.NAME_REJECTED_GENERIC
 	return reason
 
 # ── helpers: network (mockable) ──────────────────────────────────────────────
