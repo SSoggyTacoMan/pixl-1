@@ -9,12 +9,20 @@ import { getHideReviewers } from "@/lib/liveModeServer";
 import { reviewerName } from "@/lib/liveMode";
 import { ReviewTable } from "@/app/_components/ReviewTable";
 import { LiveReview } from "@/app/_components/LiveReview";
-import { REVIEW_SORTS, REVIEW_SORT_COOKIE } from "@/lib/reviewSort";
+import {
+  REVIEW_SORTS,
+  REVIEW_SORT_COOKIE,
+  filterByHours,
+  parseHoursBound,
+  sortQueueRows,
+} from "@/lib/reviewSort";
 import {
   Badge,
   ButtonLink,
+  Button,
   Card,
   CardHeader,
+  Input,
   Muted,
   Pagination,
   Table,
@@ -30,12 +38,19 @@ const SORTS = REVIEW_SORTS;
 export default async function ReviewListPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string; sort?: string; kind?: string; blackout?: string }>;
+  searchParams: Promise<{
+    page?: string;
+    sort?: string;
+    kind?: string;
+    blackout?: string;
+    minh?: string;
+    maxh?: string;
+  }>;
 }) {
   const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
   const viewer = access.session.slackId;
-  const { page, sort: sortParam, kind: rawKind, blackout } = await searchParams;
+  const { page, sort: sortParam, kind: rawKind, blackout, minh, maxh } = await searchParams;
   // No ?sort= in the URL: use the reviewer's last pick (set by proxy.ts).
   const sort = sortParam ?? (await cookies()).get(REVIEW_SORT_COOKIE)?.value;
   const onlyBlackout = blackout === "1";
@@ -57,9 +72,14 @@ export default async function ReviewListPage({
   const blackoutSet = new Set(blackoutIds);
   const inBlackout = (p: { id: number | string }) => blackoutSet.has(Number(p.id));
   const blackoutCount = rowsAll.filter(inBlackout).length;
-  let rows = onlyBlackout ? rowsAll.filter(inBlackout) : rowsAll;
-  if (sort === "hours") rows = [...rows].sort((a, b) => b.hours - a.hours);
-  else if (sort === "status") rows = [...rows].sort((a, b) => a.status.localeCompare(b.status));
+  const minHours = parseHoursBound(minh);
+  const maxHours = parseHoursBound(maxh);
+  const hoursQ = `${minHours !== null ? `&minh=${minHours}` : ""}${maxHours !== null ? `&maxh=${maxHours}` : ""}`;
+  const hoursFiltered = minHours !== null || maxHours !== null;
+  const rows = sortQueueRows(
+    filterByHours(onlyBlackout ? rowsAll.filter(inBlackout) : rowsAll, minHours, maxHours),
+    sort,
+  );
 
   const total = rows.length;
   const pages = Math.max(1, Math.ceil(total / PER));
@@ -85,7 +105,8 @@ export default async function ReviewListPage({
 
   const sortKey = SORTS.some((s) => s.key === sort) ? sort : "oldest";
   const blackoutQ = onlyBlackout ? "&blackout=1" : "";
-  const qp = (p: number) => `/review?page=${p}${sortKey !== "oldest" ? `&sort=${sortKey}` : ""}${kindQ}${blackoutQ}`;
+  const qp = (p: number) =>
+    `/review?page=${p}${sortKey !== "oldest" ? `&sort=${sortKey}` : ""}${kindQ}${blackoutQ}${hoursQ}`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -132,7 +153,7 @@ export default async function ReviewListPage({
             {SORTS.map((s) => (
               <Link
                 key={s.key}
-                href={`/review?sort=${s.key}${kindQ}${blackoutQ}`}
+                href={`/review?sort=${s.key}${kindQ}${blackoutQ}${hoursQ}`}
                 className="hc-tab"
                 role="tab"
                 aria-selected={sortKey === s.key}
@@ -141,6 +162,36 @@ export default async function ReviewListPage({
               </Link>
             ))}
           </div>
+          <form method="get" action="/review" className="flex flex-wrap items-end gap-3 px-4 py-3">
+            <input type="hidden" name="sort" value={sortKey} />
+            {kind === "hardware" && <input type="hidden" name="kind" value="hardware" />}
+            {onlyBlackout && <input type="hidden" name="blackout" value="1" />}
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="hc-caption">Min hours</span>
+              <Input name="minh" type="number" min={0} step="any" defaultValue={minHours ?? ""} placeholder="0" className="w-28" />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="hc-caption">Max hours</span>
+              <Input name="maxh" type="number" min={0} step="any" defaultValue={maxHours ?? ""} placeholder="any" className="w-28" />
+            </label>
+            <Button type="submit" variant="outline" size="sm">
+              Filter
+            </Button>
+            {hoursFiltered && (
+              <ButtonLink
+                href={`/review?${sortKey !== "oldest" ? `sort=${sortKey}` : ""}${kindQ}${blackoutQ}`.replace("?&", "?")}
+                variant="ghost"
+                size="sm"
+              >
+                Clear
+              </ButtonLink>
+            )}
+            {hoursFiltered && (
+              <Muted>
+                {total} of {onlyBlackout ? blackoutCount : rowsAll.length} shown
+              </Muted>
+            )}
+          </form>
           <ReviewTable makerLinks={access.isOwner}
             rows={masked(slice)}
             handles={handles}

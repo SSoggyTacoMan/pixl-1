@@ -4,6 +4,7 @@ import type { ComponentProps, ComponentPropsWithoutRef, ReactNode } from "react"
 import HcIcon, { type GlyphName } from "@hackclub/icons";
 import SubmitButton from "./SubmitButton";
 import { glyphStyle } from "./glyphs";
+import { pageWindow } from "@/lib/pagination";
 
 // The dashboard's whole UI kit. Every page builds from these, styled by
 // admin.css (the hc-* classes). Ported from the Wonders admin.
@@ -644,20 +645,45 @@ export function Pagination({
   }
 
   return (
-    <nav className="mt-4 flex items-center justify-between gap-4">
+    <nav className="mt-4 flex flex-wrap items-center justify-between gap-3" aria-label="Pagination">
       <span className="hc-caption text-sm">
         Page {page} of {totalPages}
       </span>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {page > 1 && (
-          <ButtonLink href={hrefFor(page - 1)} variant="outline" size="sm">
-            Previous
-          </ButtonLink>
+          <>
+            <ButtonLink href={hrefFor(1)} variant="outline" size="sm">
+              First
+            </ButtonLink>
+            <ButtonLink href={hrefFor(page - 1)} variant="outline" size="sm">
+              Previous
+            </ButtonLink>
+          </>
+        )}
+        {pageWindow(page, totalPages).map((item, i) =>
+          item === "gap" ? (
+            <span key={`gap-${i}`} className="hc-caption px-1 text-sm" aria-hidden="true">
+              ...
+            </span>
+          ) : item === page ? (
+            <span key={item} className={buttonClass("primary", "sm")} aria-current="page">
+              {item}
+            </span>
+          ) : (
+            <ButtonLink key={item} href={hrefFor(item)} variant="outline" size="sm">
+              {String(item)}
+            </ButtonLink>
+          ),
         )}
         {page < totalPages && (
-          <ButtonLink href={hrefFor(page + 1)} variant="outline" size="sm">
-            Next
-          </ButtonLink>
+          <>
+            <ButtonLink href={hrefFor(page + 1)} variant="outline" size="sm">
+              Next
+            </ButtonLink>
+            <ButtonLink href={hrefFor(totalPages)} variant="outline" size="sm">
+              Last
+            </ButtonLink>
+          </>
         )}
       </div>
     </nav>
