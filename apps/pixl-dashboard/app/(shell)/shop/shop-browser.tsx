@@ -103,6 +103,11 @@ export function ShopBrowser({
 
   return (
     <div>
+      <Notice className="mb-[14px]">
+        Heads up: the photo is a representative example, not a guarantee. For hardware items especially, the exact brand
+        or model you receive may differ based on what&apos;s actually available in your region.
+      </Notice>
+
       <div className="mb-[14px] flex flex-wrap gap-[10px]">
         <input
           className={cn(field, "min-w-[200px] flex-1")}
