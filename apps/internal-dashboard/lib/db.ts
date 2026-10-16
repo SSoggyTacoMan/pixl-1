@@ -1,4 +1,5 @@
 import { projectNumber } from "./projectNumber";
+import { pickStyleExamples, type StyleCandidate, type StyleExample } from "./styleExamples";
 import { queueWaitStartMs, type QueueWaitInput } from "./queueWait";
 import { DEFAULT_STAFF_SETTINGS, parseStaffSettings, type StaffSettings } from "./staffSettings";
 import { randomBytes } from "node:crypto";
@@ -1282,32 +1283,39 @@ export async function listReviewAuditsForProject(projectId: number): Promise<Rev
 // projects that actually reached a final, credited approval (verdict exactly
 // "approved", never "first_pass_approved" - that's only ever a proposal, not
 // a real reviewer's settled judgment). Most recent first, so the style stays
-// current with however the team is actually writing these today.
-export async function recentApprovedJustifications(
-  limit = 6,
-): Promise<{ technicalFeatures: string; notes: string; deflationReason: string }[]> {
+// current with however the team is actually writing these today. These are the
+// same notes that get sent to Airtable, and the draft copies the thorough ones:
+// the longest write-ups of the latest long-hours projects (pickStyleExamples).
+export async function recentApprovedJustifications(limit = 4): Promise<StyleExample[]> {
   const { data, error } = await db
     .from("review_audits")
-    .select("audit_note")
+    .select("project_id, approved_hours, audit_note")
     .eq("verdict", "approved")
     .not("audit_note", "is", null)
     .neq("audit_note", "")
     .order("created_at", { ascending: false })
-    .limit(limit);
+    .limit(200);
   if (error) {
     console.error("recentApprovedJustifications", error.message);
     return [];
   }
-  return ((data ?? []) as { audit_note: string }[])
+  const candidates: StyleCandidate[] = ((data ?? []) as {
+    project_id: number;
+    approved_hours: number | string | null;
+    audit_note: string;
+  }[])
     .map((r) => {
       const parsed = parseAuditNote(r.audit_note);
       return {
+        projectId: Number(r.project_id),
+        hours: r.approved_hours == null ? null : Number(r.approved_hours),
         technicalFeatures: parsed["TECHNICAL FEATURES"],
         notes: parsed["NOTES"],
         deflationReason: parsed["DEFLATION REASON"],
       };
     })
     .filter((ex) => ex.technicalFeatures || ex.notes);
+  return pickStyleExamples(candidates, limit);
 }
 
 export interface ProjectNoteRow {

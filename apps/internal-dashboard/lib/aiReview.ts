@@ -98,10 +98,10 @@ function buildPrompt(input: AiReviewInput, readme: string): string {
   // so a handful of examples can't dominate the prompt over the actual
   // project facts above/below.
   const styleBlock = input.styleExamples
-    .slice(0, 5)
+    .slice(0, 4)
     .map((ex, i) => {
       const parts = [
-        `TECHNICAL FEATURES:\n${ex.technicalFeatures.slice(0, 1500) || "(none written)"}`,
+        `TECHNICAL FEATURES:\n${ex.technicalFeatures.slice(0, 3000) || "(none written)"}`,
         `NOTES:\n${ex.notes.slice(0, 1500) || "(none written)"}`,
       ];
       if (ex.deflationReason) parts.push(`DEFLATION REASON:\n${ex.deflationReason.slice(0, 500)}`);
@@ -110,7 +110,7 @@ function buildPrompt(input: AiReviewInput, readme: string): string {
     .join("\n\n");
 
   const styleSection = styleBlock
-    ? `HOUSE STYLE - real reviewers' own text from recently APPROVED projects, verbatim. This is exactly what you're drafting, not inspiration - match the tone, length, and structure: a running paragraph (not bullet points) that opens with what the project actually is and its history (e.g. a prior YSWS submission), then walks through specific, verifiable technical details - cite commit SHAs when a specific commit is the evidence for a claim - then closes with an assessment of the README and demo. Terse and concrete throughout, no filler, no generic praise, no restating the obvious, no "this is a great project" style commentary. Write like these, not like a generic AI assistant.\n\n${styleBlock}\n\n`
+    ? `HOUSE STYLE - the real write-ups reviewers sent for the longest, most recent LONG-HOURS projects, verbatim. This is exactly what you're drafting, not inspiration - match the tone, length, and structure: a running paragraph (not bullet points) that opens with what the project actually is and its history (e.g. a prior YSWS submission), then walks through what it does and how it is built (features, stack, structure, what the code actually implements), then closes with an assessment of the README and demo. Terse and concrete throughout, no filler, no generic praise, no restating the obvious, no "this is a great project" style commentary. Write like these, not like a generic AI assistant.\n\nDo NOT recount commits in TECHNICAL FEATURES: no commit lists, no commit messages, no SHAs, no "the first commit..., then..." history. Commits only appear in NOTES, and only when one explains an hours or legitimacy concern.\n\n${styleBlock}\n\n`
     : "";
 
   const deflated = input.reviewerHours < input.claimedHours;
@@ -149,7 +149,7 @@ ${yswsLines || "(no matches - not previously shipped elsewhere)"}
 Respond with ONLY a JSON object, no markdown fences, matching exactly:
 {
   "summary": "one sentence on what this project actually is/does, for a quick-glance preview",
-  "technicalFeatures": "the full technical-features writeup - a running paragraph covering what the project is, its history (prior YSWS submissions/overlap if any), the concrete technical work done (cite commit SHAs for specific claims), and an assessment of the README and demo${styleBlock ? ", in the exact voice of the TECHNICAL FEATURES examples above" : ""}. Do not use markdown formatting.",
+  "technicalFeatures": "the full technical-features writeup - a running paragraph covering what the project is, its history (prior YSWS submissions/overlap if any), what the project does and how it is built (no commit recap, no SHAs), and an assessment of the README and demo${styleBlock ? ", in the exact voice of the TECHNICAL FEATURES examples above" : ""}. Do not use markdown formatting.",
   "deflationReason": "${deflationInstruction}",
   "notes": "anything else worth flagging - commit legitimacy (explain any unusually large commit rather than just flagging it), whether commit messages/structure are consistent with the tracked time and with the AI-usage disclosure above, beginner-vs-experienced signals you can actually see in the code/commits${styleBlock ? ", in the exact voice of the NOTES examples above" : ""}. Do not use markdown formatting.",
   "redFlags": ["short phrase per concern - thin commit history, hour mismatch, etc - empty array if none"],
@@ -174,10 +174,10 @@ export async function generateAiReviewDraft(input: AiReviewInput): Promise<AiRev
       model: MODEL,
       messages: [{ role: "user", content: prompt }],
       temperature: 0.3,
-      // The house-style paragraphs this now drafts commonly run 1000+
-      // characters each across technicalFeatures/notes/deflationReason - the
-      // provider's default max_tokens was truncating the JSON mid-string.
-      max_tokens: 2000,
+      // The house-style paragraphs this now drafts (modelled on the long-hours
+      // write-ups) run 2000+ characters across technicalFeatures/notes/
+      // deflationReason - a low max_tokens truncates the JSON mid-string.
+      max_tokens: 3000,
     }),
     signal: AbortSignal.timeout(60000),
   });
