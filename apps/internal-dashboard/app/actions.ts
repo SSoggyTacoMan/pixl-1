@@ -1155,11 +1155,9 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   // can validate the parts that matter, then store them as one string under
   // the existing auditNote field.
   // Technical features / additional notes are only mandatory for a verdict
-  // that actually needs to hold up as an audit trail (approve, or a proposed/
-  // confirmed ban) - a "request changes" bounce-back has its own player-facing
-  // note field for that, and reviewers kept typing a throwaway line here just
-  // to satisfy the requirement.
-  const auditSectionsRequired = verdict !== "needs_changes";
+  // that actually needs to hold up as an audit trail (approve) - "request changes"
+  // and ban verdicts do not credit hours and have their own player-facing note field.
+  const auditSectionsRequired = verdict === "approved";
   const technicalFeatures = String(formData.get("technicalFeatures") ?? "").trim();
   if (auditSectionsRequired && technicalFeatures.length < TECHNICAL_FEATURES_MIN)
     redirect(
@@ -1174,7 +1172,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   if (deflated && !deflationReason)
     redirect(`${back}?error=${encodeURIComponent("Explain why the credited hours were lowered.")}`);
   const ageJustification = String(formData.get("ageJustification") ?? "").trim();
-  if (ageFlag && !ageJustification)
+  if (verdict === "approved" && ageFlag && !ageJustification)
     redirect(
       `${back}?error=${encodeURIComponent("This submitter turns 19 between shipping and review , document that before deciding.")}`,
     );

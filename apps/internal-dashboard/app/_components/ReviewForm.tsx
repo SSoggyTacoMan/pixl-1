@@ -812,20 +812,21 @@ export function ReviewForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Technical features / additional notes are only required for approve and
-  // ban (reviewProject relaxes them for needs_changes too). Those fields live
+  // Technical features / additional notes are only required for approve
+  // (reviewProject relaxes them for needs_changes and ban too). Those fields live
   // in Step 2, hidden by the time the verdict buttons are clicked, and the
   // browser refuses to submit a form with an invalid hidden field without
   // saying why. So this checks everything itself, jumps to the step that
   // needs fixing and says what's wrong, instead of a click that does nothing.
   const onVerdictSelect = (verdict: string): boolean => {
-    const required = verdict !== "needs_changes";
+    const required = verdict === "approved";
     if (technicalFeaturesRef.current) {
       technicalFeaturesRef.current.required = required;
       if (required) technicalFeaturesRef.current.minLength = TECHNICAL_FEATURES_MIN;
       else technicalFeaturesRef.current.removeAttribute("minlength");
     }
     if (notesRef.current) notesRef.current.required = required;
+    if (ageJustificationRef.current) ageJustificationRef.current.required = required && ageFlag;
 
     const fail = (n: Step, message: string) => {
       setStep(n);
@@ -835,12 +836,12 @@ export function ReviewForm({
     // Hours are only credited on an approve, so only an approve needs the reason.
     if (verdict === "approved" && needsDeflationReason && !deflationReasonRef.current?.value.trim())
       return fail(2, "Say why you're lowering the hours before deciding.");
-    if (ageFlag && !ageJustificationRef.current?.value.trim())
+    if (verdict === "approved" && ageFlag && !ageJustificationRef.current?.value.trim())
       return fail(2, "Age justification is required before deciding.");
     if (required) {
       if ((technicalFeaturesRef.current?.value.trim().length ?? 0) < TECHNICAL_FEATURES_MIN)
         return fail(2, `Technical features needs at least ${TECHNICAL_FEATURES_MIN} characters.`);
-      if (!notesRef.current?.value.trim()) return fail(2, "Additional notes is required before approving or banning.");
+      if (!notesRef.current?.value.trim()) return fail(2, "Additional notes is required before approving.");
     }
     if (blackout && verdict === "approved") {
       const form = formRef.current;
@@ -1196,8 +1197,6 @@ export function ReviewForm({
           >
             <AuditTextarea
               name="technicalFeatures"
-              required
-              minLength={TECHNICAL_FEATURES_MIN}
               ref={technicalFeaturesRef}
               onChange={(e) => {
                 setFeaturesLen(e.target.value.trim().length);
@@ -1232,7 +1231,6 @@ export function ReviewForm({
             <Field label="Age justification" hint="This submitter turns 19 between shipping and this review.">
               <AuditTextarea
                 name="ageJustification"
-                required
                 ref={ageJustificationRef}
                 onChange={() => saveDraft()}
                 placeholder="Document the submitter's age at shipping vs. now."
@@ -1244,7 +1242,7 @@ export function ReviewForm({
             label="Additional notes"
             hint={
               <>
-                Required. Show your thinking: the user&apos;s level (check their repo count) and how it affects the
+                Required for approval. Show your thinking: the user&apos;s level (check their repo count) and how it affects the
                 hours (a beginner gets more hours approved than an advanced user for the same project), why you
                 didn&apos;t deflate (commit count, whether they are descriptive and show steady progress, journals),
                 and any other proof that supports the time.
@@ -1253,7 +1251,6 @@ export function ReviewForm({
           >
             <AuditTextarea
               name="notes"
-              required
               ref={notesRef}
               onChange={() => saveDraft()}
               placeholder={
