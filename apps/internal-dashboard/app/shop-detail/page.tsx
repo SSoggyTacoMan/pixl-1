@@ -119,7 +119,7 @@ export default async function ShopDetailPage({
                       <th>Region</th>
                       <th>Price</th>
                       <th>USD</th>
-                      <th>Price source link</th>
+                      <th>Price source link / alternate</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -133,6 +133,7 @@ export default async function ShopDetailPage({
                           hasRow: !!row,
                           price: row?.price ?? 0,
                           priceSourceUrl: row?.price_source_url ?? "",
+                          altSourceUrl: row?.alt_source_url ?? "",
                           hasConfig: !!row?.config_options,
                           basePrice: row?.config_options?.base_price ?? row?.price ?? 0,
                           referenceUrl: row?.config_options?.reference_url ?? "",
