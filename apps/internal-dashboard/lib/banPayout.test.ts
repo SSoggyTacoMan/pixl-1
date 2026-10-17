@@ -32,4 +32,9 @@ describe("project ban payout", () => {
   test("a ban pays a flat 2 pixels", () => {
     expect(src).toContain("const BAN_PAYOUT_PIXELS = 2;");
   });
+
+  test("audit notes and justifications are only required for approvals, not bans", () => {
+    const b = body("reviewProject");
+    expect(b).toContain('const auditSectionsRequired = verdict === "approved";');
+  });
 });
