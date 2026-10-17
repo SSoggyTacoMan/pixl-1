@@ -564,10 +564,10 @@ export function ReviewForm({
   // The default can come from an earlier reviewer (first or spot-check pass), so
   // it may predate a journal deflation that has since lowered claimedHours. Never
   // start above what can actually be credited (the input's own max).
-  const baseHours = Math.min(defaultHours ?? claimedHours, claimedHours);
+  const baseHours = round1(Math.min(defaultHours ?? claimedHours, claimedHours));
   const [hours, setHours] = useState(baseHours);
   const [tierState, setTierState] = useState(tier);
-  const deflated = hours < claimedHours;
+  const deflated = round1(hours) < round1(claimedHours);
   // claimedHours is already post-journal-deflation (payoutHours on the page),
   // so a journal-only deflation would leave `deflated` false and skip the
   // required reason. Count journal-level deflation too, and show the true
@@ -1061,7 +1061,7 @@ export function ReviewForm({
               max={claimedHours}
               value={hours}
               onChange={(e) => {
-                const v = Math.min(claimedHours, Math.max(0, Number(e.target.value) || 0));
+                const v = round1(Math.min(claimedHours, Math.max(0, Number(e.target.value) || 0)));
                 hoursEditedRef.current = true;
                 setHours(v);
                 saveDraft({ hours: v });
