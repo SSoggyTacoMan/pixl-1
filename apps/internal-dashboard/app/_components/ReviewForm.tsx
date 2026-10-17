@@ -567,7 +567,7 @@ export function ReviewForm({
   const baseHours = Math.min(defaultHours ?? claimedHours, claimedHours);
   const [hours, setHours] = useState(baseHours);
   const [tierState, setTierState] = useState(tier);
-  const deflated = hours < claimedHours;
+  const deflated = round1(hours) < round1(claimedHours);
   // claimedHours is already post-journal-deflation (payoutHours on the page),
   // so a journal-only deflation would leave `deflated` false and skip the
   // required reason. Count journal-level deflation too, and show the true

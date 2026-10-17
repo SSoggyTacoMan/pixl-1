@@ -329,9 +329,9 @@ async function claimedHoursFor(projectId: number, opts: { raw?: boolean } = {}):
       0,
       Math.round((rawTrackedHours - rawOwnerJournalHours) * 10) / 10,
     );
-    return hackatimeOnlyHours + journalHours;
+    return Math.round((hackatimeOnlyHours + journalHours) * 10) / 10;
   }
-  return rawTrackedHours + journalHours;
+  return Math.round((rawTrackedHours + journalHours) * 10) / 10;
 }
 
 async function insertReviewAudit(
@@ -1169,7 +1169,10 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   // ban never pay out, so a lowered-hours number sitting in the form when the
   // reviewer picks one of those shouldn't need an explanation either (matches
   // the same verdict-gated relaxation as auditSectionsRequired above).
-  const deflated = verdict === "approved" && approvedHours != null && approvedHours < claimedHours;
+  const deflated =
+    verdict === "approved" &&
+    approvedHours != null &&
+    Math.round(approvedHours * 10) < Math.round(claimedHours * 10);
   const deflationReason = String(formData.get("deflationReason") ?? "").trim();
   if (deflated && !deflationReason)
     redirect(`${back}?error=${encodeURIComponent("Explain why the credited hours were lowered.")}`);
