@@ -63,6 +63,7 @@ const INTERNAL_ONLY_FIELDS = [
   "journal_share_token",
   "funding_deducted_px",
   "trial_prize_order_id",
+  "prior_approved_hours",
 ];
 
 function fullRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {

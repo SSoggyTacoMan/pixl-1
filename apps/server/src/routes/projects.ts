@@ -937,6 +937,12 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
       // eventual re-approval overwrites the original ship's row instead of
       // getting its own - clear it here so a genuine update starts fresh.
       ...(isUpdate ? { airtable_record_id: null } : {}),
+      // approved_hours is the cumulative credited total and a re-approval
+      // overwrites it, so freeze what was already approved at the moment of the
+      // update: the update's Airtable row and the review page both need "new
+      // hours = total - this" (internal-dashboard newHoursOnly). Only touched on
+      // an update, so a needs_changes reship keeps the baseline.
+      ...(isUpdate ? { prior_approved_hours: Number(project.approved_hours) || 0 } : {}),
     })
     .eq("id", id)
     .eq("user_id", session.userId)
@@ -955,6 +961,19 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
       .eq("project_id", id);
     if (collabResetError)
       console.error("[projects] collaborator airtable reset failed", collabResetError.message);
+    // Same baseline as the owner's prior_approved_hours, per person.
+    const { data: collabApprovals } = await db
+      .from("project_collaborators")
+      .select("id, approved_hours")
+      .eq("project_id", id);
+    for (const c of (collabApprovals ?? []) as { id: number; approved_hours: number | string | null }[]) {
+      const { error: priorError } = await db
+        .from("project_collaborators")
+        .update({ prior_approved_hours: Number(c.approved_hours) || 0 })
+        .eq("id", c.id);
+      if (priorError)
+        console.error("[projects] collaborator prior hours save failed", priorError.message);
+    }
   }
   try {
     await recordShipForOperations(id, session.userId);

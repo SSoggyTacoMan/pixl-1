@@ -1190,6 +1190,14 @@ export default async function ReviewDetail({
               </Await>
             </Suspense>
           )}
+          {p.is_update && Number(p.prior_approved_hours) > 0 && (
+            <NoteCallout tone="warning" icon="important" title="Update ship: hours are cumulative">
+              Last approval credited {round1(Number(p.prior_approved_hours))}h (with any deflation already applied). The{" "}
+              {hours}h above is the whole project, so about {Math.max(round1(hours - Number(p.prior_approved_hours)), 0)}h is
+              new. Enter the credited TOTAL, deflating only the new work: pixels are paid as the difference from what this
+              project already earned, and the Airtable row for this update carries only the new hours.
+            </NoteCallout>
+          )}
           {p.is_update && p.update_notes && (
             <NoteCallout tone="info" icon="view-reload" title="What changed since last approval">
               {p.update_notes}

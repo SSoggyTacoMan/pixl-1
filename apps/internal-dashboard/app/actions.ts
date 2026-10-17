@@ -62,7 +62,7 @@ import {
 import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { computeClaimedHours, round1 } from "@/lib/hours";
 import { decryptPII } from "@/lib/crypto";
-import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
+import { buildAirtableFields, duplicateOverrideNote, newHoursOnly, pushProjectRecord } from "@/lib/airtable";
 import { withAgeOverride } from "@/lib/ageOverrides";
 import { getReviewGrantView } from "@/lib/reviewGrants";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
@@ -2569,7 +2569,7 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
   const { data: project, error: projectError } = await db
     .from("projects")
     .select(
-      "id, status, banned_at, rejected_at, repo_url, demo_url, description, image_url, approved_hours, system_note, user_id, airtable_record_id, hackatime_projects",
+      "id, status, banned_at, rejected_at, repo_url, demo_url, description, image_url, approved_hours, prior_approved_hours, system_note, user_id, airtable_record_id, hackatime_projects",
     )
     .eq("id", projectId)
     .single();
@@ -2602,7 +2602,7 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
 
   const { data: collabRows, error: collabError } = await db
     .from("project_collaborators")
-    .select("id, user_id, approved_hours, hackatime_projects, airtable_record_id")
+    .select("id, user_id, approved_hours, prior_approved_hours, hackatime_projects, airtable_record_id")
     .eq("project_id", projectId)
     .eq("status", "accepted")
     .order("id", { ascending: true });
@@ -2612,7 +2612,7 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
     {
       label: "the owner",
       userId: project.user_id,
-      hours: project.approved_hours,
+      hours: newHoursOnly(project.approved_hours, project.prior_approved_hours),
       hackatimeProjects: project.hackatime_projects ?? [],
       recordId: project.airtable_record_id ?? null,
       saveRecordId: async (recordId) => {
@@ -2625,12 +2625,13 @@ async function pushProjectToAirtable(projectId: number): Promise<{ ok: boolean; 
         id: number;
         user_id: string;
         approved_hours: number | string | null;
+        prior_approved_hours: number | string | null;
         hackatime_projects: string[] | null;
         airtable_record_id: string | null;
       }): AirtablePerson => ({
         label: "a collaborator",
         userId: c.user_id,
-        hours: c.approved_hours == null ? null : Number(c.approved_hours),
+        hours: c.approved_hours == null ? null : newHoursOnly(Number(c.approved_hours), c.prior_approved_hours),
         hackatimeProjects: c.hackatime_projects ?? [],
         recordId: c.airtable_record_id ?? null,
         saveRecordId: async (recordId) => {

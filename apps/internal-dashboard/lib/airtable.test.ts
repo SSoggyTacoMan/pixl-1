@@ -4,6 +4,7 @@ import {
   duplicateOverrideNote,
   githubUsernameFromRepoUrl,
   groupProjectNote,
+  newHoursOnly,
   pushProjectRecord,
 } from "./airtable";
 
@@ -277,5 +278,28 @@ describe("duplicateOverrideNote", () => {
     expect(group["Optional - Override Duplicate Justification"]).toContain("Submitters: Ada and Bo.");
     const solo = buildAirtableFields({ ...baseInput, systemNote: duplicateOverrideNote("", ["Ada"]) });
     expect("Optional - Override Duplicate Justification" in solo).toBe(false);
+  });
+});
+
+describe("newHoursOnly", () => {
+  test("a first approval keeps the full hours", () => {
+    expect(newHoursOnly(5.8, 0)).toBe(5.8);
+  });
+
+  test("an update record carries only the hours added since the last approval", () => {
+    expect(newHoursOnly(9, 5.8)).toBe(3.2);
+  });
+
+  test("never goes negative when a deflation drops the total below the prior approval", () => {
+    expect(newHoursOnly(4, 5.8)).toBe(0);
+  });
+
+  test("no approved hours stays null so Airtable falls back to its own default", () => {
+    expect(newHoursOnly(null, 5.8)).toBeNull();
+  });
+
+  test("treats a missing or string prior (numeric column) as its number", () => {
+    expect(newHoursOnly(9, null)).toBe(9);
+    expect(newHoursOnly(9, "5.8" as unknown as number)).toBe(3.2);
   });
 });

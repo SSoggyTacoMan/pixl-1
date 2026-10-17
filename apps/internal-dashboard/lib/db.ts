@@ -113,6 +113,8 @@ export interface ProjectRow {
   review_note: string;
   review_note_by: string;
   approved_hours: number | null;
+  /** Approved total frozen when an update was shipped; update Airtable rows carry approved_hours minus this. */
+  prior_approved_hours: number;
   image_url: string;
   level: number;
   project_type: string | null;

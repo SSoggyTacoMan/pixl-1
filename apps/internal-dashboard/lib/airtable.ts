@@ -148,6 +148,17 @@ function joinNames(names: string[]): string {
   return `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
 }
 
+// projects.approved_hours is the CUMULATIVE credited total (pixel payout is a
+// delta against what the project already paid), but an update ship gets its own
+// Airtable row and YSWS rules count only the hours not already approved on the
+// earlier row. prior is the approved total frozen when the update was shipped
+// (prior_approved_hours, 0 for a first ship).
+export function newHoursOnly(approved: number | null, prior: number | string | null | undefined): number | null {
+  if (approved === null) return null;
+  const delta = Number(approved) - (Number(prior) || 0);
+  return Math.max(Math.round(delta * 10) / 10, 0);
+}
+
 // For a project with collaborators, every person gets their own Airtable row
 // (see pushProjectToAirtable), so the same project shows up once per person and
 // Airtable's duplicate check would flag it. This sentence goes in the "Override
