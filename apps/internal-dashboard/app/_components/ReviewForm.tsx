@@ -31,6 +31,7 @@ import { TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { BlackoutReviewSection, type BlackoutReviewData } from "@/app/_components/BlackoutReviewSection";
 import { Badge, Button, Callout, Checkbox, Details, Field, formatDateTime, Input, NativeSelect, Textarea } from "@/app/_ui/ui";
 import { actionErrorMessage, isStaleDeployError } from "@/app/_ui/actionError";
+import { round1 } from "@/lib/hours";
 
 export interface BountyOption {
   id: number;
@@ -81,8 +82,6 @@ function fieldLabel(name: string): string {
   if (name.startsWith("blackoutHours_")) return "Approved Blackout hours";
   return FIELD_LABEL[name] ?? name;
 }
-
-const round1 = (n: number) => Math.round(n * 10) / 10;
 
 // The kit's Textarea drops refs; the audit fields need them for the draft restore.
 function AuditTextarea(props: ComponentPropsWithRef<"textarea">) {
@@ -566,8 +565,9 @@ export function ReviewForm({
   // start above what can actually be credited (the input's own max).
   const baseHours = round1(Math.min(defaultHours ?? claimedHours, claimedHours));
   const [hours, setHours] = useState(baseHours);
+  const [hoursInput, setHoursInput] = useState(String(baseHours));
   const [tierState, setTierState] = useState(tier);
-  const deflated = round1(hours) < round1(claimedHours);
+  const deflated = hours < claimedHours;
   // claimedHours is already post-journal-deflation (payoutHours on the page),
   // so a journal-only deflation would leave `deflated` false and skip the
   // required reason. Count journal-level deflation too, and show the true
@@ -580,7 +580,10 @@ export function ReviewForm({
   // baseHours changes, unless the reviewer already typed their own value.
   const hoursEditedRef = useRef(false);
   useEffect(() => {
-    if (!hoursEditedRef.current) setHours(baseHours);
+    if (!hoursEditedRef.current) {
+      setHours(baseHours);
+      setHoursInput(String(baseHours));
+    }
   }, [baseHours]);
 
   // The audit note is the one hard-to-redo part of a review, so it autosaves
@@ -655,6 +658,7 @@ export function ReviewForm({
     if (typeof draft.hours === "number" && draft.baseHours === baseHours) {
       hoursEditedRef.current = true;
       setHours(draft.hours);
+      setHoursInput(String(draft.hours));
     }
     if (typeof draft.tier === "number") setTierState(draft.tier);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -914,6 +918,9 @@ export function ReviewForm({
     }
     const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     const fd = new FormData(e.currentTarget, submitter);
+    // Ensure approvedHours in the submitted payload is rounded to tenths
+    const roundedHours = round1(Math.min(claimedHours, Math.max(0, Number(hoursInput) || 0)));
+    fd.set("approvedHours", String(roundedHours));
     const verdict = String(fd.get("verdict") ?? "");
     setSubmitError("");
     setPendingVerdict(verdict);
@@ -1059,12 +1066,21 @@ export function ReviewForm({
               step="0.1"
               min="0"
               max={claimedHours}
-              value={hours}
+              value={hoursInput}
               onChange={(e) => {
-                const v = round1(Math.min(claimedHours, Math.max(0, Number(e.target.value) || 0)));
+                const raw = e.target.value;
+                setHoursInput(raw);
                 hoursEditedRef.current = true;
-                setHours(v);
-                saveDraft({ hours: v });
+                const num = Number(raw);
+                const val = raw !== "" && Number.isFinite(num) ? Math.min(claimedHours, Math.max(0, num)) : 0;
+                setHours(val);
+                saveDraft({ hours: val });
+              }}
+              onBlur={() => {
+                const rounded = round1(Math.min(claimedHours, Math.max(0, Number(hoursInput) || 0)));
+                setHours(rounded);
+                setHoursInput(String(rounded));
+                saveDraft({ hours: rounded });
               }}
               className="w-28"
             />

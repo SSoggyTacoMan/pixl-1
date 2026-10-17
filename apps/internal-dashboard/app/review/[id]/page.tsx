@@ -23,6 +23,7 @@ import { fetchBomRows } from "@/lib/bom";
 import { fetchUserSpans, attachTrackedTime, fetchTrustFactor, fetchHackatimeReport } from "@/lib/hackatime";
 import { yswsShipsFor } from "@/lib/ysws";
 import { renderMarkdown } from "@/lib/markdown";
+import { computeClaimedHours, round1 } from "@/lib/hours";
 import { isSafeUrl } from "@/lib/safeUrl";
 import { db } from "@/lib/db";
 import { ReviewForm, type BountyOption } from "@/app/_components/ReviewForm";
@@ -311,7 +312,6 @@ export default async function ReviewDetail({
   // tab (see setJournalHours in app/actions.ts). null means "use the player's
   // own claimed hours for this entry". Every total below derives from it, so
   // deflating one entry changes the whole page's totals.
-  const round1 = (n: number) => Math.round(n * 10) / 10;
   const sumHours = (rows: typeof journals, approved: boolean) =>
     round1(rows.reduce((s, j) => s + (Number(approved ? (j.approved_hours ?? j.hours) : j.hours) || 0), 0));
   const ownerJournals = journals.filter((j) => j.user_id === p.user_id);
@@ -328,9 +328,13 @@ export default async function ReviewDetail({
   const journalDeflatedHours = Math.max(0, round1(rawJournalHours - journalHours));
   const hackatimeHours =
     p.kind === "hardware" ? Math.max(0, round1(rawTrackedHours - rawOwnerJournalHours)) : rawTrackedHours;
-  // Kept in sync with claimedHoursFor() in actions.ts (the actual server-side
-  // payout cap).
-  const hours = round1(hackatimeHours + journalHours);
+  // Shared claimed-hours calculator (lib/hours.ts), matching claimedHoursFor() in actions.ts.
+  const hours = computeClaimedHours({
+    hackatimeSeconds: p.hackatime_seconds,
+    kind: p.kind,
+    ownerUserId: p.user_id,
+    journals,
+  });
   const htPct = hours > 0 ? Math.round((hackatimeHours / hours) * 100) : 0;
   const payoutHours = hours;
   // The owner's own journal hours only, so a collaborator's time stays visible

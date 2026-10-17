@@ -60,6 +60,7 @@ import {
   type JournalRow,
 } from "@/lib/db";
 import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
+import { computeClaimedHours, round1 } from "@/lib/hours";
 import { decryptPII } from "@/lib/crypto";
 import { buildAirtableFields, duplicateOverrideNote, pushProjectRecord } from "@/lib/airtable";
 import { withAgeOverride } from "@/lib/ageOverrides";
@@ -296,42 +297,13 @@ async function claimedHoursFor(projectId: number, opts: { raw?: boolean } = {}):
     db.from("project_journals").select("hours, approved_hours, user_id").eq("project_id", projectId),
     db.from("projects").select("hackatime_seconds, kind, user_id").eq("id", projectId).single(),
   ]);
-  // approved_hours is a reviewer's per-entry deflation (set from the
-  // Journals tab) - null means "use the player's own claimed hours for this
-  // entry", so it's the fallback, not a second number added on top.
-  const journalHours =
-    Math.round(
-      (journals ?? []).reduce(
-        (s, j) => s + (Number((opts.raw ? j.hours : (j.approved_hours ?? j.hours))) || 0),
-        0,
-      ) * 10,
-    ) / 10;
-  const rawTrackedHours =
-    Math.round(((Number(proj?.hackatime_seconds) || 0) / 3600) * 10) / 10;
-  // Hardware already folds journal hours into hackatime_seconds at ship time
-  // (see apps/server/src/routes/projects.ts: trackedSeconds = htSeconds +
-  // round(ownerJournalHours * 3600), owner-only, not collaborators). That
-  // fold used the RAW hours at the moment of shipping, so subtract that same
-  // raw (owner-only) sum back out to isolate the real, never-changing
-  // Hackatime-only portion, then add today's journalHours (which reflects
-  // any later reviewer deflation) on top. Returning rawTrackedHours directly
-  // - or adding journalHours back after subtracting itself - cancels out any
-  // approved_hours edit, which is exactly why deflating a journal entry had
-  // no visible effect on what got credited for hardware ships.
-  if (proj?.kind === "hardware") {
-    const rawOwnerJournalHours =
-      Math.round(
-        (journals ?? [])
-          .filter((j) => j.user_id === proj.user_id)
-          .reduce((s, j) => s + (Number(j.hours) || 0), 0) * 10,
-      ) / 10;
-    const hackatimeOnlyHours = Math.max(
-      0,
-      Math.round((rawTrackedHours - rawOwnerJournalHours) * 10) / 10,
-    );
-    return Math.round((hackatimeOnlyHours + journalHours) * 10) / 10;
-  }
-  return Math.round((rawTrackedHours + journalHours) * 10) / 10;
+  return computeClaimedHours({
+    hackatimeSeconds: proj?.hackatime_seconds,
+    kind: proj?.kind,
+    ownerUserId: proj?.user_id,
+    journals: journals ?? [],
+    raw: opts.raw,
+  });
 }
 
 async function insertReviewAudit(
@@ -1167,10 +1139,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   // ban never pay out, so a lowered-hours number sitting in the form when the
   // reviewer picks one of those shouldn't need an explanation either (matches
   // the same verdict-gated relaxation as auditSectionsRequired above).
-  const deflated =
-    verdict === "approved" &&
-    approvedHours != null &&
-    Math.round(approvedHours * 10) < Math.round(claimedHours * 10);
+  const deflated = verdict === "approved" && approvedHours != null && approvedHours < claimedHours;
   const deflationReason = String(formData.get("deflationReason") ?? "").trim();
   if (deflated && !deflationReason)
     redirect(`${back}?error=${encodeURIComponent("Explain why the credited hours were lowered.")}`);
