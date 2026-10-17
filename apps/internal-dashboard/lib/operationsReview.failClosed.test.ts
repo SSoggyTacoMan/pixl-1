@@ -81,7 +81,10 @@ mock.module("@/lib/gameServer", () => ({
   },
 }));
 
+const actualOps = await import("./operations");
+
 mock.module("@/lib/operations", () => ({
+  ...actualOps,
   ERROR_TEXT: {},
   getBlackoutEntry: async () => {
     getBlackoutEntryCalls++;
