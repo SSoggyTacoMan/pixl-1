@@ -1072,11 +1072,9 @@ export function ReviewForm({
                 setHoursInput(raw);
                 hoursEditedRef.current = true;
                 const num = Number(raw);
-                if (raw !== "" && Number.isFinite(num)) {
-                  const clamped = Math.min(claimedHours, Math.max(0, num));
-                  setHours(clamped);
-                  saveDraft({ hours: clamped });
-                }
+                const val = raw !== "" && Number.isFinite(num) ? Math.min(claimedHours, Math.max(0, num)) : 0;
+                setHours(val);
+                saveDraft({ hours: val });
               }}
               onBlur={() => {
                 const rounded = round1(Math.min(claimedHours, Math.max(0, Number(hoursInput) || 0)));

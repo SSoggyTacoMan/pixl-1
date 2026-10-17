@@ -9,6 +9,7 @@ export interface JournalRow {
 export function computeClaimedHours(params: {
   hackatimeSeconds: number | null | undefined;
   kind?: string | null;
+  /** Required for hardware projects to isolate owner journal hours. */
   ownerUserId?: string;
   journals: JournalRow[];
   raw?: boolean;
