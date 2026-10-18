@@ -3160,7 +3160,7 @@ export async function getProject(id: number) {
   const { data, error } = await db
     .from("projects")
     .select(
-      "*, users(id, display_name, real_name, first_name, last_name, email, slack_id, birthday, address_line1, address_line2, address_city, address_state, address_country, address_postal), sidequests(id, name, region, reward, min_hours)",
+      "*, users(id, display_name, real_name, first_name, last_name, email, slack_id, birthday, address_line1, address_line2, address_city, address_state, address_country, address_postal), sidequests(id, name, region, reward, min_hours, description, brief)",
     )
     .eq("id", id)
     .maybeSingle();

@@ -209,8 +209,20 @@ export default async function ReviewDetail({
   // The Trial this project was shipped for, if the player flagged one at ship
   // time (joined in getProject). null = they built their own idea.
   const trial = (
-    p as { sidequests?: { name?: string; region?: string; reward?: string; min_hours?: number | null } | null }
+    p as {
+      sidequests?: {
+        name?: string;
+        region?: string;
+        reward?: string;
+        min_hours?: number | null;
+        description?: string | null;
+        brief?: string | null;
+      } | null;
+    }
   ).sidequests;
+  // What the Trial asks the player to build: the brief (the full rules shown
+  // after they accept it), falling back to the short description.
+  const trialRules = (trial?.brief || trial?.description || "").trim();
 
   const isFinalStage = p.status === "second_review";
   // A first-pass reviewer proposing a ban skips Robert entirely: it goes
@@ -1161,6 +1173,22 @@ export default async function ReviewDetail({
               alt=""
               className="max-h-96 w-full rounded-lg border border-[var(--border)] bg-[var(--sunken)] object-contain"
             />
+          )}
+
+          {trial?.name && (
+            <NoteCallout
+              tone="info"
+              icon="list-checked"
+              title={
+                <>
+                  Trial rules: {trial.name}
+                  {trial.min_hours != null ? ` (min ${trial.min_hours}h)` : ""}
+                  {trial.reward ? `, reward: ${trial.reward}` : ""}
+                </>
+              }
+            >
+              {trialRules || "No rules written for this Trial."}
+            </NoteCallout>
           )}
 
           {p.description && (
