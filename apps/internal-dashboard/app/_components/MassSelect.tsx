@@ -19,10 +19,10 @@ export function SelectAllBox() {
   );
 }
 
-export function RowSelect({ id, label }: { id: string; label: string }) {
+export function RowSelect({ id, label, name = "userIds" }: { id: string; label: string; name?: string }) {
   return (
     <label className="hc-check">
-      <input type="checkbox" name="userIds" value={id} aria-label={label} data-row-select />
+      <input type="checkbox" name={name} value={id} aria-label={label} data-row-select />
     </label>
   );
 }

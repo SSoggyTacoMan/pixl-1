@@ -2220,6 +2220,98 @@ export const skipRobertPass = guardedAction("skipRobertPass", "reviewer", async 
   redirect(back);
 });
 
+// Bulk actions for the "Awaiting Robert" list on the Fraud reviews tab: re-push
+// every ticked project to Robert, or skip Robert's review for all of them.
+// Same guards as the single-project versions; a project that can't be touched
+// (not waiting on Robert anymore, your own, outside your queue) is counted and
+// skipped instead of failing the whole batch.
+const BULK_ROBERT_CAP = 50;
+
+export const bulkRobertAction = guardedAction("bulkRobertAction", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const action = String(formData.get("bulkAction") ?? "");
+  if (action !== "repush" && action !== "skip") return;
+  const by = actorName(access);
+  const back = safeRedirectPath(formData.get("back"), "/review/fraud-reviews");
+  const finish = (key: "error" | "done", msg: string): never =>
+    redirect(`${back}${back.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(msg)}`);
+
+  if (!access.canSecondPass && !access.isOwner)
+    finish("error", "Only a final reviewer or an owner can re-push or skip Robert's review.");
+  const ids = [...new Set(formData.getAll("projectIds").map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  if (ids.length === 0) finish("error", "Select at least one project first.");
+  if (ids.length > BULK_ROBERT_CAP) finish("error", `Bulk actions are capped at ${BULK_ROBERT_CAP} projects at a time.`);
+
+  let done = 0;
+  let failed = 0;
+  let ignored = 0;
+  for (const projectId of ids) {
+    let project: { user_id: string; kind: string | null; name: string };
+    try {
+      project = await authorizeProjectAction(access, projectId, null);
+    } catch {
+      ignored++;
+      continue;
+    }
+
+    if (action === "skip") {
+      const { data: skipped } = await db
+        .from("projects")
+        .update({
+          status: "second_review",
+          second_pass_by: by,
+          second_pass_at: new Date().toISOString(),
+          second_pass_note: `Robert's fraud review skipped manually by ${by}.`,
+          second_pass_hours: null,
+          second_pass_verdict: "not_fraud",
+          robert_error: "",
+        })
+        .eq("id", projectId)
+        .eq("status", "fraud_review")
+        .neq("first_pass_verdict", "banned")
+        .select("id")
+        .maybeSingle();
+      if (!skipped) {
+        ignored++;
+        continue;
+      }
+      await logModAction(project.user_id, "project_robert_skipped", `${project.name}: skipped Robert's fraud review (bulk, ${ids.length} projects)`, by);
+      done++;
+      continue;
+    }
+
+    const { data: waiting } = await db
+      .from("projects")
+      .select("id")
+      .eq("id", projectId)
+      .eq("status", "fraud_review")
+      .neq("first_pass_verdict", "banned")
+      .maybeSingle();
+    if (!waiting) {
+      ignored++;
+      continue;
+    }
+    await submitToRobert(projectId);
+    const { data: after } = await db
+      .from("projects")
+      .select("robert_project_id, robert_error")
+      .eq("id", projectId)
+      .maybeSingle();
+    if (!after?.robert_project_id || after.robert_error) {
+      failed++;
+      continue;
+    }
+    await logModAction(project.user_id, "project_robert_submitted", `${project.name}: re-pushed to Robert (bulk, ${ids.length} projects)`, by);
+    done++;
+  }
+
+  revalidatePath("/review");
+  const verb = action === "skip" ? "Skipped Robert for" : "Re-pushed";
+  const extras = [failed ? `${failed} failed (see the project page for Robert's error)` : "", ignored ? `${ignored} not eligible` : ""]
+    .filter(Boolean)
+    .join(", ");
+  finish(failed && !done ? "error" : "done", `${verb} ${done} project${done === 1 ? "" : "s"}${extras ? `; ${extras}` : ""}.`);
+});
+
 export const applySubmissionEdits = guardedAction("applySubmissionEdits", "reviewer", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
   const projectId = Number(formData.get("projectId") ?? 0);

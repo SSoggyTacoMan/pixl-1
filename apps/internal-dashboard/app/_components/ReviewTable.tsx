@@ -8,6 +8,7 @@ import type { ShippedProject } from "@/lib/db";
 import { LevelBadge, StatusBadge, FundingBadge } from "@/app/_components/ProjectBadges";
 import { BlackoutBadge } from "@/app/_components/BlackoutBadge";
 import { useLiveMode, useReviewerName } from "@/app/_components/LiveMode";
+import { RowSelect, SelectAllBox } from "@/app/_components/MassSelect";
 import { Badge, ButtonLink, EmptyRow, Mono, Muted, Table } from "@/app/_ui/ui";
 
 function fmtHM(hours: number): string {
@@ -33,6 +34,7 @@ export function ReviewTable({
   emptyLabel = "Nothing here.",
   blackoutIds = [],
   makerLinks = false,
+  selectName,
 }: {
   rows: ShippedProject[];
   handles: Map<string, string>;
@@ -46,6 +48,9 @@ export function ReviewTable({
   blackoutIds?: number[];
   /** Link each maker to their player page. Owners only: /players is theirs. */
   makerLinks?: boolean;
+  /** Adds a checkbox column whose ticked rows submit under this field name
+   * (the table must sit inside a <form>). */
+  selectName?: string;
 }) {
   const blackoutSet = new Set(blackoutIds);
   const router = useRouter();
@@ -59,6 +64,7 @@ export function ReviewTable({
   // show, so skip the column instead of rendering it always empty.
   const showFirstPass = rows.some((p) => p.first_pass_by);
   const headers = [
+    ...(selectName ? [<SelectAllBox key="select" />] : []),
     "Project",
     "Maker",
     "Status",
@@ -86,6 +92,11 @@ export function ReviewTable({
             className="cursor-pointer"
             onClick={() => router.push(href)}
           >
+            {selectName && (
+              <td onClick={(e) => e.stopPropagation()}>
+                <RowSelect id={String(p.id)} name={selectName} label={`Select ${p.name}`} />
+              </td>
+            )}
             {/* A real anchor over the Project cell keeps ctrl/middle-click and
                 keyboard navigation working; the row's onClick covers the rest.
                 The overlay is scoped to this <td> because position:relative on

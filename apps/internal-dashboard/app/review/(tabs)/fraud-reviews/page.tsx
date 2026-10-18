@@ -4,9 +4,10 @@ import { slackHandles } from "@/lib/slack";
 import { listBlackoutQueueProjectIds } from "@/lib/operations";
 import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
 import { reviewerName } from "@/lib/liveMode";
+import { bulkRobertAction } from "@/app/actions";
 import { TelescreenReviewTable } from "../TelescreenReviewTable";
 import { FRAUD_SCORE_THRESHOLD } from "@/lib/robertOutcome";
-import { Badge, Card, CardHeader, EmptyState, Mono, Muted, StatusBadge, Table, TextLink } from "@/app/_ui/ui";
+import { ActionButton, Badge, Card, Flash, CardHeader, EmptyState, Mono, Muted, StatusBadge, Table, TextLink } from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -38,13 +39,19 @@ function maker(p: RobertReviewRow): string {
 // first, grouped by day. Spot check (supers only) is where a fraud-range
 // project actually gets decided; this is the full picture, including the
 // projects that already left Spot check.
-export default async function FraudReviewsPage() {
+export default async function FraudReviewsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ done?: string; error?: string }>;
+}) {
+  const { done, error } = await searchParams;
   // Final reviewers, owners and fraud reviewers (the fraud_review marker).
   const access = await requirePage({ review: "fraud" });
   // The guidelines gate is for people who review; a fraud reviewer can't.
   if (access.isReviewer) await requireGuidelinesAck(access);
 
   const viewer = access.session.slackId;
+  const canBulk = access.canSecondPass || access.isOwner;
   const [live, hideReviewers] = await Promise.all([getLiveMode(), getHideReviewers()]);
   // A reviewer restricted to one queue only sees that queue's projects.
   const kind = access.reviewQueues === "both" ? undefined : access.reviewQueues;
@@ -75,6 +82,7 @@ export default async function FraudReviewsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <Flash error={error} ok={done} />
       <p className="hc-caption max-w-2xl text-sm">
         Every score Robert&apos;s fraud reviewer has given, newest first. A score of {FRAUD_SCORE_THRESHOLD} or
         below is Robert&apos;s &quot;Fraud&quot; range. Those still go to Spot check for a decision, nothing is
@@ -84,15 +92,49 @@ export default async function FraudReviewsPage() {
         <Card padding="flush">
           <CardHeader title="Awaiting Robert" icon="clock" count={awaiting.length} />
           <p className="hc-caption px-4 py-3 text-sm">
-            These passed a first review and are parked until Robert&apos;s fraud review lands. Read-only, nothing
-            to action: they move on to Spot check automatically once his score is in.
+            These passed a first review and are parked until Robert&apos;s fraud review lands. They move on to
+            Spot check automatically once his score is in.
+            {canBulk && " Tick projects to re-push them to Robert or skip his review for all of them."}
           </p>
-          <TelescreenReviewTable makerLinks={access.isOwner}
-            rows={awaiting}
-            handles={handles}
-            blackoutIds={blackoutIds}
-            emptyLabel="Nothing waiting on Robert right now."
-          />
+          {canBulk ? (
+            <form action={bulkRobertAction}>
+              <input type="hidden" name="back" value="/review/fraud-reviews" />
+              <div className="flex flex-wrap items-center gap-3 px-4 pb-3">
+                <ActionButton
+                  variant="outline"
+                  pendingLabel="Re-pushing..."
+                  name="bulkAction"
+                  value="repush"
+                  confirm="Re-push every selected project to Robert?"
+                >
+                  Re-push selected
+                </ActionButton>
+                <ActionButton
+                  variant="danger"
+                  pendingLabel="Skipping..."
+                  name="bulkAction"
+                  value="skip"
+                  confirm="Skip Robert's review for every selected project? They go straight to Spot check."
+                >
+                  Skip selected
+                </ActionButton>
+              </div>
+              <TelescreenReviewTable makerLinks={access.isOwner}
+                rows={awaiting}
+                handles={handles}
+                blackoutIds={blackoutIds}
+                selectName="projectIds"
+                emptyLabel="Nothing waiting on Robert right now."
+              />
+            </form>
+          ) : (
+            <TelescreenReviewTable makerLinks={access.isOwner}
+              rows={awaiting}
+              handles={handles}
+              blackoutIds={blackoutIds}
+              emptyLabel="Nothing waiting on Robert right now."
+            />
+          )}
         </Card>
       )}
       {rows.length === 0 && (
