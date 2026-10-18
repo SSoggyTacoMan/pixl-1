@@ -90,11 +90,11 @@ const hoursSub = "mt-1 text-sm leading-[1.4] text-dim";
 const panel = "min-w-0 border-2 border-stroke bg-panel";
 const panelHTitle = "font-pixel text-base tracking-[.5px] text-ink";
 const quiet = "text-[13.5px] leading-[1.5] text-faint";
-const rack = "min-w-0 border-2 border-[#4a453d] bg-[#211f1e] px-5 py-4 text-[#ece8e2]";
-const rackRule = "border-[#4a453d]";
-const rackLabel = "font-pixel text-[11px] uppercase tracking-[.3px] text-[#ece8e2]";
-const rackValue = "mt-1 font-sans text-[22px] font-bold leading-[1.15] tabular-nums text-[#ece8e2]";
-const rackSub = "mt-1 text-sm leading-[1.35] text-[#b3ada2]";
+const rack = "min-w-0 border-2 border-[var(--rack-stroke)] bg-[var(--rack-bg)] px-5 py-4 text-[var(--rack-ink)]";
+const rackRule = "border-[var(--rack-stroke)]";
+const rackLabel = "font-pixel text-[11px] uppercase tracking-[.3px] text-[var(--rack-ink)]";
+const rackValue = "mt-1 font-sans text-[22px] font-bold leading-[1.15] tabular-nums text-[var(--rack-ink)]";
+const rackSub = "mt-1 text-sm leading-[1.35] text-[var(--rack-sub)]";
 
 function timeAgo(iso: string): string {
   const s = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -144,10 +144,9 @@ export default async function DashboardPage() {
       {activeEvents.length > 0 ? (
         <section
           aria-label="Active Pixl events"
-          className="mt-4 flex min-w-0 flex-wrap items-start gap-3 border-2 border-stroke bg-gold px-3 py-2.5 text-ink"
+          className="mt-4 flex min-w-0 flex-wrap items-start gap-3 border-2 border-stroke bg-gold px-3 py-2.5 text-[#16161e]"
         >
           <Image src="/img/pixl-ui/pixel_sparkle.png" alt="" aria-hidden width={16} height={16} className="mt-1 size-4 shrink-0 [image-rendering:pixelated]" />
-          <span className="shrink-0 pt-0.5 font-pixel text-[11px] tracking-[.5px]">LIVE</span>
           <div className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-1 text-sm leading-[1.45]">
             {activeEvents.map((event) => {
               let summary = "";
@@ -182,7 +181,7 @@ export default async function DashboardPage() {
                 <span className="mt-1 block break-words font-pixel text-[19px] leading-[1.25] tracking-[.2px] text-ink">{step.h}</span>
                 <span className="mt-2 block break-words text-[15px] leading-[1.45] text-dim">{step.s}</span>
               </span>
-              <span className="inline-flex shrink-0 border-2 border-stroke bg-gold px-4 py-[10px] font-pixel text-xs tracking-[.5px] text-ink uppercase group-hover:bg-gold-soft">
+              <span className="inline-flex shrink-0 border-2 border-stroke bg-gold px-4 py-[10px] font-pixel text-xs tracking-[.5px] text-[#16161e] uppercase group-hover:bg-gold-soft">
                 {step.b}
               </span>
             </span>
@@ -221,7 +220,7 @@ export default async function DashboardPage() {
         </section>
 
         <aside className={rack} aria-labelledby="player-status-heading">
-          <h2 id="player-status-heading" className="mb-3 border-b border-[#4a453d] pb-3 font-pixel text-base tracking-[.6px]">
+          <h2 id="player-status-heading" className="mb-3 border-b border-[var(--rack-stroke)] pb-3 font-pixel text-base tracking-[.6px]">
             PLAYER STATUS
           </h2>
           <div className="grid grid-cols-2 gap-x-3 gap-y-3">
@@ -238,7 +237,7 @@ export default async function DashboardPage() {
                 <Image src="/img/pixl-ui/icon_beacon.png" alt="" aria-hidden width={14} height={14} className="size-[14px] shrink-0 [image-rendering:pixelated]" />
                 <span className="break-words">Restoration Energy</span>
               </div>
-              <div className={cn(rackValue, "text-[#5fc2cd]")}>{Math.round(re).toLocaleString()}</div>
+              <div className={cn(rackValue, "text-teal")}>{Math.round(re).toLocaleString()}</div>
               <div className={rackSub}>Lifetime, never spent</div>
             </div>
             <div className={cn("col-span-2 min-w-0 border-b pb-3", rackRule)}>
@@ -250,16 +249,16 @@ export default async function DashboardPage() {
               <div className={rackSub}>Signed off by a reviewer</div>
             </div>
           </div>
-          <div className="mt-3 border-t-2 border-[#4a453d] pt-3">
+          <div className="mt-3 border-t-2 border-[var(--rack-stroke)] pt-3">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
               <span className="font-pixel text-base tracking-[.2px]">LEVEL {level}</span>
-              <span className="text-right text-sm tabular-nums text-[#b3ada2]">
+              <span className="text-right text-sm tabular-nums text-[var(--rack-sub)]">
                 {level >= maxLevel ? "max level" : `${Math.max(0, Math.ceil(nextAt - re))} RE to level ${level + 1}`}
               </span>
             </div>
             <div className="mt-3 flex gap-1" aria-label={`Level ${level} progress`}>
               {cells.map((on, i) => (
-                <i key={i} aria-hidden className={cn("h-2.5 min-w-0 flex-1 border", on ? "border-gold bg-gold" : "border-[#4a453d] bg-[#2a2724]")} />
+                <i key={i} aria-hidden className={cn("h-2.5 min-w-0 flex-1 border", on ? "border-gold bg-gold" : "border-[var(--rack-stroke)] bg-[var(--rack-track)]")} />
               ))}
             </div>
           </div>

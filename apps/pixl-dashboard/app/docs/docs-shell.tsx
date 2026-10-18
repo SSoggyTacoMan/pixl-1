@@ -8,9 +8,9 @@ import { cn } from "@/lib/cn";
 import { buttonVariants, railButton } from "@/components/ui/primitives";
 
 const OPEN_KEY = "pixl-docs-open-groups";
-const THEMES = [
-  { id: "light", label: "Pixl Paper", panel: "#f5eed2", gold: "#ec3750" },
-  { id: "dark", label: "Pixl Ink", panel: "#171615", gold: "#ff6b4a" },
+const DARK_PALETTES = [
+  { id: "cabinet", label: "Cabinet", swatches: ["#121a23", "#68c7cb", "#ffad68"] },
+  { id: "graphite", label: "Graphite Arcade", swatches: ["#151715", "#fc7059", "#f4a45f"] },
 ];
 
 // Same two states as the shell sidebar: ink block on hover, red block when
@@ -55,6 +55,8 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [backHref, setBackHref] = useState("/dashboard");
   const [theme, setThemeState] = useState("light");
+  const [darkPalette, setDarkPaletteState] = useState("graphite");
+  const [themeLoaded, setThemeLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Whether a group renders expanded: manually opened (persisted in `open`)
@@ -96,15 +98,23 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
 
   useEffect(() => {
     try {
-      setThemeState(localStorage.getItem("pixl_theme_v2") || "light");
+      setThemeState(localStorage.getItem("pixl_theme_v2") === "dark" ? "dark" : "light");
+      const savedPalette = localStorage.getItem("pixl_dark_palette_v1");
+      const matchingPalette = DARK_PALETTES.find((palette) => palette.id === savedPalette);
+      if (matchingPalette) setDarkPaletteState(matchingPalette.id);
     } catch {
       // keep the light default
     }
+    setThemeLoaded(true);
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    if (!themeLoaded) return;
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    if (theme === "dark") root.dataset.palette = darkPalette;
+    else delete root.dataset.palette;
+  }, [theme, darkPalette, themeLoaded]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -137,14 +147,23 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
   }
 
   function setTheme(id: string) {
-    setThemeState(id);
     try {
-      localStorage.setItem("pixl_theme_v2", id);
+      if (id === "light") {
+        setThemeState("light");
+        localStorage.setItem("pixl_theme_v2", "light");
+      } else if (DARK_PALETTES.some((palette) => palette.id === id)) {
+        setThemeState("dark");
+        setDarkPaletteState(id);
+        localStorage.setItem("pixl_theme_v2", "dark");
+        localStorage.setItem("pixl_dark_palette_v1", id);
+      }
     } catch {
       // best-effort persistence only
     }
     setMenuOpen(false);
   }
+
+  const selectedTheme = theme === "light" ? "light" : darkPalette;
 
   return (
     // Nav | article | on-this-page. --sidebar is wider than the dash's own:
@@ -193,18 +212,34 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
               </svg>
             </button>
             {menuOpen && (
-              <div className="absolute top-[calc(100%+6px)] right-0 z-60 flex min-w-[170px] flex-col overflow-hidden border-2 border-stroke bg-panel shadow-drop">
-                {THEMES.map((t) => (
+              <div className="absolute top-[calc(100%+6px)] right-0 z-60 flex min-w-[200px] flex-col overflow-hidden border-2 border-stroke bg-panel shadow-drop">
+                <button
+                  className={cn(themeOption, "whitespace-nowrap", selectedTheme === "light" && "bg-theme-selected text-theme-selected-ink hover:bg-theme-selected")}
+                  type="button"
+                  aria-pressed={selectedTheme === "light"}
+                  onClick={() => setTheme("light")}
+                >
+                  <span aria-hidden className="flex shrink-0 border border-stroke">
+                    {["#f5eed2", "#ec3750", "#ff8c37"].map((color) => (
+                      <span key={color} className="size-[11px] border-r border-stroke last:border-r-0" style={{ backgroundColor: color }} />
+                    ))}
+                  </span>
+                  <span>Pixl Paper</span>
+                </button>
+                <div aria-hidden className="h-[2px] bg-stroke" />
+                {DARK_PALETTES.map((t) => (
                   <button
                     key={t.id}
-                    className={cn(themeOption, t.id === theme && "bg-ink text-panel-deep hover:bg-ink")}
+                    className={cn(themeOption, "whitespace-nowrap", selectedTheme === t.id && "bg-theme-selected text-theme-selected-ink hover:bg-theme-selected")}
                     type="button"
+                    aria-pressed={selectedTheme === t.id}
                     onClick={() => setTheme(t.id)}
                   >
-                    <span
-                      className="size-[14px] shrink-0 border border-stroke"
-                      style={{ background: t.panel, boxShadow: `inset 0 0 0 2px ${t.gold}` }}
-                    />
+                    <span aria-hidden className="flex shrink-0 border border-stroke">
+                      {t.swatches.map((color) => (
+                        <span key={color} className="size-[11px] border-r border-stroke last:border-r-0" style={{ backgroundColor: color }} />
+                      ))}
+                    </span>
                     <span>{t.label}</span>
                   </button>
                 ))}

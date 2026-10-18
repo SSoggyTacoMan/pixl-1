@@ -65,6 +65,8 @@
   /* <pixl-theme:light> */
   --ink:#16161e;--dim:#4a4a52;--faint:#6f6f78;--muted:#9a9aa2;--panel:#faf4de;--panel-2:#ece0bd;--panel-deep:#f5eed2;--gold:#ff8c37;--gold-soft:#ffa45c;--accent:#ec3750;--teal:#52aeb9;--teal-hover:#6bc3cd;--good:#3faa5f;--bad:#ec3750;--stroke:#16161e;--btn-ink:#f5eed2;
   /* <pixl-theme:light:end> */
+  --rack-bg:#211f1e;--rack-stroke:#4a453d;--rack-ink:#ece8e2;--rack-sub:#b3ada2;--rack-track:#2a2724;
+  --button-dark:#16161e;--button-dark-ink:#f5eed2;--theme-selected:#16161e;--theme-selected-ink:#f5eed2;--game-cta:#16161e;--game-cta-ink:#f5eed2;
   /* <pixl-theme:light:effects> */
   --drop:4px 4px 0 #16161e;--drop-lg:8px 8px 0 #16161e;--dither:none;
   /* <pixl-theme:light:effects:end> */
@@ -85,6 +87,20 @@
   /* <pixl-theme:dark:effects> */
   --drop:4px 4px 0 #000000;--drop-lg:8px 8px 0 #000000;--dither:none;
   /* <pixl-theme:dark:effects:end> */
+}
+
+:root[data-theme="dark"][data-palette="cabinet"] {
+  --ink:#eaf0eb;--dim:#c3d0d2;--faint:#a5b4b8;--muted:#879aa2;--panel:#1b2733;--panel-2:#283745;--panel-deep:#121a23;--gold:#ffad68;--gold-soft:#ffc48f;--accent:#68c7cb;--teal:#78d3c6;--teal-hover:#91e0d4;--good:#afda7b;--bad:#f08078;--stroke:#536774;--btn-ink:#121a23;
+  --rack-bg:#22313e;--rack-stroke:#5d7582;--rack-ink:#f2f3ee;--rack-sub:#b9c7c9;--rack-track:#2a3a47;--img-slot:#283745;
+  --button-dark:#2c3a46;--button-dark-ink:#eaf0eb;--theme-selected:#283745;--theme-selected-ink:#eaf0eb;--game-cta:#ffad68;--game-cta-ink:#121a23;
+  --drop:4px 4px 0 #080e15;--drop-lg:8px 8px 0 #080e15;
+}
+
+:root[data-theme="dark"][data-palette="graphite"] {
+  --ink:#EEEFE8;--dim:#c4c7be;--faint:#a5a99f;--muted:#90968d;--panel:#222421;--panel-2:#2e312d;--panel-deep:#151715;--gold:#f4a45f;--gold-soft:#ffc181;--accent:#fc7059;--teal:#83c6bf;--teal-hover:#9ddad1;--good:#add17c;--bad:#fc8068;--stroke:#555d53;--btn-ink:#151715;
+  --rack-bg:#292c28;--rack-stroke:#62695e;--rack-ink:#f1f2ec;--rack-sub:#c3c7bd;--rack-track:#373a36;--img-slot:#2e312d;
+  --button-dark:#343933;--button-dark-ink:#EEEFE8;--theme-selected:#2e312d;--theme-selected-ink:#EEEFE8;--game-cta:#f4a45f;--game-cta-ink:#151715;
+  --drop:4px 4px 0 #0d0f0d;--drop-lg:8px 8px 0 #0d0f0d;
 }
 
 /* ── Phantom Sans toggle ──
@@ -131,6 +147,12 @@ html[data-font="phantom"] body *:not(code,pre,kbd,samp,code *,pre *){
   --color-bad: var(--bad);
   --color-stroke: var(--stroke);
   --color-btn-ink: var(--btn-ink);
+  --color-button-dark: var(--button-dark);
+  --color-button-dark-ink: var(--button-dark-ink);
+  --color-theme-selected: var(--theme-selected);
+  --color-theme-selected-ink: var(--theme-selected-ink);
+  --color-game-cta: var(--game-cta);
+  --color-game-cta-ink: var(--game-cta-ink);
   --font-pixel: var(--pixel);
   --font-sans: var(--sans);
   --font-mono: var(--mono);

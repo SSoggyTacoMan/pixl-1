@@ -9,9 +9,9 @@ import { cn } from "@/lib/cn";
 import { clearPlayerLocalState } from "@/lib/local-state";
 import { ICONS, MOBILE_PRIMARY, MORE_ICON, NAV_GROUPS, PALETTE_ICON } from "./nav-data";
 
-const THEMES = [
-  { id: "light", label: "Pixl Paper", panel: "#f5eed2", gold: "#ec3750" },
-  { id: "dark", label: "Pixl Ink", panel: "#171615", gold: "#ff6b4a" },
+const DARK_PALETTES = [
+  { id: "cabinet", label: "Cabinet", swatches: ["#121a23", "#68c7cb", "#ffad68"] },
+  { id: "graphite", label: "Graphite Arcade", swatches: ["#151715", "#fc7059", "#f4a45f"] },
 ];
 
 // Below 900px the sidebar becomes a bottom dock: secondary links hide there
@@ -93,20 +93,30 @@ export function ShellNav({
   const [sheetOpen, setSheetOpen] = useState(false);
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const [theme, setThemeState] = useState("light");
+  const [darkPalette, setDarkPaletteState] = useState("graphite");
+  const [themeLoaded, setThemeLoaded] = useState(false);
   const [phantom, setPhantomState] = useState(false);
 
   useEffect(() => {
     try {
-      setThemeState(localStorage.getItem("pixl_theme_v2") || "light");
+      setThemeState(localStorage.getItem("pixl_theme_v2") === "dark" ? "dark" : "light");
+      const savedPalette = localStorage.getItem("pixl_dark_palette_v1");
+      const matchingPalette = DARK_PALETTES.find((palette) => palette.id === savedPalette);
+      if (matchingPalette) setDarkPaletteState(matchingPalette.id);
     } catch {
       // keep the light default
     }
+    setThemeLoaded(true);
     setPhantomState(document.documentElement.dataset.font === "phantom");
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    if (!themeLoaded) return;
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    if (theme === "dark") root.dataset.palette = darkPalette;
+    else delete root.dataset.palette;
+  }, [theme, darkPalette, themeLoaded]);
 
   useDismiss(sheetOpen, "[data-shell-sidebar]", () => setSheetOpen(false));
   useDismiss(themeMenuOpen, "[data-theme-picker]", () => setThemeMenuOpen(false));
@@ -125,9 +135,16 @@ export function ShellNav({
   }
 
   function setTheme(id: string) {
-    setThemeState(id);
     try {
-      localStorage.setItem("pixl_theme_v2", id);
+      if (id === "light") {
+        setThemeState("light");
+        localStorage.setItem("pixl_theme_v2", "light");
+      } else if (DARK_PALETTES.some((palette) => palette.id === id)) {
+        setThemeState("dark");
+        setDarkPaletteState(id);
+        localStorage.setItem("pixl_theme_v2", "dark");
+        localStorage.setItem("pixl_dark_palette_v1", id);
+      }
     } catch {
       // best-effort persistence only
     }
@@ -135,6 +152,7 @@ export function ShellNav({
   }
 
   const overflow = NAV_GROUPS.flatMap((g) => g.items.filter((i) => !MOBILE_PRIMARY.includes(i.slug)));
+  const selectedTheme = theme === "light" ? "light" : darkPalette;
 
   function navLink(slug: string, label: string, href: string, secondary: boolean) {
     return (
@@ -224,7 +242,10 @@ export function ShellNav({
         </nav>
         <div className="mt-[6px] flex flex-col gap-[8px] max-[900px]:hidden">
           <a
-            className={cn(buttonVariants({ variant: "dark" }), "group")}
+            className={cn(
+              buttonVariants({ variant: "dark" }),
+              "group bg-game-cta text-game-cta-ink hover:bg-game-cta hover:text-game-cta-ink",
+            )}
             href={game}
             target="_blank"
             rel="noopener noreferrer"
@@ -274,7 +295,7 @@ export function ShellNav({
           className={cn(
             railButton,
             "w-auto px-[10px] text-[12px] tracking-[.5px] whitespace-nowrap",
-            "aria-pressed:bg-ink aria-pressed:text-panel aria-pressed:hover:bg-ink aria-pressed:hover:text-panel",
+            "aria-pressed:bg-button-dark aria-pressed:text-button-dark-ink aria-pressed:hover:bg-button-dark aria-pressed:hover:text-button-dark-ink",
           )}
           type="button"
           title="Switch to Phantom Sans"
@@ -289,6 +310,7 @@ export function ShellNav({
             className={railButton}
             type="button"
             title="Change theme"
+            aria-label="Choose color palette"
             aria-expanded={themeMenuOpen}
             onClick={() => setThemeMenuOpen((v) => !v)}
           >
@@ -297,26 +319,47 @@ export function ShellNav({
           {themeMenuOpen ? (
             <div
               className={cn(
-                "absolute top-[calc(100%+6px)] right-0 z-60 flex min-w-[170px] flex-col overflow-hidden",
+                "absolute top-[calc(100%+6px)] right-0 z-60 flex min-w-[200px] flex-col overflow-hidden",
                 "border-2 border-stroke bg-panel shadow-drop",
               )}
             >
-              {THEMES.map((t) => (
+              <button
+                type="button"
+                aria-pressed={selectedTheme === "light"}
+                className={cn(
+                  "flex w-full items-center gap-[9px] border-none bg-transparent px-[11px] py-[8px] text-left",
+                  "font-pixel text-[13.5px] tracking-[.3px] whitespace-nowrap text-ink transition-colors duration-[120ms]",
+                  "hover:bg-accent hover:text-panel-deep",
+                  selectedTheme === "light" && "bg-theme-selected text-theme-selected-ink hover:bg-theme-selected",
+                )}
+                onClick={() => setTheme("light")}
+              >
+                <span aria-hidden className="flex shrink-0 border border-stroke">
+                  {["#f5eed2", "#ec3750", "#ff8c37"].map((color) => (
+                    <span key={color} className="size-[11px] border-r border-stroke last:border-r-0" style={{ backgroundColor: color }} />
+                  ))}
+                </span>
+                <span>Pixl Paper</span>
+              </button>
+              <div aria-hidden className="h-[2px] bg-stroke" />
+              {DARK_PALETTES.map((t) => (
                 <button
                   key={t.id}
                   type="button"
+                  aria-pressed={selectedTheme === t.id}
                   className={cn(
                     "flex w-full items-center gap-[9px] border-none bg-transparent px-[11px] py-[8px] text-left",
-                    "font-pixel text-[13.5px] tracking-[.3px] text-ink transition-colors duration-[120ms]",
+                    "font-pixel text-[13.5px] tracking-[.3px] whitespace-nowrap text-ink transition-colors duration-[120ms]",
                     "hover:bg-accent hover:text-panel-deep",
-                    t.id === theme && "bg-ink text-panel-deep hover:bg-ink",
+                    selectedTheme === t.id && "bg-theme-selected text-theme-selected-ink hover:bg-theme-selected",
                   )}
                   onClick={() => setTheme(t.id)}
                 >
-                  <span
-                    className="size-[14px] shrink-0 border border-stroke"
-                    style={{ background: t.panel, boxShadow: `inset 0 0 0 2px ${t.gold}` }}
-                  />
+                  <span aria-hidden className="flex shrink-0 border border-stroke">
+                    {t.swatches.map((color) => (
+                      <span key={color} className="size-[11px] border-r border-stroke last:border-r-0" style={{ backgroundColor: color }} />
+                    ))}
+                  </span>
                   <span>{t.label}</span>
                 </button>
               ))}

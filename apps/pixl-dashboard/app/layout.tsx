@@ -33,7 +33,7 @@ export const metadata: Metadata = {
 // Static, constant script (no user input): applies the saved font and theme
 // before first paint so the page never flashes. Carries the per-request CSP
 // nonce from proxy.ts.
-const PRE_PAINT = `try{var d=document.documentElement;if(localStorage.getItem("pixl_font")==="phantom")d.dataset.font="phantom";var t=localStorage.getItem("pixl_theme_v2");if(t==="dark"||t==="light")d.dataset.theme=t}catch(e){}`;
+const PRE_PAINT = `try{var d=document.documentElement;if(localStorage.getItem("pixl_font")==="phantom")d.dataset.font="phantom";var t=localStorage.getItem("pixl_theme_v2");if(t==="dark"||t==="light")d.dataset.theme=t;if(t==="dark"){var p=localStorage.getItem("pixl_dark_palette_v1");d.dataset.palette=p==="cabinet"||p==="graphite"?p:"graphite"}}catch(e){}`;
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   // Reading headers() makes every route dynamic, which the nonce CSP needs.
