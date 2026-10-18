@@ -506,7 +506,7 @@ export default async function ReviewDetail({
     </Callout>
   );
 
-  // Repo, README, demo (and Telescreen on the final pass) sit right under the
+  // Repo, README, demo (and Fraudy on the final pass) sit right under the
   // project description, so a reviewer reads what it is before opening it.
   const projectLinks = (
     <div className="flex flex-wrap gap-2">
@@ -535,34 +535,20 @@ export default async function ReviewDetail({
       ) : (
         <Badge tone="danger">No demo</Badge>
       )}
-      {/* Final pass only: the Telescreen workbench is what a final
-          reviewer cross-checks heartbeats against. One button per
-          linked Hackatime project so &p= opens that project's
-          heartbeats, or a single unscoped link when none is linked. */}
+      {/* Final pass only: Fraudy checks a Hackatime user's heartbeats for
+          AI-written code, keyed by the Hackatime user id. */}
       {!live && isFinalStage && (
         <Suspense fallback={null}>
           <Await promise={hackatimeReportPromise}>
             {(report) => {
               if (!report?.hackatimeUserId) return null;
-              const telescreenUrl = (projectName?: string) => {
-                const url = new URL("https://telescreen.hackclub.com/workbench/hackatime/overview");
-                url.searchParams.set("u", report.hackatimeUserId);
-                if (projectName) url.searchParams.set("p", projectName);
-                return url.toString();
-              };
-              const linked = report.projects.filter((hp) => hp.linked);
-              if (linked.length === 0) {
-                return (
-                  <ButtonLink href={telescreenUrl()} external icon="view">
-                    Telescreen
-                  </ButtonLink>
-                );
-              }
-              return linked.map((hp) => (
-                <ButtonLink key={hp.name} href={telescreenUrl(hp.name)} external icon="view">
-                  Telescreen: {hp.name}
+              const url = new URL("https://fraudy.hackclub.com/");
+              url.searchParams.set("u", String(report.hackatimeUserId));
+              return (
+                <ButtonLink href={url.toString()} external icon="view">
+                  froud frad fraudy! is it ai?
                 </ButtonLink>
-              ));
+              );
             }}
           </Await>
         </Suspense>
