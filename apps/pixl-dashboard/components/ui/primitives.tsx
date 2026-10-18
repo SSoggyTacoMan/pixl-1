@@ -22,7 +22,7 @@ const buttonBase = cva(
     variants: {
       variant: {
         default: "bg-gold text-btn-ink hover:bg-gold-soft hover:text-btn-ink disabled:hover:bg-gold",
-        dark: "bg-ink text-panel-deep hover:bg-ink hover:text-gold",
+        dark: "bg-button-dark text-button-dark-ink hover:bg-button-dark hover:text-gold",
         ghost: "bg-transparent text-ink hover:bg-panel-2 hover:text-ink disabled:hover:bg-transparent",
         teal: "bg-teal text-btn-ink hover:bg-(--teal-hover) disabled:hover:bg-teal",
         red: "bg-bad text-panel-deep hover:bg-[color-mix(in_srgb,var(--bad)_85%,#fff)] disabled:hover:bg-bad",
