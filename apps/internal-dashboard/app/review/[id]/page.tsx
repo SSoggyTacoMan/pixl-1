@@ -536,19 +536,32 @@ export default async function ReviewDetail({
         <Badge tone="danger">No demo</Badge>
       )}
       {/* Final pass only: Fraudy checks a Hackatime user's heartbeats for
-          AI-written code, keyed by the Hackatime user id. */}
+          AI-written code. One button per linked Hackatime project so
+          ?project= opens that project, or a single unscoped link to the
+          user when none is linked. */}
       {!live && isFinalStage && (
         <Suspense fallback={null}>
           <Await promise={hackatimeReportPromise}>
             {(report) => {
               if (!report?.hackatimeUserId) return null;
-              const url = new URL("https://fraudy.hackclub.com/");
-              url.searchParams.set("u", String(report.hackatimeUserId));
-              return (
-                <ButtonLink href={url.toString()} external icon="view">
-                  froud frad fraudy! is it ai?
+              const fraudyUrl = (projectName?: string) => {
+                const url = new URL(`https://fraudy.hackclub.com/users/${encodeURIComponent(String(report.hackatimeUserId))}`);
+                if (projectName) url.searchParams.set("project", projectName);
+                return url.toString();
+              };
+              const linked = report.projects.filter((hp) => hp.linked);
+              if (linked.length === 0) {
+                return (
+                  <ButtonLink href={fraudyUrl()} external icon="view">
+                    froud frad fraudy! is it ai?
+                  </ButtonLink>
+                );
+              }
+              return linked.map((hp) => (
+                <ButtonLink key={hp.name} href={fraudyUrl(hp.name)} external icon="view">
+                  froud frad fraudy! is it ai? {hp.name}
                 </ButtonLink>
-              );
+              ));
             }}
           </Await>
         </Suspense>
