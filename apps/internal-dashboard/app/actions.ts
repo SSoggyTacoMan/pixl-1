@@ -5667,8 +5667,9 @@ export const reassignOrder = guardedAction("reassignOrder", "owner", async (acce
 
 // Cancel a live order (pending / ordered / credited) and refund the pixels , e.g.
 // a blocked Amazon account killed it. The refund + status flip happen inside
-// cancel_shop_order so they can't drift apart; it's idempotent, so a double-click
-// won't refund twice and a shipped order is a no-op.
+// cancel_shop_order (pending) or cancel_claimed_shop_order (ordered / credited)
+// so they can't drift apart; both are idempotent, so a double-click won't
+// refund twice and a shipped order is a no-op.
 export const cancelOrder = guardedAction("cancelOrder", "owner", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   const note = String(formData.get("note") ?? "").trim().slice(0, 300);
@@ -5678,16 +5679,18 @@ export const cancelOrder = guardedAction("cancelOrder", "owner", async (access, 
     .select("user_id, item_name, status")
     .eq("id", id)
     .maybeSingle();
-  // Once a fulfiller claims it (pending -> ordered), it's no longer
-  // cancellable - only a still-unclaimed order can be refunded this way.
-  if (!order || order.status !== "pending") {
+  // A claimed order (ordered / credited) is cancelled through its own RPC,
+  // which only the dashboard calls: the player's cancel route keeps using the
+  // pending-only cancel_shop_order. Shipped and done orders are not cancellable.
+  const cancellable = order?.status === "pending" || order?.status === "ordered" || order?.status === "credited";
+  if (!order || !cancellable) {
     revalidatePath("/fulfillment");
     return;
   }
-  const { data: refunded, error } = await db.rpc("cancel_shop_order", {
-    p_order_id: id,
-    p_by: actorName(access),
-  });
+  const { data: refunded, error } = await db.rpc(
+    order.status === "pending" ? "cancel_shop_order" : "cancel_claimed_shop_order",
+    { p_order_id: id, p_by: actorName(access) },
+  );
   if (error) throw new Error(error.message);
   if (note) await db.from("shop_orders").update({ note }).eq("id", id);
   const amount = Number(refunded ?? 0);

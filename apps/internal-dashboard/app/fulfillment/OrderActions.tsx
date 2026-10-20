@@ -89,16 +89,21 @@ export function OrderActions({
 }) {
   // Reassign, cancel/refund and the final "mark done" stay owner-only:
   // fulfillers can work a claimed order but not override or refund one. Cancel
-  // is only offered before anyone has claimed it (cancelOrder in
+  // is offered until the order ships, claimed or not (cancelOrder in
   // app/actions.ts enforces the same rule server-side).
+  const claimed = o.status === "ordered" || o.status === "credited";
   const cancelForm =
-    canManage && o.status === "pending" ? (
+    canManage && (o.status === "pending" || claimed) ? (
       <form action={cancelOrder}>
         <input type="hidden" name="id" value={o.id} />
         <ActionButton
           variant="danger"
           pendingLabel="Refunding..."
-          confirm={`Cancel this order and refund ${o.price} pixels to ${o.player_name}?`}
+          confirm={
+            claimed
+              ? `${o.claimed_by || "A fulfiller"} already claimed this order${o.status === "credited" ? " and it is already paid" : ""}. Cancel it anyway and refund ${o.price} pixels to ${o.player_name}?`
+              : `Cancel this order and refund ${o.price} pixels to ${o.player_name}?`
+          }
         >
           Cancel &amp; refund
         </ActionButton>
