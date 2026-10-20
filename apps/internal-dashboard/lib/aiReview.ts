@@ -158,13 +158,17 @@ Respond with ONLY a JSON object, no markdown fences, matching exactly:
 }
 
 export async function generateAiReviewDraft(input: AiReviewInput): Promise<AiReviewDraft> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  // AI_REVIEW_API_KEY / AI_REVIEW_BASE_URL let the draft run on another
+  // OpenAI-compatible endpoint (e.g. the Hack Club AI proxy) for a while without
+  // touching the shared OPENROUTER_API_KEY. Unset both to go back to OpenRouter.
+  const apiKey = process.env.AI_REVIEW_API_KEY || process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY not configured");
+  const endpoint = process.env.AI_REVIEW_BASE_URL || "https://openrouter.ai/api/v1/chat/completions";
 
   const readme = await fetchReadme(input.repoUrl);
   const prompt = buildPrompt(input, readme);
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -183,7 +187,7 @@ export async function generateAiReviewDraft(input: AiReviewInput): Promise<AiRev
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new Error(`OpenRouter ${res.status}: ${detail.slice(0, 300)}`);
+    throw new Error(`AI provider ${res.status}: ${detail.slice(0, 300)}`);
   }
   const json = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
