@@ -108,7 +108,7 @@ export function ItemDetail({
       ? await save.run({ id: item.id, option: summary, config: isConfig ? config : null })
       : await unsave.run({ id: item.id });
     if (!r.ok) setSaved(!next);
-    else setNotice(next ? "Saved! Your build stays in sync as you tweak it." : "Removed from saved items.");
+    else setNotice(next ? "Saved! It's now at the top of the shop for you!" : "Removed from saved items.");
   }
 
   async function doBuy(phone?: string) {
