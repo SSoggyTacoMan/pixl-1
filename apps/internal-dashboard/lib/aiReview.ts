@@ -5,7 +5,7 @@ import type { YswsShip } from "./ysws";
 
 // AI-drafted review notes, to assist (never replace) a human reviewer. The
 // model reads the same objective facts a reviewer already has open on the
-// page (commits, journals, Hackatime numbers, trust factor, cross-YSWS
+// page (commits, journals, Hackatime numbers, cross-YSWS
 // duplicate check) and drafts the audit-note text a reviewer would otherwise
 // type by hand - it never proposes a verdict or credited hours, and nothing
 // here is submitted automatically. See apps/pixorpheus/src/ai/client.ts for
@@ -118,7 +118,7 @@ function buildPrompt(input: AiReviewInput, readme: string): string {
     ? `The reviewer has already decided to credit ${input.reviewerHours}h instead of the ${input.claimedHours}h claimed - draft the explanation for THAT decision (don't propose a different number). Ground it in the facts above: cross-YSWS overlap hours (if any match above), a claimed/tracked-time mismatch, or scope not matching the claim. Show the arithmetic the way a reviewer would ("X h already credited elsewhere + Yh deflated for Z reason = ${input.reviewerHours}h"), when the numbers support it.`
     : `The reviewer has not lowered the hours (crediting the full ${input.claimedHours}h claimed) - return "" for deflationReason.`;
 
-  return `You are assisting a human reviewer on Pixl, a Hack Club program where teens ship real software/hardware projects for rewards. Draft review notes for them to read and edit - you are NOT deciding the verdict, tier, or credited hours, only helping them look faster. Never state a fact you can't point to in the data below; if something can't be verified from it, say so instead of guessing (e.g. don't invent an account age, repo count, or skill-level claim that isn't supported by the commits/README/journals here).
+  return `You are assisting a human reviewer on Pixl, a Hack Club program where teens ship real software/hardware projects for rewards. Draft review notes for them to read and edit - you are NOT deciding the verdict, tier, or credited hours, only helping them look faster. Never state a fact you can't point to in the data below; if something can't be verified from it, say so instead of guessing (e.g. don't invent an account age, repo count, or skill-level claim that isn't supported by the commits/README/journals here). Never mention the Hackatime trust factor, trust level or its color (blue, green, red, etc.) anywhere in your answer, not even to say the user is new.
 
 ${styleSection}PROJECT
 Name: ${input.projectName}
@@ -141,7 +141,6 @@ ${journalLines || "(none)"}
 
 HACKATIME (linked projects):
 ${hackatimeLines || "(no Hackatime data)"}
-Hackatime trust factor: ${input.trust ? `${input.trust.level} (${input.trust.value})` : "(unavailable)"}
 
 CROSS-YSWS ARCHIVE MATCHES (same repo/demo shipped elsewhere):
 ${yswsLines || "(no matches - not previously shipped elsewhere)"}
