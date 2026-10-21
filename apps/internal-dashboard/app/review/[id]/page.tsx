@@ -1,5 +1,5 @@
 /* eslint-disable @next/next/no-img-element */
-import { Suspense, type ReactNode } from "react";
+import { Fragment, Suspense, type ReactNode } from "react";
 import { precheckView, type PrecheckView } from "@/lib/precheck";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -57,6 +57,7 @@ import { getStaffSettings } from "@/lib/db";
 import { ReviewHeartbeat } from "@/app/_components/ReviewHeartbeat";
 import { ProjectNotes } from "@/app/_components/ProjectNotes";
 import { LevelBadge, TypeBadge, ShipBadges, StatusBadge, BeaconBadge, FundingBadge } from "@/app/_components/ProjectBadges";
+import { FraudyAiSummary } from "@/app/_components/FraudyAiSummary";
 import { CardSkeleton } from "@/app/_components/Loading";
 import { slackHandle } from "@/lib/slack";
 import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
@@ -559,9 +560,14 @@ export default async function ReviewDetail({
                 );
               }
               return linked.map((hp) => (
-                <ButtonLink key={hp.name} href={fraudyUrl(hp.name)} external icon="view">
-                  froud frad fraudy! is it ai? {hp.name}
-                </ButtonLink>
+                <Fragment key={hp.name}>
+                  <ButtonLink href={fraudyUrl(hp.name)} external icon="view">
+                    froud frad fraudy! is it ai? {hp.name}
+                  </ButtonLink>
+                  <Suspense fallback={null}>
+                    <FraudyAiSummary hackatimeId={report.hackatimeUserId} project={hp.name} />
+                  </Suspense>
+                </Fragment>
               ));
             }}
           </Await>
