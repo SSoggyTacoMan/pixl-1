@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { queueWaitSince } from "@/lib/queueWait";
 import type { ShippedProject } from "@/lib/db";
-import { LevelBadge, StatusBadge, FundingBadge } from "@/app/_components/ProjectBadges";
+import { LevelBadge, StatusBadge, FundingBadge, TypeBadge } from "@/app/_components/ProjectBadges";
 import { BlackoutBadge } from "@/app/_components/BlackoutBadge";
 import { useLiveMode, useReviewerName } from "@/app/_components/LiveMode";
 import { RowSelect, SelectAllBox } from "@/app/_components/MassSelect";
@@ -123,6 +123,7 @@ export function ReviewTable({
                       <Mono>#{p.id}</Mono>
                     </Muted>
                     <LevelBadge level={p.level} />
+                    <TypeBadge type={p.project_type} />
                     <FundingBadge needsFunding={p.needs_funding} fundingUsd={p.funding_usd} />
                   </div>
                 </div>

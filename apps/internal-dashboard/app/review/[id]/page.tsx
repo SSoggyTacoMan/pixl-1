@@ -531,6 +531,7 @@ export default async function ReviewDetail({
           <ButtonLink href={demoUrl} external variant="outline" icon="link">
             Live demo
           </ButtonLink>
+          <TypeBadge type={p.project_type} />
         </span>
       ) : (
         <Badge tone="danger">No demo</Badge>

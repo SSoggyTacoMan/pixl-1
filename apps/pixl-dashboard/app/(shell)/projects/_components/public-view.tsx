@@ -6,6 +6,7 @@ import { cn } from "@/lib/cn";
 import { safeHttpUrl } from "@/lib/safe-url";
 import { statusInfo } from "../../explore/lib";
 import { hours, shortDate } from "../format";
+import { PROJECT_TYPES } from "../types";
 import { CopyLinkButton } from "./copy-link";
 import { backLink, projHero, projHeroImg, sectionH } from "./styles";
 
@@ -17,6 +18,7 @@ export interface PublicProject {
     description: string | null;
     repo_url: string | null;
     demo_url: string | null;
+    project_type?: string | null;
     image_url: string | null;
     status: string;
     level: number | null;
@@ -39,6 +41,12 @@ export function PublicView({ data }: { data: PublicProject }) {
   const st = statusInfo(project.status);
   const repo = safeHttpUrl(project.repo_url);
   const demo = safeHttpUrl(project.demo_url);
+  // What the maker said the demo runs on (Windows, Linux, Web...), so a visitor
+  // knows before downloading. "Other / Not Sure" says nothing, so it's hidden.
+  const platform =
+    project.project_type && project.project_type !== "other"
+      ? PROJECT_TYPES.find(([v]) => v === project.project_type)?.[1]
+      : undefined;
   return (
     <div>
       <Link className={backLink} href="/explore">
@@ -77,7 +85,7 @@ export function PublicView({ data }: { data: PublicProject }) {
         />
       </div>
       {project.description ? <Markdown source={project.description} className="mb-4" /> : null}
-      <div className="mb-5 flex gap-2">
+      <div className="mb-5 flex flex-wrap items-center gap-2">
         {repo ? (
           <a className={buttonVariants({ variant: "ghost" })} href={repo} target="_blank" rel="noopener noreferrer">
             REPO
@@ -88,6 +96,7 @@ export function PublicView({ data }: { data: PublicProject }) {
             DEMO
           </a>
         ) : null}
+        {demo && platform ? <Badge>{platform}</Badge> : null}
       </div>
       {reviews.length ? (
         <>
