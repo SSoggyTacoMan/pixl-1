@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition, type FormEvent, type ReactNode } from "react";
+import { AiTimePanel } from "@/app/_components/AiTimePanel";
 import { ReadmePanel } from "@/app/_components/ReadmePanel";
 import type { CommitResult } from "@/lib/commits";
 import type { HackatimeReport } from "@/lib/hackatime";
@@ -155,7 +156,7 @@ function Section({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-type TabKey = "commits" | "readme" | "journals" | "reviews" | "ysws" | "hackatime" | "fraud";
+type TabKey = "commits" | "readme" | "journals" | "reviews" | "ysws" | "hackatime" | "fraud" | "ai_time";
 
 export function ReviewDetailTabs({
   projectId,
@@ -168,6 +169,9 @@ export function ReviewDetailTabs({
   hackatime,
   repoUrl,
   projectKind,
+  usedAi,
+  aiNotes,
+  canViewAiTime,
 }: {
   projectId: number;
   commits: CommitResult;
@@ -181,6 +185,10 @@ export function ReviewDetailTabs({
   hackatime: HackatimeReport | null;
   repoUrl: string | null;
   projectKind: string;
+  usedAi: boolean;
+  aiNotes: string | null;
+  /** Owner or second-pass reviewer only - hidden from first-pass-only reviewers. */
+  canViewAiTime: boolean;
 }) {
   // Live mode keeps each past review's verdict and hours but drops its
   // internal audit-note sections (technical features, deflation reason, ...).
@@ -230,6 +238,7 @@ export function ReviewDetailTabs({
     { key: "reviews", label: "Past reviews", count: reviewAudits.length },
     { key: "ysws", label: "Other YSWS", count: yswsMatches.length + (yswsImport ? 1 : 0) },
     ...(fraudRepo ? [{ key: "fraud" as const, label: "HURT check" }] : []),
+    ...(canViewAiTime ? [{ key: "ai_time" as const, label: "AI time" }] : []),
   ];
 
   // The earliest/latest tracked Hackatime activity, so a reviewer can compare
@@ -455,6 +464,12 @@ export function ReviewDetailTabs({
           </ul>
         )}
       </div>
+
+      {canViewAiTime && (
+        <div role="tabpanel" hidden={tab !== "ai_time"}>
+          <AiTimePanel commits={commitsState.commits} hackatime={hackatime} usedAi={usedAi} aiNotes={aiNotes} />
+        </div>
+      )}
     </Card>
   );
 }

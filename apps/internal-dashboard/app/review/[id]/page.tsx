@@ -1433,6 +1433,9 @@ export default async function ReviewDetail({
                   hackatime={live && hackatimeReport ? { ...hackatimeReport, hackatimeUserId: "" } : hackatimeReport}
                   repoUrl={p.repo_url ?? null}
                   projectKind={p.kind}
+                  usedAi={!!p.used_ai}
+                  aiNotes={p.ai_notes ?? null}
+                  canViewAiTime={access.isOwner || canSecondPass}
                 />
               )}
             </Await>
