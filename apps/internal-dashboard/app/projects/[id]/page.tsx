@@ -19,6 +19,7 @@ import {
   toggleProjectPeak,
   sendProjectToAirtable,
   deflateProjectHours,
+  extendHoursCutoff,
 } from "@/app/actions";
 import { hackatimeCutoffUnix, hackatimeCutoffLabel } from "@/app/_generated/config";
 import { fetchAirtableRecord, JUSTIFICATION_DISPLAY_FIELDS } from "@/lib/airtable";
@@ -223,6 +224,17 @@ export default async function ProjectPage({
   // Deflating hours moves real pixels, can cancel a player's orders, and DMs
   // them, so owners only (see deflateProjectHours in app/actions.ts).
   const canDeflate = access.isOwner && project.status === "approved" && !project.banned_at && !project.rejected_at;
+  // Mirrors the guard in extendHoursCutoff (app/actions.ts): allowed any time
+  // before the project is finalized, and only once a Hackatime project is
+  // linked, otherwise there's nothing to recount hours from.
+  const canExtendCutoff =
+    canPeak &&
+    project.status !== "approved" &&
+    project.status !== "rejected" &&
+    !project.banned_at &&
+    (project.hackatime_projects?.length ?? 0) > 0;
+  // One day before the global cutoff, for the extend-hours date input's max.
+  const maxExtendDateStr = new Date((hackatimeCutoffUnix - 86_400) * 1000).toISOString().slice(0, 10);
 
   const ownerName = (handle: string | null) =>
     project.users
@@ -602,14 +614,55 @@ export default async function ProjectPage({
             </Card>
           )}
 
-          {project.hours_extended_since && (
+          {(project.hours_extended_since || canExtendCutoff) && (
             <Card>
               <CardHeader title="Hours cutoff" icon="clock" />
-              <p className="text-sm">
-                Counting hours from <span className="font-bold">{formatDate(project.hours_extended_since)}</span>{" "}
-                (before the {hackatimeCutoffLabel} cutoff), set by{" "}
-                <span className="font-bold">{project.hours_extended_by}</span>: {project.hours_extended_note}
-              </p>
+              {project.hours_extended_since && (
+                <p className="mb-3 text-sm">
+                  Counting hours from <span className="font-bold">{formatDate(project.hours_extended_since)}</span>{" "}
+                  (before the {hackatimeCutoffLabel} cutoff), set by{" "}
+                  <span className="font-bold">{project.hours_extended_by}</span>: {project.hours_extended_note}
+                </p>
+              )}
+              {canExtendCutoff && (
+                <Details summary="Extend hours cutoff">
+                  <p className="hc-caption mb-3 text-xs">
+                    Normally only hours from {hackatimeCutoffLabel} onward count. If this project genuinely started
+                    earlier and paused, pick how far back to count from. This re-pulls their Hackatime spans and
+                    raises the credited total, it never lowers it.
+                  </p>
+                  <form action={extendHoursCutoff} className="flex flex-col gap-3">
+                    <input type="hidden" name="projectId" value={project.id} />
+                    <input type="hidden" name="returnTo" value={`/projects/${project.id}`} />
+                    <Field label="Count from">
+                      <Input
+                        type="date"
+                        name="since"
+                        required
+                        max={maxExtendDateStr}
+                        defaultValue={
+                          project.hours_extended_since
+                            ? new Date(project.hours_extended_since).toISOString().slice(0, 10)
+                            : undefined
+                        }
+                      />
+                    </Field>
+                    <Field label="Why" hint="The player sees this in a DM.">
+                      <Textarea name="note" required rows={2} placeholder="Why count from this date" />
+                    </Field>
+                    <div>
+                      <ActionButton
+                        variant="outline"
+                        size="sm"
+                        pendingLabel="Extending..."
+                        confirm="Recount this project's hours from that date? This only ever raises the credited total, and the owner is notified."
+                      >
+                        Extend cutoff
+                      </ActionButton>
+                    </div>
+                  </form>
+                </Details>
+              )}
             </Card>
           )}
 

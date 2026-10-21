@@ -67,7 +67,7 @@ import { withAgeOverride } from "@/lib/ageOverrides";
 import { getReviewGrantView } from "@/lib/reviewGrants";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
 import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
-import { fetchHackatimeReport, fetchTrustFactor } from "@/lib/hackatime";
+import { fetchHackatimeReport, fetchTrackedSecondsSince, fetchTrustFactor } from "@/lib/hackatime";
 import { fetchCommits, attachCommitStats } from "@/lib/commits";
 import { yswsShipsFor } from "@/lib/ysws";
 import { generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
@@ -3111,6 +3111,98 @@ export const toggleProjectPeak = guardedAction("toggleProjectPeak", "reviewer", 
     by,
   );
   revalidatePath("/", "layout");
+});
+
+// Normally only hours from hackatimeCutoffUnix onward count (see
+// HACKATIME_CUTOFF in apps/server). Some projects are legitimately started
+// earlier and picked back up , this lets a reviewer re-pull the player's
+// Hackatime spans from an earlier date for this one project and recredit
+// hackatime_seconds accordingly. Requires a note so it's auditable, and only
+// raises the stored total (never used to quietly lower it, ReviewForm's own
+// "credited hours" field already covers lowering).
+export const extendHoursCutoff = guardedAction("extendHoursCutoff", "reviewer", async (access, formData: FormData): Promise<void> => {
+  const by = actorName(access);
+  const reviewer = await reviewerLabel(access.session.slackId, access.session.name);
+  const projectId = Number(formData.get("projectId") ?? 0);
+  const sinceRaw = String(formData.get("since") ?? "").trim();
+  const note = String(formData.get("note") ?? "").trim().slice(0, 1000);
+  const back = safeRedirectPath(formData.get("returnTo"), `/review/${projectId}`);
+  if (!projectId) return;
+  if (!note)
+    redirect(`${back}?error=${encodeURIComponent("A note is required to extend the hours cutoff.")}`);
+
+  const since = new Date(sinceRaw);
+  if (isNaN(since.getTime()) || since.getTime() >= hackatimeCutoffUnix * 1000)
+    redirect(
+      `${back}?error=${encodeURIComponent(`Pick a date before the ${hackatimeCutoffLabel} cutoff.`)}`,
+    );
+  const sinceUnix = Math.floor(since.getTime() / 1000);
+
+  const { data: project } = await db
+    .from("projects")
+    .select("user_id, name, status, banned_at, hackatime_projects, hackatime_seconds")
+    .eq("id", projectId)
+    .single();
+  if (!project) return;
+  // A plain reviewer can't touch their own project's cutoff, self-review is
+  // cheating.
+  await authorizeProjectAction(access, projectId, back, { ownMessage: "You can't act on your own project." });
+  // Draft/shipped/second_review/needs_changes are all fair game - a reviewer
+  // may want to set this up before the player even ships. approved is too
+  // late (payout's already computed) and a banned/rejected project shouldn't
+  // be touched here at all.
+  if (project.status === "approved" || project.status === "rejected" || project.banned_at)
+    redirect(`${back}?error=${encodeURIComponent("This project has already been finalized.")}`);
+  if (((project.hackatime_projects as string[]) ?? []).length === 0)
+    redirect(`${back}?error=${encodeURIComponent("Link a Hackatime project to this project first.")}`);
+
+  const { data: owner } = await db
+    .from("users")
+    .select("slack_id, hackatime_token")
+    .eq("id", project.user_id)
+    .single();
+  const linked = (project.hackatime_projects as string[]) ?? [];
+  const newSeconds = await fetchTrackedSecondsSince(
+    (owner as { slack_id?: string } | null)?.slack_id ?? null,
+    (owner as { hackatime_token?: string } | null)?.hackatime_token ?? null,
+    linked,
+    sinceUnix,
+  );
+  if (newSeconds === null)
+    redirect(`${back}?error=${encodeURIComponent("Couldn't reach Hackatime, try again.")}`);
+  const currentSeconds = Number(project.hackatime_seconds) || 0;
+  if (newSeconds <= currentSeconds)
+    redirect(
+      `${back}?error=${encodeURIComponent("Hackatime didn't return more hours than already credited , nothing changed.")}`,
+    );
+
+  const { error } = await db
+    .from("projects")
+    .update({
+      hackatime_seconds: newSeconds,
+      hours_extended_since: since.toISOString(),
+      hours_extended_by: reviewer,
+      hours_extended_note: note,
+    })
+    .eq("id", projectId);
+  if (error) {
+    console.error("extendHoursCutoff failed", error.message);
+    redirect(`${back}?error=${encodeURIComponent("Failed to save , try again.")}`);
+  }
+  await logModAction(
+    project.user_id,
+    "project_hours_extended",
+    `${project.name}: counted hours from ${since.toISOString().slice(0, 10)} (${Math.round(currentSeconds / 3600)}h -> ${Math.round(newSeconds / 3600)}h) , ${note}`,
+    by,
+  );
+  const sinceLabel = since.toISOString().slice(0, 10);
+  await notifyOwner(
+    project.user_id,
+    "Hours cutoff extended",
+    `Your project "${project.name}"'s Hackatime cutoff was extended by ${reviewer}: we're now counting hours from ${sinceLabel} instead of the usual ${hackatimeCutoffLabel} cutoff.\n\nReason: ${note}`,
+  );
+  revalidatePath(back);
+  redirect(back);
 });
 
 export const rejectProject = guardedAction("rejectProject", "owner", async (access, formData: FormData): Promise<void> => {

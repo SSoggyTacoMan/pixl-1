@@ -36,6 +36,7 @@ import { isBlackoutReviewable } from "@/lib/operationsReview";
 import {
   banProject,
   setProjectLevel,
+  extendHoursCutoff,
   sendBackToFirstPass,
   unshipProject,
   toggleProjectPeak,
@@ -495,6 +496,8 @@ export default async function ReviewDetail({
     address: builderView.address ?? "",
   });
 
+  // One day before the global cutoff, for the extend-hours date input's max.
+  const maxExtendDateStr = new Date((hackatimeCutoffUnix - 86_400) * 1000).toISOString().slice(0, 10);
   const repoUrl = isSafeUrl(p.repo_url) ? p.repo_url : null;
   const demoUrl = isSafeUrl(p.demo_url) ? p.demo_url : null;
   const cartScreenshots = p.cart_screenshot_urls ?? [];
@@ -890,6 +893,41 @@ export default async function ReviewDetail({
         </Details>
       )}
 
+
+      {canReview && (
+        <Details summary="Extend hours cutoff">
+          <form action={extendHoursCutoff} className="flex flex-col gap-3">
+            <input type="hidden" name="projectId" value={p.id} />
+            <p className="hc-caption text-sm">
+              Normally only hours from {hackatimeCutoffLabel} onward count. If this project genuinely started earlier
+              and paused (verify against Hackatime&apos;s first-activity date), pick how far back to count from. This
+              re-pulls their Hackatime spans and raises the credited total, it never lowers it.
+            </p>
+            <Input
+              type="date"
+              name="since"
+              required
+              max={maxExtendDateStr}
+              defaultValue={
+                p.hours_extended_since ? new Date(p.hours_extended_since).toISOString().slice(0, 10) : undefined
+              }
+            />
+            <Textarea
+              name="note"
+              required
+              rows={2}
+              placeholder="Why count from this date (the player will see this in a DM)..."
+            />
+            <ActionButton
+              variant="outline"
+              pendingLabel="Extending..."
+              confirm="Recount this project's hours from that date? This only ever raises the credited total."
+            >
+              Extend cutoff
+            </ActionButton>
+          </form>
+        </Details>
+      )}
 
       {canReview && isFinalStage && (
         <Details summary="Send back to first pass">

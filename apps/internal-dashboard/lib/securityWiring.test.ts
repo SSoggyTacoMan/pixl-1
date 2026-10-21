@@ -64,6 +64,7 @@ describe("M1/M2 reviewer actions", () => {
     "updateFundingAmount",
     "skipRobertPass",
     "setProjectLevel",
+    "extendHoursCutoff",
     "applySubmissionEdits",
     "toggleProjectPeak",
     "saveReviewDraft",
