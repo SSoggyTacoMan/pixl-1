@@ -91,18 +91,30 @@ describe("openableQueueIds", () => {
     expect(openableQueueIds(rows(40), "UBBB", true, now).size).toBe(40);
   });
 
-  test("rows reserved for others, held, own or claimed don't use up a slot", () => {
+  test("held, own and claimed rows don't use up a slot but stay openable", () => {
     const list: QueueRowLike[] = [
-      { id: 1, status: "shipped", assigned_reviewer_slack_id: "UAAA", assigned_at: iso(T0), shipped_at: iso(T0 + HOUR) },
       { id: 2, status: "shipped", hold_at: iso(T0) },
       { id: 3, status: "shipped", own: true },
       { id: 4, status: "shipped", claimedBy: "UCCC" },
       ...Array.from({ length: 20 }, (_, i) => ({ id: 10 + i, status: "shipped" })),
     ];
     const open = openableQueueIds(list, "UBBB", false, now);
-    expect(open.has(1) || open.has(2) || open.has(3) || open.has(4)).toBe(false);
-    expect(open.size).toBe(15);
+    expect(open.has(2) && open.has(3) && open.has(4)).toBe(true);
+    // 3 viewable rows plus the first 15 free ones.
+    expect(open.size).toBe(18);
     expect(open.has(10)).toBe(true);
+    expect(open.has(24)).toBe(true);
+    expect(open.has(25)).toBe(false);
+  });
+
+  test("a row reserved for another reviewer is locked and doesn't use a slot", () => {
+    const list: QueueRowLike[] = [
+      { id: 1, status: "shipped", assigned_reviewer_slack_id: "UAAA", assigned_at: iso(T0), shipped_at: iso(T0 + HOUR) },
+      ...Array.from({ length: 20 }, (_, i) => ({ id: 10 + i, status: "shipped" })),
+    ];
+    const open = openableQueueIds(list, "UBBB", false, now);
+    expect(open.has(1)).toBe(false);
+    expect(open.size).toBe(15);
     expect(open.has(24)).toBe(true);
     expect(open.has(25)).toBe(false);
   });
