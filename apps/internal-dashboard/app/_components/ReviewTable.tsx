@@ -35,11 +35,10 @@ function QueueMeta({
   blackout: boolean;
   lockLabel: string | null;
 }) {
+  // The card's maker line already shows #id above this, so it's badges only
+  // here (the desktop table keeps its own inline meta with the id).
   return (
     <div className="mt-1 flex flex-wrap items-center gap-2">
-      <Muted className="text-xs">
-        <Mono>#{p.id}</Mono>
-      </Muted>
       {lockLabel && <Badge icon="private">{lockLabel}</Badge>}
       <LevelBadge level={p.level} />
       <TypeBadge type={p.project_type} />
@@ -244,6 +243,15 @@ export function ReviewTable({
       </Table>
 
       <ul className="hc-queue-cards">
+        {/* The table's select-all is hidden with the table on phones, so give
+            the card list its own header row for mass-action queues. */}
+        {selectName && (
+          <li className="hc-queue-card-select-all">
+            <SelectAllBox>
+              <span className="text-xs font-medium">Select all</span>
+            </SelectAllBox>
+          </li>
+        )}
         {rows.map((p) => {
           const maker = live
             ? "Builder"

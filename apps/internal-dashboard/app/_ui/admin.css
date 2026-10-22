@@ -2327,8 +2327,7 @@ html[data-density="compact"] .hc-main {
     padding: 0;
   }
 
-  .hc-queue-step .hc-step-label,
-  .hc-queue-step .hc-step-position {
+  .hc-queue-step .hc-step-label {
     display: none;
   }
 
@@ -2394,6 +2393,14 @@ html[data-density="compact"] .hc-main {
 
   .hc-queue-card {
     position: relative;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .hc-queue-card-select-all {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
     border-bottom: 1px solid var(--border);
   }
 
