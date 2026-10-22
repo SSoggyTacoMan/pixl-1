@@ -877,7 +877,7 @@ describe("payout history in the evidence loader", () => {
       payout({ id: 1, amount: 6399, hours: 115.5 }),
       payout({ id: 2, amount: -1910, hours: 87 }),
     ]);
-    expect(ev.get(U1)!.projects[0]!.payout).toEqual({ netPx: 4489, creditedHours: 87, rows: 2, withheldPx: 0 });
+    expect(ev.get(U1)!.projects[0]!.payout).toEqual({ netPx: 4489, creditedHours: 87, rows: 2, withheldPx: 0, trialPrizePx: 0 });
   });
 
   test("a review reversal is subtracted but does not change the credited hours", async () => {
@@ -900,6 +900,49 @@ describe("payout history in the evidence loader", () => {
     expect(ev.get(U1)!.projects[0]!.payout!.withheldPx).toBe(80);
     const none = await load([payout()], { owned: [proj({ approved_hours: "10", needs_funding: false, funding_deducted_px: 80 })] });
     expect(none.get(U1)!.projects[0]!.payout!.withheldPx).toBe(0);
+  });
+
+  test("a kept Trial prize is carried for the owner, and not for pixel opt-outs or zero prizes", async () => {
+    const trial = { approved_hours: "6", trial_reward_choice: "item", trial_prize_px: 121, trial_prize_order_id: 88 };
+    const kept = await load([payout()], { owned: [proj(trial)] });
+    expect(kept.get(U1)!.projects[0]!.payout!.trialPrizePx).toBe(121);
+    const pixels = await load([payout()], { owned: [proj({ ...trial, trial_reward_choice: "pixels", trial_prize_order_id: null })] });
+    expect(pixels.get(U1)!.projects[0]!.payout!.trialPrizePx).toBe(0);
+    const zero = await load([payout()], { owned: [proj({ ...trial, trial_prize_px: 0 })] });
+    expect(zero.get(U1)!.projects[0]!.payout!.trialPrizePx).toBe(0);
+    const noOrder = await load([payout()], { owned: [proj({ ...trial, trial_prize_order_id: null })] });
+    expect(noOrder.get(U1)!.projects[0]!.payout!.trialPrizePx).toBe(0);
+  });
+
+  describe("an all-prize Trial with no payout transaction", () => {
+    const allPrize = { approved_hours: "3", trial_reward_choice: "item", trial_held_px: 121, trial_prize_px: 121, trial_prize_order_id: 88 };
+    const prizeOrder = { id: 88, user_id: U1, item_name: "Pixl Sticker Sheet", quantity: 1, price: 121, status: "pending", actual_cost_usd: null, flagged_at: null };
+
+    test("funds the held prize from the approved hours when the prize order is the player's own", async () => {
+      const ev = await load([], { owned: [proj(allPrize)], orders: [prizeOrder] });
+      expect(ev.get(U1)!.projects[0]!.payout).toEqual({ netPx: 0, withheldPx: 0, trialPrizePx: 121, creditedHours: 3, rows: 1 });
+    });
+
+    test("stays unestablished when the held amount is more than the prize", async () => {
+      const ev = await load([], { owned: [proj({ ...allPrize, trial_held_px: 242 })], orders: [prizeOrder] });
+      expect(ev.get(U1)!.projects[0]!.payout).toBeNull();
+    });
+
+    test("stays unestablished when the prize order is not the owner's", async () => {
+      const ev = await load([], { owned: [proj(allPrize)], orders: [{ ...prizeOrder, user_id: "someone-else" }] });
+      expect(ev.get(U1)!.projects[0]!.payout).toBeNull();
+    });
+
+    test("stays unestablished for a pixel opt-out, an unapproved or banned project, or a reversed approval", async () => {
+      const opt = await load([], { owned: [proj({ ...allPrize, trial_reward_choice: "pixels" })], orders: [prizeOrder] });
+      expect(opt.get(U1)!.projects[0]!.payout).toBeNull();
+      const draft = await load([], { owned: [proj({ ...allPrize, status: "draft" })], orders: [prizeOrder] });
+      expect(draft.get(U1)!.projects[0]!.payout).toBeNull();
+      const banned = await load([], { owned: [proj({ ...allPrize, banned_at: "2026-10-20T00:00:00Z" })], orders: [prizeOrder] });
+      expect(banned.get(U1)!.projects[0]!.payout).toBeNull();
+      const reverted = await load([payout({ amount: -5, reason: "review_reverted" })], { owned: [proj(allPrize)], orders: [prizeOrder] });
+      expect(reverted.get(U1)!.projects[0]!.payout!.rows).toBe(0);
+    });
   });
 
   test("the old flat policies ignore payout rows", async () => {

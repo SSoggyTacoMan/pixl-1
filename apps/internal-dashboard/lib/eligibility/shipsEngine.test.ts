@@ -447,7 +447,7 @@ describe("several projects and collaborators", () => {
 
 describe("funding from historical payouts", () => {
   const PAYOUT = POLICIES["2026-10-22.3"]!;
-  const hist = (netPx: number, creditedHours: number, over: Record<string, unknown> = {}) => ({ netPx, withheldPx: 0, creditedHours, rows: 1, ...over });
+  const hist = (netPx: number, creditedHours: number, over: Record<string, unknown> = {}) => ({ netPx, withheldPx: 0, trialPrizePx: 0, creditedHours, rows: 1, ...over });
   const runP = (rows: unknown[], payout: unknown, over: Partial<EligibilityInput> = {}, projOver: Record<string, unknown> = {}) => {
     const v = viewOf(rows);
     return evaluateEligibility({
@@ -542,6 +542,49 @@ describe("funding from historical payouts", () => {
     expect(r.verifiedFundingCents).toBe(48000);
     expect(r.priorGrantCents).toBe(8000);
     expect(r.remainingCents).toBe(40000);
+  });
+
+  test("a Trial prize forfeited from the payout is added back so the prize order is counted once", () => {
+    const prizeOrder = { itemName: "Pixl Sticker Sheet", quantity: 1, pricePx: 121 };
+    const r = runP([shipsRow({ hours: 6 })], hist(121, 6, { trialPrizePx: 121 }), {
+      playerOrders: [{ ...order({ itemName: "Art Supply Grant", quantity: 1, pricePx: 112 }), id: 89, status: "done", actualCostUsd: 10 }],
+      order: order(prizeOrder),
+    });
+    expect(r.verifiedFundingCents).toBe(2420);
+    expect(r.projects[0]!.effectiveRateUsd).toBe(4.03);
+    expect(r.remainingCents).toBe(1420);
+    expect(r.status).toBe("covered");
+  });
+
+  const trialCases: [string, number, number, number, number, number, number][] = [
+    ["#88", 121, 121, 6, 2420, 403, 1210],
+    ["#36", 20, 120, 3.5, 1400, 400, 1200],
+    ["#143", 10, 121, 3.2, 1310, 409, 1210],
+    ["#79", 60, 177, 6.7, 2370, 354, 1770],
+  ];
+  for (const [name, net, prize, hours, funding, rate, cost] of trialCases) {
+    test(`real Trial ${name} funds ${funding} cents at ${rate / 100}/hr and covers its prize order`, () => {
+      const r = runP([shipsRow({ hours })], hist(net, hours, { trialPrizePx: prize }), { playerOrders: [], order: order({ itemName: "Prize", quantity: 1, pricePx: cost / 10 }) });
+      expect(r.verifiedFundingCents).toBe(funding);
+      expect(Math.round(r.projects[0]!.effectiveRateUsd! * 100)).toBe(rate);
+      expect(r.status).toBe("covered");
+    });
+  }
+
+  test("an all-prize Trial with no payout transaction is funded by the prize alone", () => {
+    const r = runP([shipsRow({ hours: 3 })], hist(0, 3, { trialPrizePx: 121 }), { playerOrders: [], order: order({ itemName: "Pixl Sticker Sheet", quantity: 1, pricePx: 121 }) });
+    expect(r.verifiedFundingCents).toBe(1210);
+    expect(r.remainingCents).toBe(1210);
+    expect(r.status).toBe("covered");
+  });
+
+  test("without the add-back the same player would be short by the prize", () => {
+    const r = runP([shipsRow({ hours: 6 })], hist(121, 6), {
+      playerOrders: [{ ...order({ itemName: "Art Supply Grant", quantity: 1, pricePx: 112 }), id: 89, status: "done", actualCostUsd: 10 }],
+      order: order({ itemName: "Pixl Sticker Sheet", quantity: 1, pricePx: 121 }),
+    });
+    expect(r.verifiedFundingCents).toBe(1210);
+    expect(r.status).not.toBe("covered");
   });
 
   test("a fully reversed payout funds nothing", () => {
