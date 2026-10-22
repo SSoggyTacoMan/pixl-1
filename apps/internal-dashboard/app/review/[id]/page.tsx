@@ -2,7 +2,7 @@
 import { Fragment, Suspense, type ReactNode } from "react";
 import { precheckView, type PrecheckView } from "@/lib/precheck";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { decryptPII } from "@/lib/crypto";
 import { builderDetailsView, builderNameFor, canSeeBuilderPII } from "@/lib/reviewAccess";
@@ -11,6 +11,7 @@ import {
   listShippedProjects,
   listSecondReviewProjects,
   claimReview,
+  firstPassAccess,
   turnedNineteenSinceShipping,
   listCollaboratorsForProject,
   lifetimeRe,
@@ -208,6 +209,13 @@ export default async function ReviewDetail({
   // reviewers and owners. A normal reviewer gets the same "not found" as a
   // missing project, so Robert's score and notes never reach them.
   if ((p.status === "fraud_review" || p.status === "second_review") && !access.canFraudReview) notFound();
+  // First pass: a plain reviewer can only open the first page of the queue and
+  // the projects assigned to them (owners exempt). The queue greys the rest
+  // out, this covers someone typing the URL. See lib/reviewAssignment.ts.
+  if (p.status === "shipped" && !access.isOwner) {
+    const gate = await firstPassAccess(projectId, viewer, false);
+    if (!gate.ok) redirect(`/review?error=${encodeURIComponent(gate.message)}`);
+  }
   // The Trial this project was shipped for, if the player flagged one at ship
   // time (joined in getProject). null = they built their own idea.
   const trial = (
