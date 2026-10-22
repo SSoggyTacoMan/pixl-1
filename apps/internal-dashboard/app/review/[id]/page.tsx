@@ -60,6 +60,7 @@ import { ReviewHeartbeat } from "@/app/_components/ReviewHeartbeat";
 import { ProjectNotes } from "@/app/_components/ProjectNotes";
 import { LevelBadge, TypeBadge, ShipBadges, StatusBadge, BeaconBadge, FundingBadge } from "@/app/_components/ProjectBadges";
 import { FraudyAiSummary } from "@/app/_components/FraudyAiSummary";
+import { fraudyCheckAi, type FraudyAiCheck } from "@/lib/fraudy";
 import { CardSkeleton } from "@/app/_components/Loading";
 import { slackHandle } from "@/lib/slack";
 import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
@@ -180,6 +181,8 @@ export default async function ReviewDetail({
   const canSecondPass = access.canSecondPass;
   // Only admins (ban perm) may permanently ban a project from the review page.
   const canModerate = access.isOwner;
+  // Gates the "AI time" tab: owner or second-pass reviewer, either stage.
+  const canViewAiTime = access.isOwner || canSecondPass;
   const { id } = await params;
   const { error } = await searchParams;
   const projectId = Number(id);
@@ -317,6 +320,21 @@ export default async function ReviewDetail({
   const hackatimeReportPromise = hackatimeProjects.length
     ? tokenPromise.then((tok) => fetchHackatimeReport(p.users?.slack_id, tok, hackatimeProjects))
     : Promise.resolve(null);
+  // Fraudy's own human/AI split per linked Hackatime project, for the AI time
+  // tab. Skipped in live mode (no real Hackatime id to send) and for viewers
+  // who can't see that tab anyway, since every call is logged under the
+  // Fraudy key's owner.
+  const fraudyChecksPromise: Promise<Record<string, FraudyAiCheck | null>> =
+    !live && canViewAiTime
+      ? hackatimeReportPromise.then(async (report) => {
+          if (!report?.ok || !report.hackatimeUserId) return {};
+          const linked = report.projects.filter((hp) => hp.linked);
+          const entries = await Promise.all(
+            linked.map(async (hp) => [hp.name, await fraudyCheckAi(report.hackatimeUserId, hp.name)] as const),
+          );
+          return Object.fromEntries(entries);
+        })
+      : Promise.resolve({});
   const trustPromise = fetchTrustFactor(p.users?.slack_id);
   const yswsPromise = yswsShipsFor(p.users?.slack_id, p.repo_url, p.demo_url);
   const ownerHandlePromise = slackHandle(p.users?.slack_id);
@@ -1430,9 +1448,15 @@ export default async function ReviewDetail({
 
           <Suspense fallback={<CardSkeleton lines={6} />}>
             <Await
-              promise={Promise.all([commitsPromise, yswsPromise, hackatimeReportPromise, ownerHandlePromise])}
+              promise={Promise.all([
+                commitsPromise,
+                yswsPromise,
+                hackatimeReportPromise,
+                ownerHandlePromise,
+                fraudyChecksPromise,
+              ])}
             >
-              {([commits, yswsShips, hackatimeReport, ownerHandle]) => (
+              {([commits, yswsShips, hackatimeReport, ownerHandle, fraudyChecks]) => (
                 <ReviewDetailTabs
                   projectId={p.id}
                   commits={commits}
@@ -1462,7 +1486,8 @@ export default async function ReviewDetail({
                   projectKind={p.kind}
                   usedAi={!!p.used_ai}
                   aiNotes={p.ai_notes ?? null}
-                  canViewAiTime={access.isOwner || canSecondPass}
+                  fraudyChecks={fraudyChecks}
+                  canViewAiTime={canViewAiTime}
                 />
               )}
             </Await>

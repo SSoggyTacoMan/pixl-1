@@ -1,8 +1,5 @@
 import type { Commit } from "@/lib/commits";
 import { db, type ShippedProject } from "@/lib/db";
-import type { HackatimeBreakdown } from "./aiEditorTime";
-
-export type { HackatimeBreakdown } from "./aiEditorTime";
 
 const BASE = (process.env.HACKATIME_BASE ?? "https://hackatime.hackclub.com").replace(/\/$/, "");
 
@@ -94,6 +91,14 @@ export async function fetchTrustFactor(
   } catch {
     return null;
   }
+}
+
+export interface HackatimeBreakdown {
+  name: string;
+  seconds: number;
+  text: string;
+  percent: number;
+  color?: string;
 }
 
 export interface LapseTimelapse {
