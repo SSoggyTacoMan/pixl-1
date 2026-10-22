@@ -232,6 +232,89 @@ export async function fetchAirtableRecord(recordId: string): Promise<FetchRecord
   return { ok: true, fields: body.fields };
 }
 
+const RECORD_ID_PATTERN = /^rec[A-Za-z0-9]{14}$/;
+
+export function airtableRecordUrl(recordId: string): string | null {
+  return RECORD_ID_PATTERN.test(recordId) ? `https://airtable.com/${BASE_ID}/${TABLE_ID}/${recordId}` : null;
+}
+
+export interface SubmissionInfo {
+  submitted: boolean;
+  unifiedId: string | null;
+}
+
+export type SubmissionLookup =
+  | { kind: "found"; info: SubmissionInfo }
+  | { kind: "missing" }
+  | { kind: "error"; error: string };
+
+export const STATUS_FIELD = "Automation - Status";
+export const SUBMITTED_STATUS = "2\u2013Submitted";
+const UNIFIED_ID_FIELD = "Automation - YSWS Record ID";
+const LOOKUP_CHUNK = 40;
+
+export function parseUnifiedId(value: unknown): string | null {
+  const v = Array.isArray(value) && value.length === 1 ? value[0] : value;
+  return typeof v === "string" && RECORD_ID_PATTERN.test(v.trim()) ? v.trim() : null;
+}
+
+async function lookupChunk(token: string, ids: string[], out: Map<string, SubmissionLookup>): Promise<void> {
+  const formula = `OR(${ids.map((id) => `RECORD_ID()='${id}'`).join(",")})`;
+  const q = new URLSearchParams({ filterByFormula: formula, pageSize: "100" });
+  q.append("fields[]", STATUS_FIELD);
+  q.append("fields[]", UNIFIED_ID_FIELD);
+  let error: string | null = null;
+  try {
+    const res = await fetch(`https://api.airtable.com/v0/${BASE_ID}/${TABLE_ID}?${q}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(AIRTABLE_TIMEOUT_MS),
+    });
+    const body = (await res.json().catch(() => null)) as
+      | { records?: { id: string; fields?: Record<string, unknown> }[]; offset?: string; error?: { message?: string } }
+      | null;
+    if (!res.ok || !body?.records) {
+      error = body?.error?.message ?? `Airtable returned ${res.status}`;
+    } else if (body.offset) {
+      error = "Airtable returned more records than requested";
+    } else {
+      const seen = new Set<string>();
+      for (const r of body.records) {
+        seen.add(r.id);
+        const f = r.fields ?? {};
+        out.set(r.id, { kind: "found", info: { submitted: f[STATUS_FIELD] === SUBMITTED_STATUS, unifiedId: parseUnifiedId(f[UNIFIED_ID_FIELD]) } });
+      }
+      for (const id of ids) if (!seen.has(id)) out.set(id, { kind: "missing" });
+    }
+  } catch (err) {
+    error = `Airtable request failed: ${(err as Error).message}`;
+  }
+  if (error) for (const id of ids) out.set(id, { kind: "error", error });
+}
+
+// GET only, two non-PII fields, batched. Feeds the fulfillment eligibility
+// view, which must never write to this base.
+export async function fetchSubmissionStates(recordIds: string[]): Promise<Map<string, SubmissionLookup>> {
+  const out = new Map<string, SubmissionLookup>();
+  const token = process.env.AIRTABLE_PIXL_YSWS_UNIFIED_TOKEN;
+  const valid: string[] = [];
+  for (const id of new Set(recordIds)) {
+    if (!RECORD_ID_PATTERN.test(id)) out.set(id, { kind: "missing" });
+    else if (!token) out.set(id, { kind: "error", error: "AIRTABLE_PIXL_YSWS_UNIFIED_TOKEN is not set" });
+    else valid.push(id);
+  }
+  if (!token) return out;
+  for (let i = 0; i < valid.length; i += LOOKUP_CHUNK * 3) {
+    await Promise.all(
+      [0, 1, 2].map((k) => {
+        const chunk = valid.slice(i + k * LOOKUP_CHUNK, i + (k + 1) * LOOKUP_CHUNK);
+        return chunk.length ? lookupChunk(token, chunk, out) : Promise.resolve();
+      }),
+    );
+  }
+  return out;
+}
+
 // Creates a new record, or PATCHes an existing one when existingRecordId is
 // given (the caller looks this up from projects.airtable_record_id - see
 // Task 4). Never include "Automation - Submit to Unified YSWS" in `fields`.
