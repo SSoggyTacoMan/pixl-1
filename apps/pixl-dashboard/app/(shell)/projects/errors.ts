@@ -47,7 +47,7 @@ const ERRORS: Record<string, string> = {
   hca_ineligible:
     "You're not eligible to ship. Hack Club Auth has this identity as ineligible for YSWS programs. If you think that's a mistake, reach out to the Pixl team.",
   address_required: "Add a mailing address before shipping.",
-  trial_not_accepted: "Accept that Trial in the game first (talk to its NPC), then you can pick it.",
+  trial_unavailable: "That Trial isn't available anymore, ship as your own idea instead.",
   bom_required: "Upload a Bill of Materials (.csv) before shipping a funded project.",
   cart_screenshot_required: "Upload at least one cart screenshot (with shipping) before shipping a funded project.",
   funding_amount_required: "Enter how much funding you need before shipping.",

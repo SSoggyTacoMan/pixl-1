@@ -482,24 +482,22 @@ export function parseProjectBody(
 }
 
 // The Trial a project is being built for is chosen at CREATION now (not at
-// ship). A player can only link a Trial they've actually accepted in-game
-// (there's a sidequest_unlocks row); picking one they haven't accepted returns
-// "trial_not_accepted" so the client can tell them to go accept it first. 0 /
-// missing = building their own idea.
+// ship). Every active Trial is unlocked for every player - going to the NPC
+// in-game first is optional, not required to link. 0 / missing = building
+// their own idea.
 async function resolveTrialLink(
   userId: string,
   wantSidequest: unknown,
 ): Promise<{ error: string } | { id: number | null }> {
   const want = Number(wantSidequest);
   if (!Number.isFinite(want) || want <= 0) return { id: null };
-  const { data: unlock } = await db
-    .from("sidequest_unlocks")
-    .select("sidequest_id, sidequests!inner(active)")
-    .eq("user_id", userId)
-    .eq("sidequest_id", want)
-    .eq("sidequests.active", true)
+  const { data: quest } = await db
+    .from("sidequests")
+    .select("id")
+    .eq("id", want)
+    .eq("active", true)
     .maybeSingle();
-  if (!unlock) return { error: "trial_not_accepted" };
+  if (!quest) return { error: "trial_unavailable" };
   return { id: want };
 }
 
@@ -831,22 +829,19 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   const wantSidequest = Number(project.sidequest_id);
   let sidequestId: number | null = null;
   if (Number.isFinite(wantSidequest) && wantSidequest > 0) {
-    const { data: unlock } = await db
-      .from("sidequest_unlocks")
-      .select("sidequest_id, sidequests!inner(active, name, min_hours)")
-      .eq("user_id", session.userId)
-      .eq("sidequest_id", wantSidequest)
-      .eq("sidequests.active", true)
+    const { data: trial } = await db
+      .from("sidequests")
+      .select("name, min_hours")
+      .eq("id", wantSidequest)
+      .eq("active", true)
       .maybeSingle();
-    if (!unlock)
-      return res.status(400).json({ ok: false, error: "trial_not_available" });
+    if (!trial)
+      return res.status(400).json({ ok: false, error: "trial_unavailable" });
     sidequestId = wantSidequest;
 
     // A Trial can carry a minimum tracked-hours requirement (nullable = no
     // gate, e.g. Trials seeded before this existed). Checked against the same
     // trackedSeconds the normal 1h ship floor uses below.
-    const trial = (unlock as { sidequests?: { name?: string; min_hours?: number | null } })
-      .sidequests;
     const minHours = trial?.min_hours != null ? Number(trial.min_hours) : null;
     if (minHours != null && trackedSeconds < minHours * 3600) {
       // The player can choose to ship anyway (client shows this as an explicit
