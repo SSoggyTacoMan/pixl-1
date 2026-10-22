@@ -3,7 +3,7 @@ import { getHideReviewers } from "@/lib/liveModeServer";
 import { reviewerName } from "@/lib/liveMode";
 import { db, payoutTotalsBySlackId, type ReviewAuditRow } from "@/lib/db";
 import { ReviewVerdictChart, type VerdictWindow } from "@/app/_components/ReviewVerdictChart";
-import { slackIdFromLabel, summarizeWindow } from "@/lib/reviewStats";
+import { WEEKLY_REVIEW_MINIMUM, countReviewsSince, slackIdFromLabel, summarizeWindow } from "@/lib/reviewStats";
 import { ActionButton, Badge, Card, CardHeader, EmptyRow, Flash, Muted, Table, TextLink, formatDate } from "@/app/_ui/ui";
 import { claimReviewerFoodGrant } from "@/app/actions";
 import { config } from "@/app/_generated/config";
@@ -15,6 +15,8 @@ export const dynamic = "force-dynamic";
 interface ReviewerStats {
   reviewer: string;
   total: number;
+  /** Outcome reviews since Monday 00:00 UTC, against WEEKLY_REVIEW_MINIMUM. */
+  thisWeek: number;
   approved: number;
   firstPass: number;
   changes: number;
@@ -94,6 +96,7 @@ export default async function ReviewStatsPage({
     return {
       reviewer,
       total: rows.length,
+      thisWeek: countReviewsSince(rows, weekStart),
       approved: approved.length,
       firstPass: rows.filter((r) => r.verdict === "first_pass_approved").length,
       changes: rows.filter((r) => r.verdict === "needs_changes").length,
@@ -108,9 +111,15 @@ export default async function ReviewStatsPage({
   });
   stats.sort((a, b) => b.total - a.total);
 
+  // The viewer's own week against the minimum. A new week starts Monday 00:00 UTC.
+  const myWeek = stats.find((s) => slackIdFromLabel(s.reviewer) === access.session.slackId)?.thisWeek ?? 0;
+  const myWeekPct = Math.min(100, Math.round((myWeek / WEEKLY_REVIEW_MINIMUM) * 100));
+  const daysLeftInWeek = Math.max(1, Math.ceil((weekStart + 7 * 86_400_000 - now.getTime()) / 86_400_000));
+
   const headers = [
     "Reviewer",
     "Reviews",
+    "This week",
     "Approved",
     "First pass",
     "Changes",
@@ -123,6 +132,27 @@ export default async function ReviewStatsPage({
   return (
     <div className="flex flex-col gap-6">
       <Flash error={flashError} ok={flashOk} />
+      <Card>
+        <CardHeader title="Your week" icon="clock" />
+        <p className="hc-caption mb-3 text-sm">
+          Every reviewer is expected to do at least {WEEKLY_REVIEW_MINIMUM} reviews a week. A week runs from Monday
+          00:00 UTC to Sunday.
+        </p>
+        <div
+          className="mb-2 h-2 w-full overflow-hidden rounded-full bg-[var(--border)]"
+          role="progressbar"
+          aria-valuenow={myWeekPct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div className="h-full bg-[var(--hc-green)]" style={{ width: `${myWeekPct}%` }} />
+        </div>
+        <p className="text-sm font-bold">
+          {myWeek >= WEEKLY_REVIEW_MINIMUM
+            ? `${myWeek} reviews this week, minimum reached.`
+            : `${myWeek} of ${WEEKLY_REVIEW_MINIMUM} reviews this week, ${WEEKLY_REVIEW_MINIMUM - myWeek} to go (${daysLeftInWeek} day${daysLeftInWeek === 1 ? "" : "s"} left).`}
+        </p>
+      </Card>
       {grant && (
         <Card>
           <CardHeader title="Your food grants" icon="purse-fill" />
@@ -204,6 +234,12 @@ export default async function ReviewStatsPage({
                   )}
                 </td>
                 <td className="hc-mono">{s.total}</td>
+                <td
+                  className={`hc-mono ${s.thisWeek >= WEEKLY_REVIEW_MINIMUM ? "font-bold text-[var(--hc-green)]" : ""}`}
+                  title={`Minimum is ${WEEKLY_REVIEW_MINIMUM} reviews a week`}
+                >
+                  {s.thisWeek} / {WEEKLY_REVIEW_MINIMUM}
+                </td>
                 <td className="hc-mono font-bold text-[var(--hc-green)]">{s.approved}</td>
                 <td className="hc-mono">{s.firstPass}</td>
                 <td className="hc-mono">{s.changes}</td>

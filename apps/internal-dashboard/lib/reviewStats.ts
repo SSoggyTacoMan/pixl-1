@@ -29,6 +29,22 @@ interface AuditLike {
   created_at: string;
 }
 
+// Every reviewer is expected to do at least this many reviews a calendar week
+// (Monday 00:00 UTC to Sunday). The stats page only shows progress against it,
+// nothing is withheld for missing it.
+export const WEEKLY_REVIEW_MINIMUM = 15;
+
+// Reviews logged since `since` (a UTC ms timestamp): outcome verdicts only, the
+// same ones the verdict chart counts, so an unship or revert doesn't add to it.
+export function countReviewsSince(audits: readonly AuditLike[], since: number): number {
+  let n = 0;
+  for (const a of audits) {
+    if (bucketFor(a.verdict) === null) continue;
+    if (new Date(a.created_at).getTime() >= since) n++;
+  }
+  return n;
+}
+
 // Verdict counts plus how many distinct reviewers submitted them, for one time
 // window (`since` is a UTC ms timestamp, null = all time). A reviewer is keyed
 // by Slack id when the label has one (so a renamed "Name (ID)" label is still

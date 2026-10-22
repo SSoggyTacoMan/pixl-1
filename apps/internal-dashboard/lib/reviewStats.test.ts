@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { summarizeWindow, slackIdFromLabel, bucketFor } from "./reviewStats";
+import { summarizeWindow, slackIdFromLabel, bucketFor, countReviewsSince, WEEKLY_REVIEW_MINIMUM } from "./reviewStats";
 
 const d = (iso: string) => iso;
 const row = (reviewer: string, verdict: string, created_at: string) => ({ reviewer, verdict, created_at });
@@ -117,6 +117,38 @@ describe("summarizeWindow", () => {
   test("the list only covers the window and only outcome verdicts", () => {
     const s = summarizeWindow(audits, Date.UTC(2026, 9, 4));
     expect(s.reviewerList).toEqual([{ name: "Ada", reviews: 2 }]);
+  });
+});
+
+describe("countReviewsSince", () => {
+  const monday = Date.parse("2026-10-19T00:00:00Z");
+
+  test("the weekly minimum is 15", () => {
+    expect(WEEKLY_REVIEW_MINIMUM).toBe(15);
+  });
+
+  test("counts outcome verdicts from the start of the week, not earlier ones", () => {
+    const rows = [
+      row("Ada (U1)", "needs_changes", d("2026-10-19T00:00:00Z")),
+      row("Ada (U1)", "first_pass_approved", d("2026-10-21T09:00:00Z")),
+      row("Ada (U1)", "banned", d("2026-10-22T09:00:00Z")),
+      row("Ada (U1)", "approved", d("2026-10-18T23:59:59Z")),
+    ];
+    expect(countReviewsSince(rows, monday)).toBe(3);
+  });
+
+  test("ignores housekeeping verdicts like an unship or a revert", () => {
+    const rows = [
+      row("Ada (U1)", "unshipped", d("2026-10-20T09:00:00Z")),
+      row("Ada (U1)", "reverted", d("2026-10-20T10:00:00Z")),
+      row("Ada (U1)", "hours_deflated", d("2026-10-20T11:00:00Z")),
+      row("Ada (U1)", "needs_changes", d("2026-10-20T12:00:00Z")),
+    ];
+    expect(countReviewsSince(rows, monday)).toBe(1);
+  });
+
+  test("nothing this week is zero", () => {
+    expect(countReviewsSince([], monday)).toBe(0);
   });
 });
 
