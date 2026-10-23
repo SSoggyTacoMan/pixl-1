@@ -1631,7 +1631,8 @@ function QueueNav({
       <span className="hc-caption flex-1 text-center text-xs">
         {index < 0 && total > 0 ? "Not in queue · " : ""}
         <kbd className="hc-mono">←</kbd> <kbd className="hc-mono">→</kbd> move · <kbd className="hc-mono">R</kbd> repo ·{" "}
-        <kbd className="hc-mono">D</kbd> demo
+        <kbd className="hc-mono">D</kbd> demo ·{" "}
+        <kbd className="hc-mono">1</kbd>-<kbd className="hc-mono">6</kbd> tabs
       </span>
       {step(nextId, false)}
     </>
