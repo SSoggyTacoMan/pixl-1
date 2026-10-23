@@ -1152,61 +1152,55 @@ export function ReviewForm({
         </div>
 
         <div data-step="2" hidden={step !== 2} className="flex flex-col gap-4">
-          <div className="hc-panel flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="hc-eyebrow">AI draft (beta)</span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={!canAiDraft || aiPending}
-                onClick={runAiDraft}
-                title={canAiDraft ? undefined : "You don't have access to this. Ask an owner to enable it for you."}
-              >
-                {aiPending ? "Generating…" : "Generate AI draft"}
-              </Button>
-              {!canAiDraft && <span className="hc-caption text-xs">Ask an owner to enable this for you</span>}
-            </div>
-            <p className="hc-caption text-xs">
-              Reads the repo, commits, journals and Hackatime data and drafts the fields below for you to check and
-              edit. It never picks a verdict or hours, that&apos;s still on you. If you already lowered the hours, it
-              drafts the explanation for that number too, so set hours first for the best deflation draft.
-            </p>
-            {aiError && <Callout tone="danger" icon="important">{aiError}</Callout>}
-            {aiDraft && (
-              <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-2 text-sm">
-                <p className="hc-caption">{aiDraft.summary}</p>
-                {aiDraft.redFlags.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {aiDraft.redFlags.map((f, i) => (
-                      <Badge key={i} tone="danger">{f}</Badge>
-                    ))}
-                  </div>
-                )}
-                {aiDraft.strengths.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {aiDraft.strengths.map((s, i) => (
-                      <Badge key={i} tone="success">{s}</Badge>
-                    ))}
-                  </div>
-                )}
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("technicalFeatures", aiDraft.technicalFeatures)}>
-                    Insert into Technical features
-                  </Button>
-                  {needsDeflationReason && aiDraft.deflationReason && (
-                    <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("deflationReason", aiDraft.deflationReason)}>
-                      Insert into Why lower the hours?
-                    </Button>
-                  )}
-                  <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("notes", aiDraft.notes)}>
-                    Insert into Notes
-                  </Button>
-                </div>
-                <p className="hc-caption text-xs">Drafted by {aiDraft.model}</p>
+          {canAiDraft && (
+            <div className="hc-panel flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="hc-eyebrow">AI draft (beta)</span>
+                <Button type="button" variant="outline" size="sm" disabled={aiPending} onClick={runAiDraft}>
+                  {aiPending ? "Generating…" : "Generate AI draft"}
+                </Button>
               </div>
-            )}
-          </div>
+              <p className="hc-caption text-xs">
+                Reads the repo, commits, journals and Hackatime data and drafts the fields below for you to check and
+                edit. It never picks a verdict or hours, that&apos;s still on you. If you already lowered the hours, it
+                drafts the explanation for that number too, so set hours first for the best deflation draft.
+              </p>
+              {aiError && <Callout tone="danger" icon="important">{aiError}</Callout>}
+              {aiDraft && (
+                <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-2 text-sm">
+                  <p className="hc-caption">{aiDraft.summary}</p>
+                  {aiDraft.redFlags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {aiDraft.redFlags.map((f, i) => (
+                        <Badge key={i} tone="danger">{f}</Badge>
+                      ))}
+                    </div>
+                  )}
+                  {aiDraft.strengths.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {aiDraft.strengths.map((s, i) => (
+                        <Badge key={i} tone="success">{s}</Badge>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("technicalFeatures", aiDraft.technicalFeatures)}>
+                      Insert into Technical features
+                    </Button>
+                    {needsDeflationReason && aiDraft.deflationReason && (
+                      <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("deflationReason", aiDraft.deflationReason)}>
+                        Insert into Why lower the hours?
+                      </Button>
+                    )}
+                    <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("notes", aiDraft.notes)}>
+                      Insert into Notes
+                    </Button>
+                  </div>
+                  <p className="hc-caption text-xs">Drafted by {aiDraft.model}</p>
+                </div>
+              )}
+            </div>
+          )}
 
           <p className="hc-eyebrow">
             Internal audit note, never shown to the player. Someone who wasn&apos;t involved should reach the same
