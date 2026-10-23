@@ -184,6 +184,13 @@ export function ReviewTable({
             {showFirstPass && (
               <td>
                 <span className="block max-w-[180px] truncate">{reviewerName(p.first_pass_by, "-")}</span>
+                {p.first_pass_at && (
+                  <Muted className="block text-xs">
+                    <span title={new Date(p.first_pass_at).toUTCString()}>
+                      {new Date(p.first_pass_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })}
+                    </span>
+                  </Muted>
+                )}
               </td>
             )}
             {hackatimeUserIds && (

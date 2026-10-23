@@ -1129,6 +1129,15 @@ export default async function ReviewDetail({
                 ? "Changes proposed by "
                 : "Passed by "}
             <strong>{rn(p.first_pass_by, "a reviewer")}</strong>
+            {p.first_pass_at && (
+              <>
+                {" "}
+                on{" "}
+                <span title={new Date(p.first_pass_at).toUTCString()}>
+                  {new Date(p.first_pass_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })}
+                </span>
+              </>
+            )}
             {p.first_pass_hours != null && (
               <>
                 {" "}
