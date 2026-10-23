@@ -29,10 +29,21 @@ interface AuditLike {
   created_at: string;
 }
 
-// Every reviewer is expected to do at least this many reviews a calendar week
-// (Monday 00:00 UTC to Sunday). The stats page only shows progress against it,
-// nothing is withheld for missing it.
+// Every reviewer is expected to do at least this many reviews a week (Saturday
+// 00:00 UTC to Friday 23:59 UTC, see reviewWeekStartMs). The stats page only
+// shows progress against it, nothing is withheld for missing it.
 export const WEEKLY_REVIEW_MINIMUM = 15;
+
+const DAY_MS = 86_400_000;
+
+// Start of the review week containing `nowMs`: the most recent Saturday 00:00
+// UTC. A week runs Saturday to Friday, so Friday 23:59 UTC is its last minute.
+export function reviewWeekStartMs(nowMs: number): number {
+  const now = new Date(nowMs);
+  const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const daysSinceSaturday = (now.getUTCDay() + 1) % 7;
+  return dayStart - daysSinceSaturday * DAY_MS;
+}
 
 // Reviews logged since `since` (a UTC ms timestamp): outcome verdicts only, the
 // same ones the verdict chart counts, so an unship or revert doesn't add to it.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { summarizeWindow, slackIdFromLabel, bucketFor, countReviewsSince, WEEKLY_REVIEW_MINIMUM } from "./reviewStats";
+import { summarizeWindow, slackIdFromLabel, bucketFor, countReviewsSince, reviewWeekStartMs, WEEKLY_REVIEW_MINIMUM } from "./reviewStats";
 
 const d = (iso: string) => iso;
 const row = (reviewer: string, verdict: string, created_at: string) => ({ reviewer, verdict, created_at });
@@ -117,6 +117,25 @@ describe("summarizeWindow", () => {
   test("the list only covers the window and only outcome verdicts", () => {
     const s = summarizeWindow(audits, Date.UTC(2026, 9, 4));
     expect(s.reviewerList).toEqual([{ name: "Ada", reviews: 2 }]);
+  });
+});
+
+describe("reviewWeekStartMs", () => {
+  const sat = Date.UTC(2026, 9, 17); // Saturday 2026-10-17 00:00 UTC
+  const at = (iso: string) => reviewWeekStartMs(Date.parse(iso));
+
+  test("a week starts on Saturday at the first minute", () => {
+    expect(at("2026-10-17T00:00:00Z")).toBe(sat);
+    expect(at("2026-10-17T00:00:01Z")).toBe(sat);
+  });
+
+  test("Friday 23:59 is still the previous week's last minute", () => {
+    expect(at("2026-10-23T23:59:59Z")).toBe(sat);
+    expect(at("2026-10-24T00:00:00Z")).toBe(Date.UTC(2026, 9, 24));
+  });
+
+  test("Sunday to Thursday belong to the week that began the Saturday before", () => {
+    for (const day of ["18", "19", "20", "21", "22"]) expect(at(`2026-10-${day}T12:00:00Z`)).toBe(sat);
   });
 });
 

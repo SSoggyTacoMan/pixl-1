@@ -3,7 +3,7 @@ import { getHideReviewers } from "@/lib/liveModeServer";
 import { reviewerName } from "@/lib/liveMode";
 import { db, payoutTotalsBySlackId, type ReviewAuditRow } from "@/lib/db";
 import { ReviewVerdictChart, type VerdictWindow } from "@/app/_components/ReviewVerdictChart";
-import { WEEKLY_REVIEW_MINIMUM, countReviewsSince, slackIdFromLabel, summarizeWindow } from "@/lib/reviewStats";
+import { WEEKLY_REVIEW_MINIMUM, countReviewsSince, reviewWeekStartMs, slackIdFromLabel, summarizeWindow } from "@/lib/reviewStats";
 import { ActionButton, Badge, Card, CardHeader, EmptyRow, Flash, Muted, Table, TextLink, formatDate } from "@/app/_ui/ui";
 import { claimReviewerFoodGrant } from "@/app/actions";
 import { config } from "@/app/_generated/config";
@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 interface ReviewerStats {
   reviewer: string;
   total: number;
-  /** Outcome reviews since Monday 00:00 UTC, against WEEKLY_REVIEW_MINIMUM. */
+  /** Outcome reviews since Saturday 00:00 UTC, against WEEKLY_REVIEW_MINIMUM. */
   thisWeek: number;
   approved: number;
   firstPass: number;
@@ -59,12 +59,11 @@ export default async function ReviewStatsPage({
   // stat, and reading it as a ranking gets it wrong.
   const showAuditColumns = access.isOwner;
 
-  // Calendar windows in UTC (packages/config's convention). "This week"
-  // starts Monday, matching an ISO week rather than a rolling 7 days.
+  // Calendar windows in UTC (packages/config's convention). "This week" is the
+  // review week: Saturday 00:00 to Friday 23:59, not a rolling 7 days.
   const now = new Date();
   const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const daysSinceMonday = (now.getUTCDay() + 6) % 7;
-  const weekStart = dayStart - daysSinceMonday * 86_400_000;
+  const weekStart = reviewWeekStartMs(now.getTime());
   const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
   const windowDefs: { key: string; label: string; since: number | null }[] = [
     { key: "all", label: "All time", since: null },
@@ -111,7 +110,7 @@ export default async function ReviewStatsPage({
   });
   stats.sort((a, b) => b.total - a.total);
 
-  // The viewer's own week against the minimum. A new week starts Monday 00:00 UTC.
+  // The viewer's own week against the minimum. A new week starts Saturday 00:00 UTC.
   const myWeek = stats.find((s) => slackIdFromLabel(s.reviewer) === access.session.slackId)?.thisWeek ?? 0;
   const myWeekPct = Math.min(100, Math.round((myWeek / WEEKLY_REVIEW_MINIMUM) * 100));
   const daysLeftInWeek = Math.max(1, Math.ceil((weekStart + 7 * 86_400_000 - now.getTime()) / 86_400_000));
@@ -135,8 +134,8 @@ export default async function ReviewStatsPage({
       <Card>
         <CardHeader title="Your week" icon="clock" />
         <p className="hc-caption mb-3 text-sm">
-          Every reviewer is expected to do at least {WEEKLY_REVIEW_MINIMUM} reviews a week. A week runs from Monday
-          00:00 UTC to Sunday.
+          Every reviewer is expected to do at least {WEEKLY_REVIEW_MINIMUM} reviews a week. A week runs from Saturday
+          00:00 UTC to Friday 23:59 UTC.
         </p>
         <div
           className="mb-2 h-2 w-full overflow-hidden rounded-full bg-[var(--border)]"
