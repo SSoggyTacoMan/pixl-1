@@ -29,6 +29,9 @@ export const REVIEW_HARDWARE_ONLY = "review_hardware_only";
 export const REVIEW_SOFTWARE_ONLY = "review_software_only";
 // Read-only access to the Fraud reviews tab (Robert's scores).
 export const FRAUD_REVIEW = "fraud_review";
+// Lets a reviewer open any project in the first-pass queue, not just its first
+// page (owners always can). See lib/reviewAssignment.ts.
+export const FULL_QUEUE = "full_queue";
 
 // The only values an admins.permissions array may hold. Anything else is
 // ignored here and stripped by migration 0215_owner_only_admins.sql.
@@ -41,6 +44,7 @@ export const REVIEWER_PERMISSIONS = [
   AI_DRAFT,
   NO_REVIEW,
   FRAUD_REVIEW,
+  FULL_QUEUE,
 ] as const;
 
 export type ReviewQueueScope = "software" | "hardware" | "both";
@@ -87,6 +91,7 @@ export interface AdminAccess {
   canEditSubmission: boolean;
   canFraudReview: boolean;
   canAiDraft: boolean;
+  canOpenFullQueue: boolean;
   reviewQueues: ReviewQueueScope;
 }
 
@@ -104,6 +109,7 @@ export function resolveAccess(session: Session, input: RoleInputs): AdminAccess 
   const canEditSubmission =
     isOwner || canSecondPass || (isReviewer && perms.includes(EDIT_SUBMISSION));
   const canAiDraft = isOwner || (isReviewer && perms.includes(AI_DRAFT));
+  const canOpenFullQueue = isOwner || (isReviewer && perms.includes(FULL_QUEUE));
   const access: AdminAccess = {
     session,
     isOwner,
@@ -114,6 +120,7 @@ export function resolveAccess(session: Session, input: RoleInputs): AdminAccess 
     canEditSubmission,
     canFraudReview: isOwner || canSecondPass || perms.includes(FRAUD_REVIEW),
     canAiDraft,
+    canOpenFullQueue,
     reviewQueues: reviewQueueScopeFor(perms),
   };
   return isOwner || isReviewer || access.canFraudReview || input.isHelper || input.isFulfiller ? access : null;

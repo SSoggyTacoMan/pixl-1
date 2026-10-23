@@ -855,6 +855,9 @@ export async function nextReviewId(opts: {
   by: string; // actorName(access), matches first_pass_by
   canSecondPass: boolean;
   isSuper: boolean;
+  // Can open any first-pass project, not only the first page (owners, or a
+  // reviewer with the full_queue permission).
+  fullQueue?: boolean;
   excludeId: number;
   prefer: "shipped" | "second_review";
   // A reviewer restricted to one queue (see reviewQueueScopeFor in
@@ -866,7 +869,7 @@ export async function nextReviewId(opts: {
   // populated for a super) instead of the fraud-triage queue.
   spotCheck?: boolean;
 }): Promise<number | null> {
-  const { viewer, by, canSecondPass, isSuper, excludeId, prefer, reviewQueues, spotCheck } = opts;
+  const { viewer, by, canSecondPass, isSuper, fullQueue, excludeId, prefer, reviewQueues, spotCheck } = opts;
   const kind = reviewQueues && reviewQueues !== "both" ? reviewQueues : undefined;
 
   // A held project (hold_at set) blocks canReview for everyone, including a
@@ -876,7 +879,7 @@ export async function nextReviewId(opts: {
   // projects assigned to them (owners can open everything). See
   // openableQueueIds, which also skips rows claimed by someone else.
   const queue = await listShippedProjects(viewer, kind, { includeClaimed: true });
-  const openIds = openableQueueIds(queue, viewer, isSuper, Date.now());
+  const openIds = openableQueueIds(queue, viewer, isSuper || !!fullQueue, Date.now());
   const firstPass = queue.filter(
     // Nobody, owners included, is advanced onto their own submission.
     (p) => p.id !== excludeId && !p.hold_at && !p.own && !p.claimedBy && openIds.has(Number(p.id)),

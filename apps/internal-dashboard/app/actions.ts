@@ -149,6 +149,7 @@ async function nextReviewPath(
       by,
       canSecondPass: access.canSecondPass,
       isSuper: access.isOwner,
+      fullQueue: access.canOpenFullQueue,
       excludeId: justReviewedId,
       prefer: stage === "second_review" ? "second_review" : "shipped",
       reviewQueues: access.reviewQueues,
@@ -1069,7 +1070,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
   // this reviewer, can be acted on (owners exempt). The queue greys the rest
   // out, this keeps a hand-made form post from getting around it.
   if (stage === "shipped") {
-    const gate = await firstPassAccess(projectId, access.session.slackId, access.isOwner);
+    const gate = await firstPassAccess(projectId, access.session.slackId, access.canOpenFullQueue);
     if (!gate.ok) redirect(`${back}?error=${encodeURIComponent(gate.message)}`);
   }
   const own = await isOwnProject(access, current.user_id, projectId);
@@ -1421,7 +1422,7 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
     }
     if (stage === "second_review")
       await voidFirstPassPayouts(projectId, "final verdict was needs_changes, not an approval");
-    // Only the first request for changes pays (needs_changes_pixels, 1 by
+    // Only the first request for changes pays (needs_changes_pixels, 2 by
     // default; 0 turns it off, see updateReviewPayoutSettings). When it takes
     // the project over the pixel is held until they approve; an owner's or a
     // final reviewer's is paid at once. Requests after the first pay nothing.

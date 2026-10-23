@@ -80,11 +80,11 @@ export default async function ReviewListPage({
   ]);
   const blackoutSet = new Set(blackoutIds);
   const nowMs = Date.now();
-  // Owners can open anything. A plain reviewer sees the whole queue but can
+  // Owners (and reviewers with full_queue) can open anything. A plain reviewer sees the whole queue but can
   // only open its first page (counted in the queue's own order, whatever the
   // sort tabs show, so re-sorting can't open more) plus what is assigned to
   // them. See lib/reviewAssignment.ts.
-  const openIds = openableQueueIds(rowsAll, viewer, access.isOwner, nowMs);
+  const openIds = openableQueueIds(rowsAll, viewer, access.canOpenFullQueue, nowMs);
   const inBlackout = (p: { id: number | string }) => blackoutSet.has(Number(p.id));
   const blackoutCount = rowsAll.filter(inBlackout).length;
   const minHours = parseHoursBound(minh);
@@ -124,7 +124,7 @@ export default async function ReviewListPage({
     if (openIds.has(Number(p.id))) continue;
     const assignee = assigneeOf(p);
     const deadline = assignmentDeadlineMs(p);
-    locks[Number(p.id)] = lockedForViewer(p, viewer, access.isOwner, nowMs)
+    locks[Number(p.id)] = lockedForViewer(p, viewer, access.canOpenFullQueue, nowMs)
       ? {
           reason: "assigned",
           assignee: claimId(assignee) ? (handles.get(assignee) ?? null) : null,

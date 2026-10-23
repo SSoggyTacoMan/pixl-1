@@ -213,9 +213,9 @@ export default async function ReviewDetail({
   // missing project, so Robert's score and notes never reach them.
   if ((p.status === "fraud_review" || p.status === "second_review") && !access.canFraudReview) notFound();
   // First pass: a plain reviewer can only open the first page of the queue and
-  // the projects assigned to them (owners exempt). The queue greys the rest
+  // the projects assigned to them (owners and full_queue reviewers exempt). The queue greys the rest
   // out, this covers someone typing the URL. See lib/reviewAssignment.ts.
-  if (p.status === "shipped" && !access.isOwner) {
+  if (p.status === "shipped" && !access.canOpenFullQueue) {
     const gate = await firstPassAccess(projectId, viewer, false);
     if (!gate.ok) redirect(`/review?error=${encodeURIComponent(gate.message)}`);
   }
