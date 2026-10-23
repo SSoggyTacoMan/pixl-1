@@ -5,7 +5,7 @@ import { addNotification } from "./notifications.js";
 import { findAllInYswsArchive } from "../ysws/archive.js";
 import { buildDoubleDip, type TeamMember } from "../ysws/doubleDip.js";
 import { fetchHackatimeStats, fetchTrackedSecondsBetween, fetchTrackedSecondsSince, HACKATIME_CUTOFF } from "../hackatime/api.js";
-import { dmReviewerOfResubmit, postShipToSlack } from "../shipNotify.js";
+import { dmReviewerOfResubmit, postShipToSlack, type ShipContext } from "../shipNotify.js";
 import { enrollSlackPlayerInReviewChannel } from "../pixlSlack.js";
 import {
   shipEligibilityBlock,
@@ -624,6 +624,8 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     return res.status(400).json({ ok: false, error: "repo_required" });
   if (!project.demo_url)
     return res.status(400).json({ ok: false, error: "demo_required" });
+  if (!String(project.description ?? "").trim())
+    return res.status(400).json({ ok: false, error: "description_required" });
   if (!String(project.image_url ?? "").trim())
     return res.status(400).json({ ok: false, error: "image_required" });
   if (!String(project.description ?? "").trim())
@@ -983,7 +985,25 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     isUpdate ? "Update shipped" : "Project shipped",
     `"${project.name}" is in the review queue. You'll hear back here once it's reviewed.`,
   );
-  void postShipToSlack(data, ownerSlackId, trackedSeconds, isUpdate);
+  void (async () => {
+    const { count } = await db
+      .from("review_audits")
+      .select("id", { count: "exact", head: true })
+      .eq("project_id", id)
+      .eq("verdict", "needs_changes");
+    // `project` is the row as it was BEFORE this ship cleared the review note.
+    const context: ShipContext = {
+      previousStatus: (project.status as string | null) ?? null,
+      priorChangeRequests: count ?? 0,
+      previousReviewNote: String(project.review_note ?? ""),
+      previousReviewer: String(project.review_note_by ?? ""),
+      usedAi: !!project.used_ai,
+      aiNotes: String(project.ai_notes ?? ""),
+      updateNotes: isUpdate ? updateNotes : "",
+      shipNote,
+    };
+    await postShipToSlack(data, ownerSlackId, trackedSeconds, isUpdate, context);
+  })();
   // First-ever ship: add them to the public review channel. Idempotent on the
   // bot side (already_in_channel is fine), so a retry after a failure is safe.
   if (!project.first_shipped_at && ownerSlackId) void enrollSlackPlayerInReviewChannel(ownerSlackId);

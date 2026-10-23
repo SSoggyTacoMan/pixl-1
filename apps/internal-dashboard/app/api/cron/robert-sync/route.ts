@@ -26,7 +26,7 @@ export async function GET(req: Request) {
 
   const { data: waiting, error } = await db
     .from("projects")
-    .select("id, robert_project_id, status, shipped_at")
+    .select("id, robert_project_id, status, shipped_at, kind")
     .eq("status", "fraud_review")
     .limit(500);
   if (error) return NextResponse.json({ ok: false, error: error.message });
@@ -36,11 +36,15 @@ export async function GET(req: Request) {
     robert_project_id: string | null;
     status: string;
     shipped_at: string | null;
+    kind: string | null;
   }[];
 
   let resubmitted = 0;
   for (const row of rows) {
     if (row.robert_project_id) continue;
+    // Hardware goes to Robert only by hand ("Submit to Robert" in Spot check),
+    // so a hardware project still parked here is never auto-retried.
+    if (row.kind === "hardware") continue;
     await submitToRobert(row.id);
     resubmitted += 1;
   }

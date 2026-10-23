@@ -20,11 +20,63 @@ export interface ShipNotifyProject {
   demo_url: string | null;
 }
 
+// What a reviewer wants to know before opening the review: which kind of ship
+// this is, what the last review said, and what the maker declared. All of it
+// is player- or reviewer-typed text, so it is escaped before it reaches mrkdwn.
+export interface ShipContext {
+  /** Project status before this ship ("needs_changes" = a re-ship after a changes request). */
+  previousStatus: string | null;
+  /** How many times reviewers have asked for changes on it so far. */
+  priorChangeRequests: number;
+  previousReviewNote: string;
+  previousReviewer: string;
+  usedAi: boolean;
+  aiNotes: string;
+  /** "What changed" for an update to an approved project. */
+  updateNotes: string;
+  shipNote: string;
+}
+
+const quoteBlock = (text: string, max: number) =>
+  escapeMrkdwnWithin(text.trim(), max)
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+
+export function shipContextBlocks(ctx: ShipContext, isUpdate: boolean): Record<string, unknown>[] {
+  const changes = ctx.previousStatus === "needs_changes";
+  const kind = isUpdate
+    ? "Update to an approved project"
+    : changes
+      ? `Re-ship after changes were requested (${ctx.priorChangeRequests || 1} request${ctx.priorChangeRequests > 1 ? "s" : ""} so far)`
+      : "First ship";
+  const ai = ctx.usedAi ? `Yes${ctx.aiNotes.trim() ? `\n${quoteBlock(ctx.aiNotes, 500)}` : ""}` : "No AI declared";
+  const blocks: Record<string, unknown>[] = [
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Ship:*\n${kind}` },
+        { type: "mrkdwn", text: `*AI usage:*\n${ai}` },
+      ],
+    },
+  ];
+  const section = (title: string, body: string) =>
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: `*${title}*\n${quoteBlock(body, 1500)}` } });
+  if (changes && ctx.previousReviewNote.trim()) {
+    const by = ctx.previousReviewer.trim() ? ` (${escapeMrkdwnWithin(ctx.previousReviewer.trim(), 80)})` : "";
+    section(`Previous reviewer note${by}:`, ctx.previousReviewNote);
+  }
+  if (isUpdate && ctx.updateNotes.trim()) section("What changed:", ctx.updateNotes);
+  if (ctx.shipNote.trim()) section("Note from the maker:", ctx.shipNote);
+  return blocks;
+}
+
 export async function postShipToSlack(
   project: ShipNotifyProject,
   ownerSlackId: string | null,
   trackedSeconds: number,
   isUpdate: boolean,
+  context?: ShipContext,
 ): Promise<void> {
   const token = process.env.SLACK_BOT_TOKEN;
   const channel = process.env.SHIP_SLACK_CHANNEL || SHIP_CHANNEL_FALLBACK;
@@ -87,6 +139,7 @@ export async function postShipToSlack(
       },
     ],
   });
+  if (context) blocks.push(...shipContextBlocks(context, isUpdate));
   blocks.push({
     type: "actions",
     elements: [
