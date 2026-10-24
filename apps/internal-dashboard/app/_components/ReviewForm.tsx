@@ -124,7 +124,6 @@ function TierAndPayout({
   trialMinHours,
   trialName,
   fundingUsd = 0,
-  showPayout = true,
 }: {
   hours: number;
   tier: number;
@@ -138,8 +137,6 @@ function TierAndPayout({
   trialName?: string;
   /** Hardware funding grant, deducted from the payout like creditBeneficiary's fundingPx. */
   fundingUsd?: number;
-  /** The money breakdown is for the final pass; first-pass reviewers only grade the tier. */
-  showPayout?: boolean;
 }) {
   const [regrading, startRegrade] = useTransition();
   const [regradeError, setRegradeError] = useState("");
@@ -208,9 +205,8 @@ function TierAndPayout({
       {regradeError && <Callout tone="danger" icon="important">{regradeError}</Callout>}
 
       {/* The breakdown is collapsed by default; the summary keeps the number
-          that matters (what the player actually gets) visible. First pass
-          doesn't see it: reviewers there only pick the tier. */}
-      {showPayout && <Details
+          that matters (what the player actually gets) visible. */}
+      <Details
         summary={
           <span className="tabular-nums">
             Payout: {netPx.toLocaleString()} px · ${netUsd.toFixed(2)}
@@ -288,7 +284,7 @@ function TierAndPayout({
           doesn&apos;t wait for your verdict. Community-goal bonuses and any referral boost apply on top and aren&apos;t
           shown.
         </p>
-      </Details>}
+      </Details>
     </div>
   );
 }
@@ -1075,7 +1071,6 @@ export function ReviewForm({
             trialMinHours={trial?.minHours}
             trialName={trial?.name}
             fundingUsd={fundingUsd}
-            showPayout={!!secondPass}
           />
           {trial?.minHours != null &&
             (hours < trial.minHours ? (
