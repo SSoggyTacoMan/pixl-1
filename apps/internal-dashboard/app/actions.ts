@@ -2883,7 +2883,10 @@ async function pushPersonToAirtable(
     .filter((p) => p.linked && p.firstActivity != null && p.lastActivity != null)
     .map((p) => `${p.name} ${fmtDate(p.firstActivity!)}-${fmtDate(p.lastActivity!)}`)
     .join(", ");
+  // Only the Hackatime projects linked to this ship: the report also lists the
+  // maker's other projects with a few minutes of time, whose lapses are unrelated.
   const lapseLinks = hackatimeReport.projects
+    .filter((p) => p.linked)
     .flatMap((p) => p.lapses)
     .map((l) => l.playbackUrl)
     .filter((url): url is string => !!url)
