@@ -17,6 +17,7 @@ import { allowedImageUrl, markdownImagesAllowed } from "../http/imageUrls.js";
 import { isGitRepoUrl } from "./gitRepoUrl.js";
 import { urlAlive } from "./urlLiveness.js";
 import { recordShipForOperations } from "../operations/service.js";
+import { trialItemCreditTarget } from "../trialPayout.js";
 import { z } from "zod";
 import { validate, v, optStr, optBool, optNum, params } from "../http/validate.js";
 import { countJournalImages, journalImagesNeeded, journalTextLength } from "./journalRules.js";
@@ -1178,10 +1179,19 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
   await db.from("projects").update({ trial_prize_order_id: order.id }).eq("id", id);
   // Keeping the prize still pays out the pixels for hours past the minimum.
   if (beyondPx > 0) {
+    // credit_project_pixels pays (target - already earned on this project), so
+    // the target must include earlier payouts - see trialPayout.ts.
+    const { data: paidTxs } = await db
+      .from("pixel_transactions")
+      .select("amount")
+      .eq("project_id", id)
+      .eq("user_id", session.userId)
+      .in("reason", ["project_approved", "review_reverted"]);
+    const alreadyPx = (paidTxs ?? []).reduce((sum, t) => sum + Number(t.amount), 0);
     const { error: pxError } = await db.rpc("credit_project_pixels", {
       p_user_id: session.userId,
       p_project_id: id,
-      p_amount: beyondPx,
+      p_amount: trialItemCreditTarget(alreadyPx, heldPx, prizePx),
       p_hours: Number(project.approved_hours) || 0,
       p_created_by: "trial_reward",
     });
