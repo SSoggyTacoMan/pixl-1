@@ -63,6 +63,29 @@ describe("buildDoubleDip", () => {
     expect(r.systemNote).toContain("no prior entry found for them specifically");
   });
 
+  test("a prior entry without a Slack ID is the owner's when they are alone on the ship", () => {
+    const r = buildDoubleDip(input([match("Future", 4, "")], { trackedSeconds: 3.5 * 3600, otherYsws: true }));
+    expect(r.systemNote).toContain("owner got 4h");
+    expect(r.systemNote).toContain("claims 3.5h here, got 4h before");
+    expect(r.systemNote).toContain("at most 0h");
+    expect(r.systemNote).not.toContain("no overlap to deflate");
+  });
+
+  test("with collaborators an entry without a Slack ID stays anonymous", () => {
+    const r = buildDoubleDip(
+      input([match("Future", 4, "")], {
+        collaborators: [{ slackId: "U0FRIEND", label: "friend", claimedHours: 2 }],
+      }),
+    );
+    expect(r.systemNote).toContain("someone got 4h");
+    expect(r.systemNote).toContain("no prior entry found for them specifically");
+  });
+
+  test("a solo owner still ignores an entry that belongs to another Slack ID", () => {
+    const r = buildDoubleDip(input([match("Arcade", 5, "U0SOMEONE")]));
+    expect(r.systemNote).toContain("no prior entry found for them specifically");
+  });
+
   test("no matches and no import means no note", () => {
     expect(buildDoubleDip(input([])).systemNote).toBe("");
   });
