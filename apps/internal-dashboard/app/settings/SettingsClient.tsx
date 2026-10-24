@@ -313,6 +313,12 @@ export default function SettingsClient({
                   checked={settings.confetti}
                   onChange={(confetti) => update({ confetti })}
                 />
+                <Toggle
+                  label="Pixo DM"
+                  hint="Pixo DMs you after each review: what you earned, or that your pixel is held when you request changes."
+                  checked={settings.reviewDms}
+                  onChange={(reviewDms) => update({ reviewDms })}
+                />
               </div>
             </Card>
           </>

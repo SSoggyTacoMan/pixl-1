@@ -36,6 +36,7 @@ describe("parseStaffSettings", () => {
       reviewPanelWidth: 620,
       reviewRevealName: true,
       reviewNotifyOnResubmit: false,
+      reviewDms: true,
     });
     expect(parseStaffSettings({ theme: "neon", accent: "javascript:alert(1)", extra: 1 })).toEqual(
       DEFAULT_STAFF_SETTINGS,
@@ -91,5 +92,8 @@ describe("parseStaffSettings", () => {
     expect(parseStaffSettings({ reviewNotifyOnResubmit: "true" }).reviewNotifyOnResubmit).toBe(false);
     expect(parseStaffSettings({ reviewNotifyOnResubmit: true }).reviewNotifyOnResubmit).toBe(true);
     expect(parseStaffSettings({ reviewNotifyOnResubmit: false }).reviewNotifyOnResubmit).toBe(false);
+    expect(parseStaffSettings({}).reviewDms).toBe(true);
+    expect(parseStaffSettings({ reviewDms: false }).reviewDms).toBe(false);
+    expect(parseStaffSettings({ reviewDms: "no" }).reviewDms).toBe(true);
   });
 });

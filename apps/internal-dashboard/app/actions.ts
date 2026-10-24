@@ -60,8 +60,6 @@ import {
   type DashEventRow,
   getReviewPayoutSettings,
   ensureJournalShareToken,
-  recentApprovedJustifications,
-  type JournalRow,
 } from "@/lib/db";
 import { buildAuditNote, parseAuditNote, TECHNICAL_FEATURES_MIN } from "@/lib/auditNote";
 import { computeClaimedHours, round1 } from "@/lib/hours";
@@ -71,10 +69,9 @@ import { withAgeOverride } from "@/lib/ageOverrides";
 import { getReviewGrantView } from "@/lib/reviewGrants";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
 import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
-import { fetchHackatimeReport, fetchTrackedSecondsSince, fetchTrustFactor } from "@/lib/hackatime";
-import { fetchCommits, attachCommitStats } from "@/lib/commits";
-import { yswsShipsFor } from "@/lib/ysws";
+import { fetchHackatimeReport, fetchTrackedSecondsSince } from "@/lib/hackatime";
 import { generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
+import { buildAiReviewInput } from "@/lib/aiReviewRun";
 import { serializeGroups } from "@/lib/shopOptions";
 import { SHOP_REGIONS, type ShopRegion } from "@/lib/shopRegions";
 import { SHOP_CATEGORIES, type ShopCategory } from "@/lib/shopCategories";
@@ -381,6 +378,12 @@ async function payoutBasePixels(
   return { full: Math.round(base * mult), blitzApplied: mult > 1 };
 }
 
+// Whether this reviewer wants Pixo's DM after a review (Settings > After a
+// review). On unless they turned it off; a failed read keeps it on.
+async function reviewerWantsDm(slackId: string): Promise<boolean> {
+  return (await getStaffSettings(slackId)).reviewDms;
+}
+
 async function dmPayout(
   slackId: string,
   projectName: string,
@@ -397,6 +400,24 @@ async function dmPayout(
   // time, and shouldn't tell the reviewer their account is broken.
   if (credited === "no_account")
     text += `\n\nHeads up: there's no Pixl game account linked to your Slack, so the pixels couldn't be credited yet. Contact the team to get it sorted.`;
+  if (await reviewerWantsDm(slackId)) await dmUser(slackId, text);
+}
+
+// Pixo's DM for a request for changes that paid nothing right now: either the
+// pixel is held until they approve the resubmission, or it earns none (not the
+// first request). Same sign-off as the payout DM.
+async function dmChangesHeld(
+  slackId: string,
+  projectName: string,
+  heldPixels: number,
+): Promise<void> {
+  if (DM_EXCLUDED_SLACK_IDS.has(slackId) || !(await reviewerWantsDm(slackId))) return;
+  const text =
+    heldPixels > 0
+      ? `You requested changes on "${projectName}". Your ${heldPixels} pixel${heldPixels === 1 ? "" : "s"} ($${(
+          heldPixels * config.economy.pixelValueUsd
+        ).toFixed(2)}) are held and get paid when you approve it after the maker ships again (you have 3 days once they do). Thanks for keeping the queue moving!`
+      : `You requested changes on "${projectName}". Thanks for keeping the queue moving!`;
   await dmUser(slackId, text);
 }
 
@@ -460,6 +481,7 @@ const ASSIGNMENT_FORFEIT_REASON = "did not review the resubmission within 3 days
 async function recordHeldChangesPayout(
   projectId: number,
   access: AdminAccess,
+  projectName: string,
 ): Promise<void> {
   if (DM_EXCLUDED_SLACK_IDS.has(access.session.slackId)) return;
   const { full, blitzApplied } = await payoutBasePixels("needs_changes");
@@ -474,7 +496,11 @@ async function recordHeldChangesPayout(
     paid_pixels: 0,
     blitz_applied: blitzApplied,
   });
-  if (error) console.error("held changes payout insert failed", error.message);
+  if (error) {
+    console.error("held changes payout insert failed", error.message);
+    return;
+  }
+  await dmChangesHeld(access.session.slackId, projectName, full);
 }
 
 // Hands the pixels this verdict paid to the page the reviewer lands on next
@@ -961,61 +987,9 @@ async function creditBeneficiary(
 export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftAction", { review: "ai_draft" }, async (access, projectId: number,
   reviewerHours?: number,): Promise<AiReviewDraft> => {
   if (!projectId) throw new Error("Missing project id");
-
-  const { data: p, error } = await db
-    .from("projects")
-    .select("name, description, repo_url, demo_url, kind, ai_notes, user_id, hackatime_projects")
-    .eq("id", projectId)
-    .single();
-  if (error || !p) throw new Error("Project not found");
-
-  const { data: users } = await db
-    .from("users")
-    .select("slack_id, hackatime_token")
-    .eq("id", p.user_id)
-    .maybeSingle();
-  const slackId = (users?.slack_id as string | undefined) ?? null;
-  const hackatimeToken = (users?.hackatime_token as string | undefined) ?? null;
-  const hackatimeProjects = (p.hackatime_projects as string[] | null) ?? [];
-
-  const { data: journalRows } = await db
-    .from("project_journals")
-    .select("id, project_id, user_id, title, content, hours, approved_hours, created_at, edited_at")
-    .eq("project_id", projectId);
-
-  const [commits, hackatime, trust, claimedHours, yswsMatches, styleExamples] = await Promise.all([
-    (async () => {
-      const c = await fetchCommits(p.repo_url as string | null);
-      await attachCommitStats(c);
-      return c;
-    })(),
-    hackatimeProjects.length
-      ? fetchHackatimeReport(slackId, hackatimeToken, hackatimeProjects)
-      : Promise.resolve(null),
-    fetchTrustFactor(slackId),
-    claimedHoursFor(projectId),
-    yswsShipsFor(slackId, p.repo_url as string | null, p.demo_url as string | null).then((rows) =>
-      rows.filter((s) => s.urlMatch),
-    ),
-    recentApprovedJustifications(),
-  ]);
-
-  return generateAiReviewDraft({
-    projectName: p.name as string,
-    description: (p.description as string | null) ?? "",
-    repoUrl: p.repo_url as string | null,
-    demoUrl: p.demo_url as string | null,
-    kind: p.kind as string,
-    aiNotes: (p.ai_notes as string | null) ?? "",
-    claimedHours,
-    reviewerHours: reviewerHours ?? claimedHours,
-    commits,
-    journals: (journalRows ?? []) as unknown as JournalRow[],
-    hackatime,
-    trust,
-    yswsMatches,
-    styleExamples,
-  });
+  // The data gathering lives in lib/aiReviewRun.ts so the batch route that
+  // pre-fills drafts (app/api/cron/ai-drafts) builds the exact same prompt.
+  return generateAiReviewDraft(await buildAiReviewInput(projectId, reviewerHours));
 });
 
 // Two-pass review. A shipped project always gets a first pass from *some*
@@ -1432,9 +1406,12 @@ export const reviewProject = guardedAction("reviewProject", "reviewer", async (a
         .select("verdict, status")
         .eq("project_id", projectId);
       if (earnsChangesHold(priorPayouts ?? [])) {
-        if (takesAssignment) await recordHeldChangesPayout(projectId, access);
+        if (takesAssignment) await recordHeldChangesPayout(projectId, access, project.name);
         else if (!activeAssignee)
           rewardPx = await recordSettledPayout(projectId, access, "needs_changes", project.name);
+      } else {
+        // A later request for changes pays nothing, but Pixo still says thanks.
+        await dmChangesHeld(access.session.slackId, project.name, 0);
       }
     }
     const changesOwnerBody = `"${project.name}" needs changes before it can be approved , ${playerFacingReviewer}:\n\n${note}\n\nUpdate your project and ship it again.`;
