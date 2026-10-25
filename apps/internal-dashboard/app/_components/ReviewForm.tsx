@@ -621,6 +621,13 @@ export function ReviewForm({
       draft = null;
     }
     if (draft) {
+      // A local copy is saved on any edit (tier, hours...), so it can hold a
+      // blank text box. Blank fields must not hide text the server draft has,
+      // such as the AI draft pre-filled in technical features.
+      for (const [k, v] of Object.entries(serverDraft?.draft ?? {})) {
+        const mine = draft[k];
+        if (typeof v === "string" && v.trim() !== "" && typeof mine === "string" && mine.trim() === "") draft[k] = v;
+      }
       setDraftSource("local");
       // Push it to the server right away, so a restored draft the reviewer
       // never edits again still reaches whoever does the real pass.
