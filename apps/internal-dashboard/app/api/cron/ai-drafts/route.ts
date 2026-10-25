@@ -40,7 +40,17 @@ export async function GET(req: Request) {
     req,
   );
 
-  const queue = (await listShippedProjects(undefined, undefined, { includeClaimed: true })).slice(0, limit);
+  // `limit` counts projects that can still take a draft, not queue positions,
+  // so the ones already drafted don't use up the budget.
+  const waiting = (await listShippedProjects(undefined, undefined, { includeClaimed: true })).map((p) => Number(p.id));
+  const { data: states } = await db.from("projects").select("id, review_draft, review_draft_by").in("id", waiting);
+  const stateOf = new Map((states ?? []).map((s) => [Number(s.id), s]));
+  const queue = waiting
+    .filter((id) => {
+      const s = stateOf.get(id);
+      return !!s && mayWriteAiDraft(s, overwrite);
+    })
+    .slice(0, limit);
   const saved: number[] = [];
   const skipped: number[] = [];
   const failed: { id: number; error: string }[] = [];
@@ -78,7 +88,7 @@ export async function GET(req: Request) {
     }
   };
 
-  const pool = queue.map((p) => Number(p.id));
+  const pool = [...queue];
   await Promise.all(
     Array.from({ length: CONCURRENCY }, async () => {
       while (pool.length > 0) await work(pool.shift() as number);
