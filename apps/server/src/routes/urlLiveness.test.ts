@@ -196,13 +196,41 @@ describe("urlAlive - redirects", () => {
     }
   });
 
-  test("a redirect loop is capped at 5 hops instead of hanging", async () => {
+  test("a redirect loop is capped at 8 hops instead of hanging", async () => {
     const { port, close, hits } = await startServer((_req, res) => res.writeHead(302, { location: "/" }).end());
     try {
       const lookupImpl = lookupOf({ address: "127.0.0.1", family: 4 });
       const result = await urlAlive(`http://redirect-loop.test:${port}/`, { lookupImpl, isBlockedIp: allowAll });
       expect(result).toBe(false);
-      expect(hits()).toBe(5);
+      expect(hits()).toBe(8);
+    } finally {
+      await close();
+    }
+  });
+
+  test("a 6-hop redirect chain still resolves (Streamlit needs 4, with slack)", async () => {
+    const { port, close } = await startServer((req, res) => {
+      const n = Number(req.url?.slice(1) || 0);
+      if (n < 5) return void res.writeHead(302, { location: `/${n + 1}` }).end();
+      res.writeHead(200).end("ok");
+    });
+    try {
+      const lookupImpl = lookupOf({ address: "127.0.0.1", family: 4 });
+      expect(await urlAlive(`http://long-chain.test:${port}/`, { lookupImpl, isBlockedIp: allowAll })).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  test("one dropped connection on a hop is retried instead of failing the check", async () => {
+    let seen = 0;
+    const { port, close } = await startServer((req, res) => {
+      if (seen++ === 0) return void req.socket.destroy();
+      res.writeHead(200).end("ok");
+    });
+    try {
+      const lookupImpl = lookupOf({ address: "127.0.0.1", family: 4 });
+      expect(await urlAlive(`http://flaky.test:${port}/`, { lookupImpl, isBlockedIp: allowAll })).toBe(true);
     } finally {
       await close();
     }
