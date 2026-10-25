@@ -123,7 +123,11 @@ function makeSafeLookup(lookupImpl: LookupImpl, isBlocked: (ip: string) => boole
 // UA, no cookies) even for a game that's genuinely live and playable , every
 // roblox.com demo link was getting rejected as "unreachable". Skip the fetch for
 // these hosts once the SSRF guard clears them; still no bypass of hostIsPublic.
-const TRUSTED_UNFETCHABLE_HOSTS = new Set(["roblox.com"]);
+// share.streamlit.io answers 444 to every request from the cluster's egress IP,
+// and every *.streamlit.app demo bounces through it first. The app's own host is
+// still fetched, but Streamlit bounces live and nonexistent apps alike, so a
+// dead Streamlit link passes too (reviewers still open the demo).
+const TRUSTED_UNFETCHABLE_HOSTS = new Set(["roblox.com", "share.streamlit.io"]);
 
 export function isTrustedUnfetchableHost(hostname: string): boolean {
   return TRUSTED_UNFETCHABLE_HOSTS.has(hostname.replace(/^www\./, "").toLowerCase());

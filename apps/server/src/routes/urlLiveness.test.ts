@@ -102,6 +102,7 @@ describe("hostIsPublic", () => {
 describe("isTrustedUnfetchableHost", () => {
   test("roblox.com is trusted", () => expect(isTrustedUnfetchableHost("roblox.com")).toBe(true));
   test("www.roblox.com is trusted (www stripped)", () => expect(isTrustedUnfetchableHost("www.roblox.com")).toBe(true));
+  test("Streamlit's auth bounce host is trusted", () => expect(isTrustedUnfetchableHost("share.streamlit.io")).toBe(true));
   test("an unrelated host is not trusted", () => expect(isTrustedUnfetchableHost("example.com")).toBe(false));
 });
 
