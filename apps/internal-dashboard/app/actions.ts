@@ -71,7 +71,7 @@ import { getReviewGrantView } from "@/lib/reviewGrants";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
 import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
 import { fetchHackatimeReport, fetchTrackedSecondsSince } from "@/lib/hackatime";
-import { generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
+import { AiProviderError, aiProviderMessage, generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
 import { buildAiReviewInput } from "@/lib/aiReviewRun";
 import { serializeGroups } from "@/lib/shopOptions";
 import { SHOP_REGIONS, type ShopRegion } from "@/lib/shopRegions";
@@ -986,11 +986,19 @@ async function creditBeneficiary(
 // credited hours, and nothing it returns is saved/submitted on its own, the
 // reviewer copies whatever they want into the real form fields themselves.
 export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftAction", { review: "ai_draft" }, async (access, projectId: number,
-  reviewerHours?: number,): Promise<AiReviewDraft> => {
+  reviewerHours?: number,): Promise<{ ok: true; draft: AiReviewDraft } | { ok: false; error: string }> => {
   if (!projectId) throw new Error("Missing project id");
   // The data gathering lives in lib/aiReviewRun.ts so the batch route that
   // pre-fills drafts (app/api/cron/ai-drafts) builds the exact same prompt.
-  return generateAiReviewDraft(await buildAiReviewInput(projectId, reviewerHours));
+  const input = await buildAiReviewInput(projectId, reviewerHours);
+  try {
+    return { ok: true, draft: await generateAiReviewDraft(input) };
+  } catch (e) {
+    // Returned, not thrown: production strips thrown messages to React #441.
+    if (!(e instanceof AiProviderError)) throw e;
+    console.error("generateAiReviewDraftAction:", e.message);
+    return { ok: false, error: aiProviderMessage(e.status) };
+  }
 });
 
 // Two-pass review. A shipped project always gets a first pass from *some*

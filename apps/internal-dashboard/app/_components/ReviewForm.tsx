@@ -719,7 +719,9 @@ export function ReviewForm({
       try {
         // The hours typed in the form, so the deflation draft explains the
         // number the reviewer already picked.
-        setAiDraft(await generateAiReviewDraftAction(projectId, hours));
+        const r = await generateAiReviewDraftAction(projectId, hours);
+        if (r.ok) setAiDraft(r.draft);
+        else setAiError(`Couldn't generate a draft: ${r.error}`);
       } catch (e) {
         setAiError(actionErrorMessage(e, "generate a draft"));
       }
