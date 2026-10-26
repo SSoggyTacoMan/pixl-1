@@ -9,7 +9,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { REVIEW_MACROS, expandMacro } from "@/lib/reviewMacros";
+import { REVIEW_MACROS, expandMacro, hasUnfilledMacroPlaceholder } from "@/lib/reviewMacros";
 import {
   reviewProject,
   applySubmissionEdits,
@@ -833,6 +833,10 @@ export function ReviewForm({
       setStepError(message);
       return false;
     };
+    if (verdict === "needs_changes" && hasUnfilledMacroPlaceholder(noteRef.current?.value ?? "")) {
+      noteRef.current?.focus();
+      return fail(3, "Specify what's missing from the README before requesting changes.");
+    }
     // Hours are only credited on an approve, so only an approve needs the reason.
     if (verdict === "approved" && needsDeflationReason && !deflationReasonRef.current?.value.trim())
       return fail(2, "Say why you're lowering the hours before deciding.");

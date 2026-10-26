@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { REVIEW_MACROS, expandMacro } from "./reviewMacros";
+import { REVIEW_MACROS, expandMacro, hasUnfilledMacroPlaceholder } from "./reviewMacros";
 
 const AI = REVIEW_MACROS.find((m) => m.trigger === "/ai")!;
 const FRAUD = REVIEW_MACROS.find((m) => m.trigger === "/fraud")!;
@@ -68,15 +68,17 @@ describe("/readmeai", () => {
 });
 
 describe("/badreadme", () => {
-  test("becomes the missing-requirements README message and puts the caret after it", () => {
+  test("becomes the missing-requirements README message and puts the caret at insertion point without placeholder X", () => {
     const out = expandMacro("/badreadme", 10);
     expect(out?.value).toBe(BAD_README.text);
-    expect(out?.caret).toBe(BAD_README.text.length);
+    expect(out?.value).not.toContain("missing X");
+    expect(out?.caret).toBe(BAD_README.caretOffset ?? BAD_README.text.length);
   });
 
   test("expands mid-note and is case-insensitive", () => {
     const out = expandMacro("Hey! /BADREADME", 15);
     expect(out?.value).toBe(`Hey! ${BAD_README.text}`);
+    expect(out?.caret).toBe("Hey! ".length + (BAD_README.caretOffset ?? BAD_README.text.length));
     expect(expandMacro("/badread", 8)).toBeNull();
   });
 });
@@ -108,5 +110,23 @@ describe("the /ai message", () => {
 
   test("has no em dashes", () => {
     expect(AI.text).not.toContain("—");
+  });
+});
+
+describe("hasUnfilledMacroPlaceholder", () => {
+  test("catches empty expanded /badreadme without edit", () => {
+    expect(hasUnfilledMacroPlaceholder(BAD_README.text)).toBe(true);
+    expect(hasUnfilledMacroPlaceholder("...missing ) :(...")).toBe(true);
+    expect(hasUnfilledMacroPlaceholder("...missing  ) :(...")).toBe(true);
+  });
+
+  test("catches legacy missing X placeholder", () => {
+    expect(hasUnfilledMacroPlaceholder("noticed your readme is missing X :(")).toBe(true);
+  });
+
+  test("passes when requirements are filled in or note is normal", () => {
+    expect(hasUnfilledMacroPlaceholder(BAD_README.text.replace("missing ) :(", "missing setup instructions) :("))).toBe(false);
+    expect(hasUnfilledMacroPlaceholder("Looks great, just need to add screenshots.")).toBe(false);
+    expect(hasUnfilledMacroPlaceholder("")).toBe(false);
   });
 });
