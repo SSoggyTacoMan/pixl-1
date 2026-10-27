@@ -87,7 +87,7 @@ export default async function CalcPage({ searchParams }: { searchParams: Promise
   const mineStats = picked && pickedHours !== null && pickedTier !== null ? payoutStats(pickedHours, pickedTier, baseRe) : null;
 
   return (
-    <div className="max-w-[720px]">
+    <div className="mx-auto max-w-[720px]">
       <section className="relative mt-2 border-2 border-stroke bg-panel px-[26px] py-6 shadow-drop">
         <h1 className={pageTitle}>PAYOUT CALCULATOR</h1>
         <div className={pageSub}>SEE WHAT A SHIP IS WORTH BEFORE YOU SHIP IT.</div>
