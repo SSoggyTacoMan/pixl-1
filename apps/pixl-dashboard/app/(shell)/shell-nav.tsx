@@ -19,16 +19,16 @@ const DARK_PALETTES = [
 const navLinkClass = cn(
   "group flex items-center gap-[10px] border-2 border-transparent px-[10px] py-[6px]",
   "font-pixel text-[14.5px] font-medium tracking-[.8px] text-ink",
-  // No hover state: the colours are pinned so the base a:hover gold doesn't show through.
-  "hover:text-ink",
+  // Hover only adds a background; text stays pinned so the base a:hover gold doesn't show through.
+  "transition-[background-color] duration-[130ms] hover:bg-panel-2 hover:text-ink",
   "data-[active=true]:border-stroke data-[active=true]:bg-accent data-[active=true]:text-panel-deep",
-  "data-[active=true]:hover:text-panel-deep",
+  "data-[active=true]:hover:bg-accent data-[active=true]:hover:text-panel-deep",
   "max-[900px]:flex-1 max-[900px]:flex-col max-[900px]:justify-center max-[900px]:gap-[3px] max-[900px]:border-0",
   "max-[900px]:px-[2px] max-[900px]:pt-[8px] max-[900px]:pb-[6px] max-[900px]:text-center",
   "max-[900px]:text-[10px] max-[900px]:tracking-[.5px]",
   "max-[900px]:data-[active=true]:bg-transparent max-[900px]:data-[active=true]:text-accent",
   "max-[900px]:data-[active=true]:shadow-[inset_0_3px_0_var(--accent)]",
-  "max-[900px]:data-[active=true]:hover:text-accent",
+  "max-[900px]:data-[active=true]:hover:bg-panel-2 max-[900px]:data-[active=true]:hover:text-accent",
 );
 const navIconClass = cn(
   "flex size-[26px] shrink-0 items-center justify-center border-2 border-stroke bg-panel-deep text-ink",
@@ -40,7 +40,7 @@ const navIconClass = cn(
 const sheetLinkClass = cn(
   "flex flex-col items-center justify-center gap-[5px] border-2 border-stroke bg-panel-deep px-[4px] py-[12px]",
   "text-center font-pixel text-[11px] font-medium tracking-[.5px] text-ink",
-  "transition-[color,background-color] duration-[130ms] hover:bg-transparent hover:text-accent",
+  "transition-[background-color] duration-[130ms] hover:bg-panel-2 hover:text-ink",
   "data-[active=true]:bg-accent data-[active=true]:text-panel-deep",
   "data-[active=true]:hover:bg-accent data-[active=true]:hover:text-panel-deep",
 );
@@ -244,13 +244,13 @@ export function ShellNav({
           <a
             className={cn(
               buttonVariants({ variant: "dark" }),
-              "group bg-game-cta text-game-cta-ink hover:bg-game-cta hover:text-game-cta-ink",
+              "bg-game-cta text-game-cta-ink hover:bg-[color-mix(in_srgb,var(--game-cta)_85%,#fff)] hover:text-game-cta-ink",
             )}
             href={game}
             target="_blank"
             rel="noopener noreferrer"
           >
-            <span className="inline-block transition-transform duration-150 group-hover:-translate-x-[3px]">◄</span>{" "}
+            <span>◄</span>{" "}
             PLAY THE GAME
           </a>
           {/* Clears journal drafts and tour progress from this browser, then posts. */}

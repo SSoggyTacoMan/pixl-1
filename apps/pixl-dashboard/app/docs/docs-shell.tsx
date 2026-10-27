@@ -19,7 +19,7 @@ const DARK_PALETTES = [
 const sectionLink = cn(
   "block border-2 border-transparent py-[7px] pr-[12px] pl-[20px] font-sans text-[15px] font-medium leading-[1.4] text-ink no-underline",
   "[transition:color_.13s_ease,background-color_.13s_ease,border-color_.13s_ease,transform_.12s_ease]",
-  "hover:translate-x-[3px] hover:border-stroke hover:bg-ink hover:text-panel-deep",
+  "hover:border-stroke hover:bg-ink hover:text-panel-deep",
 );
 const sectionLinkActive = "border-stroke bg-accent font-semibold text-panel-deep hover:bg-accent";
 
