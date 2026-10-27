@@ -154,11 +154,8 @@ describe("routes", () => {
     expect(g).not.toMatch(/\.message/);
     expect(g).toContain("errorCode(e)");
   });
-  test("oauth state, live-mode and session cookies are Secure", () => {
+  test("oauth state and session cookies are Secure", () => {
     expect(src("app/api/auth/login/route.ts")).toMatch(/secure: true/);
-    const a = src("app/actions.ts");
-    expect(a).toMatch(/LIVE_MODE_COOKIE, on \? "1" : "0", \{ httpOnly: true, secure: true/);
-    expect(a).toMatch(/LIVE_SHOW_REVIEWERS_COOKIE, "1", \{ httpOnly: true, secure: true/);
     expect(src("lib/session.ts")).toContain("secure: secureCookies()");
   });
   test("shop image URL fetch is pinned and capped", () => {

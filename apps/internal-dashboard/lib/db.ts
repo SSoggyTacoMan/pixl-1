@@ -7,7 +7,6 @@ import { decryptPII } from "./crypto";
 import { reForProject } from "@/app/_generated/config";
 import { parseAuditNote } from "./auditNote";
 import { foldOrderCounts, type OrderCounts } from "./fulfillmentView";
-import { reviewerName } from "./liveMode";
 import { slackIdFromActorName } from "./reviewAccess";
 import { PRECHECK_HIDE_MS, isPrecheckRunning } from "./precheck";
 import { lockedForViewer, openableQueueIds, type AssignmentFields } from "./reviewAssignment";
@@ -2896,13 +2895,9 @@ export async function listActivityFeed(opts: {
   q?: string;
   /** ISO timestamp; drops anything older. */
   since?: string;
-  /** Live mode: staff names (reviewers, team actions) other than this Slack
-   * id become "Reviewer" (see reviewerName in lib/liveMode.ts). */
-  maskNames?: { viewer: string };
 }): Promise<FeedItem[]> {
   const limit = opts.limit ?? 25;
-  const staff = (label: string | null | undefined) =>
-    opts.maskNames ? reviewerName(label, opts.maskNames.viewer, true) : stripId(label ?? "");
+  const staff = (label: string | null | undefined) => stripId(label ?? "");
   const [mods, team, audits, txs, payouts] = await Promise.all([
     opts.mod
       ? db.from("mod_actions").select("*").order("created_at", { ascending: false }).limit(limit)
@@ -2938,7 +2933,7 @@ export async function listActivityFeed(opts: {
   for (const m of modRows)
     items.push({
       kind: "mod",
-      text: `${staff(m.actor)} · ${m.action.replaceAll("_", " ")} · ${opts.maskNames ? "a player" : (names.get(m.user_id) ?? m.user_id)}`,
+      text: `${staff(m.actor)} · ${m.action.replaceAll("_", " ")} · ${names.get(m.user_id) ?? m.user_id}`,
       detail: m.detail,
       href: `/players/${m.user_id}`,
       when: m.created_at,
@@ -2946,7 +2941,7 @@ export async function listActivityFeed(opts: {
   for (const t of (team.data ?? []) as TeamLogRow[])
     items.push({
       kind: "team",
-      text: `${staff(t.actor)} · ${t.action} · ${opts.maskNames ? staff(t.slack_id) : t.name || t.slack_id}`,
+      text: `${staff(t.actor)} · ${t.action} · ${t.name || t.slack_id}`,
       detail: t.reason || `${(t.before ?? []).join(", ") || "nothing"} → ${(t.after ?? []).join(", ") || "nothing"}`,
       href: "/reviewers",
       when: t.created_at,
@@ -2982,7 +2977,7 @@ export async function listActivityFeed(opts: {
   for (const t of txRows)
     items.push({
       kind: "pixels",
-      text: `${opts.maskNames ? "A player" : (names.get(t.user_id) ?? t.user_id)} ${Number(t.amount) >= 0 ? "earned" : "lost"} ${Math.abs(Number(t.amount))} pixels`,
+      text: `${names.get(t.user_id) ?? t.user_id} ${Number(t.amount) >= 0 ? "earned" : "lost"} ${Math.abs(Number(t.amount))} pixels`,
       detail: t.reason.replaceAll("_", " "),
       href: `/players/${t.user_id}`,
       when: t.created_at,

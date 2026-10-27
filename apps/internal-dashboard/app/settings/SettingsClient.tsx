@@ -128,7 +128,7 @@ export default function SettingsClient({
   account,
 }: {
   initial: StaffSettings;
-  account: { name: string; slackId: string | null };
+  account: { name: string; slackId: string };
 }) {
   const [settings, setSettings] = useState(initial);
   const [section, setSection] = useState<Section>("appearance");
@@ -330,7 +330,7 @@ export default function SettingsClient({
             <DescriptionList
               items={[
                 ["Name", account.name],
-                ["Slack ID", account.slackId ? <Mono key="slack">{account.slackId}</Mono> : "Hidden in live mode"],
+                ["Slack ID", <Mono key="slack">{account.slackId}</Mono>],
               ]}
             />
             <p className="hc-caption mt-3 text-sm">

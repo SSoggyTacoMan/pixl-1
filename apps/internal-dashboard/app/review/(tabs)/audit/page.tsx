@@ -2,8 +2,6 @@ import { redirect } from "next/navigation";
 import { requirePage, requireGuidelinesAck } from "@/lib/guard";
 import { canSeeBuilderPII } from "@/lib/reviewAccess";
 import { listReviewAudits } from "@/lib/db";
-import { getLiveMode } from "@/lib/liveModeServer";
-import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { parseAuditNote, type AuditHeader } from "@/lib/auditNote";
 import { Badge, Card, EmptyState, Muted, TextLink, formatDateTime, type Tone } from "@/app/_ui/ui";
 
@@ -32,7 +30,6 @@ export default async function AuditNotesPage() {
   const access = await requirePage("reviewer");
   await requireGuidelinesAck(access);
   if (!access.isOwner) redirect("/review");
-  if (await getLiveMode()) return <LiveBlocked what="Audit notes" reason="These are internal reviewer notes" />;
   // Legal names only for owners/final reviewers.
   const audits = await listReviewAudits(200, undefined, { realNames: canSeeBuilderPII(access) });
   const withNotes = audits.filter((a) => a.audit_note && a.audit_note.trim() !== "");

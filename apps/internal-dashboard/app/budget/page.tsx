@@ -1,7 +1,5 @@
 import Link from "next/link";
 import { requirePage } from "@/lib/guard";
-import { getLiveMode } from "@/lib/liveModeServer";
-import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import { getBudgetData } from "@/lib/budget";
 import { nominalValueCents } from "@/lib/budgetMath";
 import { config } from "@/app/_generated/config";
@@ -24,9 +22,6 @@ const monthLabel = (value: string) =>
 
 export default async function BudgetPage() {
   await requirePage("owner");
-  if (await getLiveMode()) {
-    return <LiveBlocked what="Budget" reason="This page contains private financial and reward information." />;
-  }
 
   const data = await getBudgetData();
   const rewardFaceValueCents = nominalValueCents(data.shop.redeemedPx, config.economy.pixelValueUsd);

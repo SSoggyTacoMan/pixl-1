@@ -73,8 +73,7 @@ function displayName(label: string): string {
 
 // `audits` is expected newest first (as the stats page queries it), so the
 // first label seen for a Slack id is that reviewer's most recent name.
-// `nameFor` turns the full "Name (SlackID)" label into what's shown (the
-// stats page passes live mode's reviewerName so others can be hidden).
+// `nameFor` turns the full "Name (SlackID)" label into what's shown.
 export function summarizeWindow(
   audits: AuditLike[],
   since: number | null,

@@ -6,7 +6,6 @@ import { FUNDING_ORDER_PREFIX } from "@/lib/eligibility/policy";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
-import { LIVE_MODE_COOKIE, LIVE_SHOW_REVIEWERS_COOKIE } from "@/lib/liveMode";
 import { unshipResetFields, UNSHIPPABLE_STATUSES } from "@/lib/unship";
 import {
   config,
@@ -3479,18 +3478,6 @@ export const holdReview = guardedAction("holdReview", "reviewer", async (access,
   revalidatePath("/review");
 });
 
-// Global "live mode" (see lib/liveMode.ts): hides players' real identities
-// across the whole dashboard so it can be screen-shared. A cookie, not a DB flag,
-// so it only ever affects the person who flipped it.
-export const setLiveMode = guardedAction("setLiveMode", "staff", async (access, formData: FormData): Promise<void> => {
-  const on = formData.get("on") === "1";
-  const jar = await cookies();
-  jar.set(LIVE_MODE_COOKIE, on ? "1" : "0", { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 12 });
-  // Every new live session starts with other reviewers' names hidden again.
-  jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
-  revalidatePath("/", "layout");
-});
-
 // The settings menu in the top bar. Cosmetic preferences only, stored against
 // the signed-in staff member, so the input is re-parsed rather than trusted.
 export const saveStaffSettings = guardedAction("saveStaffSettings", "staff", async (access, input: StaffSettings): Promise<{ ok: boolean }> => {
@@ -3510,16 +3497,6 @@ export const saveReviewPanelWidth = guardedAction("saveReviewPanelWidth", "revie
     reviewPanelWidth: clampReviewPanelWidth(width),
   });
   return { ok };
-});
-
-// The "Show reviewer names" button: while live, reveals (or re-hides) other
-// reviewers' names. A session cookie, cleared again by setLiveMode.
-export const setShowReviewerNames = guardedAction("setShowReviewerNames", "staff", async (access, formData: FormData): Promise<void> => {
-  const show = formData.get("show") === "1";
-  const jar = await cookies();
-  if (show) jar.set(LIVE_SHOW_REVIEWERS_COOKIE, "1", { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
-  else jar.delete(LIVE_SHOW_REVIEWERS_COOKIE);
-  revalidatePath("/", "layout");
 });
 
 export const releaseReviewHold = guardedAction("releaseReviewHold", "reviewer", async (access, formData: FormData): Promise<void> => {

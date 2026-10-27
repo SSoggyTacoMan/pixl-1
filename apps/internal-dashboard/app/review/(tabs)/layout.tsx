@@ -2,8 +2,6 @@ import { redirect } from "next/navigation";
 import { requirePage, landingFor } from "@/lib/guard";
 import { countPendingReviews, countSpotCheckProjects, countProposedBanProjects } from "@/lib/db";
 import { ReviewTabs } from "@/app/_components/ReviewTabs";
-import { ShowReviewerNames } from "@/app/_components/ShowReviewerNames";
-import { getLiveMode, getHideReviewers } from "@/lib/liveModeServer";
 import { PageHeader } from "@/app/_ui/ui";
 
 export const dynamic = "force-dynamic";
@@ -20,12 +18,10 @@ export default async function ReviewLayout({ children }: { children: React.React
   // Spot check is worked by owners and final reviewers (second_pass).
   const canSpotCheck = access.isOwner || access.canSecondPass;
   // "Needs review" is first-pass ("shipped") work only, for every viewer.
-  const [pending, spotCheckCount, proposedBanCount, live, hideReviewers] = await Promise.all([
+  const [pending, spotCheckCount, proposedBanCount] = await Promise.all([
     fraudOnly ? Promise.resolve(undefined) : countPendingReviews({ viewer: access.session.slackId }),
     canSpotCheck ? countSpotCheckProjects() : Promise.resolve(undefined),
     access.isOwner ? countProposedBanProjects() : Promise.resolve(undefined),
-    getLiveMode(),
-    getHideReviewers(),
   ]);
 
   return (
@@ -33,9 +29,6 @@ export default async function ReviewLayout({ children }: { children: React.React
       <PageHeader
         title="Review"
         description={fraudOnly ? "Robert's fraud scores." : "Ship queue, verdict history and reviewer stats."}
-        // While live, other reviewers' names are hidden on every review tab;
-        // this reveals (or re-hides) them.
-        actions={live ? <ShowReviewerNames hidden={hideReviewers} /> : undefined}
       />
       <ReviewTabs
         isSuper={access.isOwner}

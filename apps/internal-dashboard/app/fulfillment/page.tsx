@@ -1,8 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requirePage } from "@/lib/guard";
-import { getLiveMode } from "@/lib/liveModeServer";
-import { LiveBlocked } from "@/app/_components/LiveBlocked";
 import {
   listShopOrders,
   listFulfillers,
@@ -175,7 +173,6 @@ export default async function FulfillmentPage({
   searchParams: Promise<{ status?: string; mine?: string; q?: string; order?: string; elig?: string; verify?: string; sort?: string }>;
 }) {
   const access = await requirePage("fulfiller");
-  if (await getLiveMode()) return <LiveBlocked what="Fulfillment" />;
   const me = access.session.slackId;
   const { status, mine, q, order: orderParam, elig, verify, sort } = await searchParams;
   const eligFilter = parseEligibilityFilter(elig);

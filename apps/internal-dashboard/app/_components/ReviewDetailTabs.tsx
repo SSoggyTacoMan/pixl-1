@@ -12,7 +12,7 @@ import { CommitList } from "@/app/_components/CommitList";
 import { renderMarkdown } from "@/lib/markdown";
 import { HackatimePanel } from "@/app/_components/HackatimePanel";
 import { setJournalHours } from "@/app/actions";
-import { useLiveMode, useReviewerName } from "@/app/_components/LiveMode";
+import { staffName } from "@/lib/staffName";
 import { parseAuditNote, type AuditHeader } from "@/lib/auditNote";
 import { isSafeUrl } from "@/lib/safeUrl";
 import { Badge, Button, Callout, Card, CountBadge, EmptyState, formatDate, formatDateTime, Input, Mono, Muted, Textarea, TextLink, type Tone } from "@/app/_ui/ui";
@@ -194,10 +194,6 @@ export function ReviewDetailTabs({
   /** Owner or second-pass reviewer only - hidden from first-pass-only reviewers. */
   canViewAiTime: boolean;
 }) {
-  // Live mode keeps each past review's verdict and hours but drops its
-  // internal audit-note sections (technical features, deflation reason, ...).
-  const live = useLiveMode();
-  const reviewerName = useReviewerName();
   const [tab, setTab] = useState<TabKey>("commits");
   const [commitsState, setCommitsState] = useState(commits);
 
@@ -451,7 +447,7 @@ export function ReviewDetailTabs({
           <ul>
             {reviewAudits.map((v) => {
               const meta = VERDICT_LABEL[v.verdict] ?? { label: v.verdict.replaceAll("_", " "), tone: "neutral" as const };
-              const sections = v.audit_note && !live ? parseAuditNote(v.audit_note) : null;
+              const sections = v.audit_note ? parseAuditNote(v.audit_note) : null;
               const sectionKeys = sections
                 ? (Object.keys(SECTION_LABEL) as AuditHeader[]).filter((h) => sections[h]?.trim())
                 : [];
@@ -462,7 +458,7 @@ export function ReviewDetailTabs({
                     <summary>
                       <Badge tone={meta.tone}>{meta.label}</Badge>
                       <span className="min-w-0 flex-1">
-                        {reviewerName(v.reviewer)}
+                        {staffName(v.reviewer)}
                         <Muted>
                           {v.approved_hours !== null && v.approved_hours !== v.claimed_hours
                             ? ` · ${v.claimed_hours}h → ${v.approved_hours}h credited`

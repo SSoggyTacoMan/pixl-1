@@ -8,7 +8,7 @@ import type { ShippedProject } from "@/lib/db";
 import type { QueueLock } from "@/lib/reviewAssignment";
 import { LevelBadge, StatusBadge, FundingBadge, TypeBadge, BeaconBadge } from "@/app/_components/ProjectBadges";
 import { BlackoutBadge } from "@/app/_components/BlackoutBadge";
-import { useLiveMode, useReviewerName } from "@/app/_components/LiveMode";
+import { staffName } from "@/lib/staffName";
 import { RowSelect, SelectAllBox } from "@/app/_components/MassSelect";
 import { Badge, ButtonLink, EmptyRow, Mono, Muted, Table } from "@/app/_ui/ui";
 
@@ -59,12 +59,8 @@ export function ReviewTable({
 }) {
   const blackoutSet = new Set(blackoutIds);
   const router = useRouter();
-  const live = useLiveMode();
-  const reviewerName = useReviewerName();
-  // claimedBy is a bare Slack id: while live (names not revealed) anyone but
-  // the viewer is just "A reviewer"; otherwise their Slack handle.
-  const claimer = (id: string) =>
-    reviewerName(id) === "Reviewer" ? "A reviewer" : (handles.get(id) ?? "someone");
+  // claimedBy is a bare Slack id: show their Slack handle.
+  const claimer = (id: string) => handles.get(id) ?? "someone";
   // Only lists mixing in second_review rows have a first-pass reviewer to
   // show, so skip the column instead of rendering it always empty.
   const showFirstPass = rows.some((p) => p.first_pass_by);
@@ -83,14 +79,10 @@ export function ReviewTable({
       {rows.map((p) => {
         // Never the legal name: these rows are client props, and the queue
         // queries don't select real_name (see QUEUE_SELECT, lib/db.ts).
-        const maker = live
-          ? "Builder"
-          : (p.users?.slack_id && handles.get(p.users.slack_id)) ||
-            p.users?.display_name ||
-            p.users?.slack_id ||
-            p.user_id;
+        const maker =
+          (p.users?.slack_id && handles.get(p.users.slack_id)) || p.users?.display_name || p.users?.slack_id || p.user_id;
         const href = `/review/${p.id}`;
-        const telescreenId = !live ? hackatimeUserIds?.get(p.id) : undefined;
+        const telescreenId = hackatimeUserIds?.get(p.id);
         const lock = locks?.[Number(p.id)];
         const lockLabel = !lock
           ? null
@@ -148,7 +140,7 @@ export function ReviewTable({
               </div>
             </td>
             <td>
-              {makerLinks && !live ? (
+              {makerLinks ? (
                 <Link
                   href={`/players/${p.user_id}`}
                   prefetch={false}
@@ -183,7 +175,7 @@ export function ReviewTable({
             </td>
             {showFirstPass && (
               <td>
-                <span className="block max-w-[180px] truncate">{reviewerName(p.first_pass_by, "-")}</span>
+                <span className="block max-w-[180px] truncate">{staffName(p.first_pass_by, "-")}</span>
                 {p.first_pass_at && (
                   <Muted className="block text-xs">
                     <span title={new Date(p.first_pass_at).toUTCString()}>
