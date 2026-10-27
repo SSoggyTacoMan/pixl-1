@@ -299,8 +299,10 @@ router.get("/api/projects", async (req, res) => {
 
 // A hardware "design" ship (project_type "cad") never got built, so a
 // schematic/PCB viewer link stands in for a demo. KiCanvas is the one
-// reviewers actually use for this.
-function isKicanvasUrl(url: string): boolean {
+// reviewers actually use for this; a Printables model page works for
+// printable designs.
+const DESIGN_VIEWER_HOSTS = new Set(["kicanvas.org", "printables.com"]);
+function isDesignViewerUrl(url: string): boolean {
   let u: URL;
   try {
     u = new URL(url);
@@ -309,7 +311,7 @@ function isKicanvasUrl(url: string): boolean {
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return false;
   const host = u.hostname.replace(/^www\./, "").toLowerCase();
-  return host === "kicanvas.org";
+  return DESIGN_VIEWER_HOSTS.has(host);
 }
 
 const VIDEO_HOSTS = new Set([
@@ -666,7 +668,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   }
 
   // A hardware "design" (CAD Models) ship never gets physically built, so a
-  // schematic/PCB viewer link stands in for a demo. A kicanvas.org link is
+  // schematic/PCB viewer link stands in for a demo. A kicanvas.org or printables.com link is
   // unambiguous proof of a design ship on its own, so it's accepted
   // regardless of project_type - don't make an unrelated dropdown (easy to
   // leave on its default) block an otherwise-legit design submission.
@@ -678,7 +680,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     const demoUrl = project.demo_url as string;
     const isDesign = project.project_type === "cad";
     if (isDesign) {
-      if (!isKicanvasUrl(demoUrl) && !isVideoUrl(demoUrl))
+      if (!isDesignViewerUrl(demoUrl) && !isVideoUrl(demoUrl))
         return res.status(400).json({ ok: false, error: "design_demo_invalid" });
     } else if (project.finished_build && !isVideoUrl(demoUrl)) {
       return res.status(400).json({ ok: false, error: "build_demo_video_required" });
