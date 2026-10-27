@@ -12,6 +12,7 @@ import { hcaRecheckCopy, projectError, trialHoursCopy } from "../errors";
 import type { ActionDetails } from "@/lib/guarded-action-core";
 import { canUnship, type BlackoutState, type HtStats, type Project } from "../types";
 import { BlackoutPanel } from "./blackout-panel";
+import { CommitReminder } from "./commit-reminder";
 import type { FormState } from "./editor-state";
 import { CountedTextarea } from "./form-bits";
 import { checklist, shipBlockers } from "./ship-checks";
@@ -125,6 +126,7 @@ export function ShipPanel({
           <Link href="/account">Add your birthday</Link> for Hack Club compliance, takes 10 seconds.
         </Notice>
       ) : null}
+      <CommitReminder className="mb-3" />
       <div className={formGrid}>
         <div className="flex flex-col gap-[4px] text-[14px]">
           {items.map((i) => (
