@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { NavItem } from "@/lib/docs";
 import { cn } from "@/lib/cn";
-import { DisplayControls } from "@/components/display-controls";
+import { TopRail, type RailStats } from "@/components/top-rail";
 import { buttonVariants } from "@/components/ui/primitives";
 
 const OPEN_KEY = "pixl-docs-open-groups";
@@ -29,7 +29,15 @@ function groupNav(nav: NavItem[]): { label: string; items: NavItem[] }[] {
   return groups;
 }
 
-export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.ReactNode }) {
+export function DocsShell({
+  nav,
+  stats,
+  children,
+}: {
+  nav: NavItem[];
+  stats: RailStats | null;
+  children: React.ReactNode;
+}) {
   // The shell outlives any single doc now (see layout.tsx), so the active
   // page can't come in as a prop - it changes underneath a mounted shell.
   const activeSlug = usePathname().replace(/^\/docs\/?/, "").replace(/\/$/, "");
@@ -106,8 +114,12 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
         "grid min-h-screen grid-cols-[var(--sidebar)_minmax(0,1fr)_240px] items-start [--sidebar:300px]",
         "max-[1080px]:grid-cols-[var(--sidebar)_minmax(0,1fr)] max-[820px]:grid-cols-1",
         "[body:has(&)]:overflow-y-auto!",
+        // Clear the fixed top rail: page columns get it as top padding on
+        // wide screens, the whole stack once the sidebar folds on top.
+        "[html:has(&)]:scroll-pt-[64px] max-[820px]:pt-[54px]",
       )}
     >
+      <TopRail stats={stats} className="max-[900px]:left-(--sidebar) max-[820px]:left-0" />
       <aside
         className={cn(
           "sticky top-0 h-screen overflow-y-auto border-r-4 border-stroke bg-panel px-[12px] pt-[22px] pb-[32px]",
@@ -123,9 +135,6 @@ export function DocsShell({ nav, children }: { nav: NavItem[]; children: React.R
             <img src="/docs/icon.svg" alt="" className="size-[26px] [image-rendering:pixelated]" />
             PIXL <span className="text-gold">DOCS</span>
           </Link>
-          <div className="flex gap-[6px]">
-            <DisplayControls />
-          </div>
         </div>
         <button
           className={cn(buttonVariants({ variant: "dark" }), "mx-[6px] mb-[16px] justify-center")}

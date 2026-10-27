@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { PixelIcon, ReIcon } from "@/components/pixel-icon";
-import { DisplayControls, useDismiss } from "@/components/display-controls";
-import { Button, buttonVariants, railButton } from "@/components/ui/primitives";
+import { PixelIcon } from "@/components/pixel-icon";
+import { useDismiss } from "@/components/display-controls";
+import { TopRail } from "@/components/top-rail";
+import { Button, buttonVariants } from "@/components/ui/primitives";
 import { cn } from "@/lib/cn";
 import { clearPlayerLocalState } from "@/lib/local-state";
 import { ICONS, MOBILE_PRIMARY, MORE_ICON, NAV_GROUPS } from "./nav-data";
@@ -40,15 +41,6 @@ const sheetLinkClass = cn(
   "data-[active=true]:bg-accent data-[active=true]:text-panel-deep",
   "data-[active=true]:hover:bg-accent data-[active=true]:hover:text-panel-deep",
 );
-
-// Currency chips on the top rail.
-const chip = cn(
-  "flex cursor-default items-center gap-[8px] border-2 border-stroke bg-panel py-[5px] pr-[11px] pl-[6px]",
-  "text-[13px] tabular-nums",
-);
-const chipSlot = "flex size-[24px] shrink-0 items-center justify-center border-2 border-stroke";
-const chipValue = "font-sans text-[16px] font-bold tracking-[.2px] text-ink tabular-nums";
-const chipLabel = "text-[11px] tracking-[.5px] text-dim";
 
 export function ShellNav({
   game,
@@ -181,38 +173,7 @@ export function ShellNav({
           </form>
         </div>
       </aside>
-      <div
-        className={cn(
-          "fixed top-0 right-0 left-(--sidebar) z-[39] flex h-[54px] items-center justify-end gap-[10px] px-[20px]",
-          "border-b-4 border-stroke bg-panel-deep max-[900px]:left-0",
-        )}
-      >
-        <div
-          className={cn(chip, "max-[560px]:hidden")}
-          title="Core Integrity: total Restoration Energy earned by the whole community"
-        >
-          <span className={cn(chipSlot, "bg-teal [&_svg]:size-[15px]")}>
-            <ReIcon />
-          </span>
-          <span className={chipValue}>{communityRe.toLocaleString()}</span>
-          <span className={chipLabel}>CORE</span>
-        </div>
-        <div className={chip} title="Your Restoration Energy">
-          <span className={cn(chipSlot, "bg-accent text-btn-ink [&_svg]:size-[15px]")}>
-            <ReIcon />
-          </span>
-          <span className={chipValue}>{re.toLocaleString()}</span>
-          <span className={cn(chipLabel, "max-[560px]:hidden")}>RE</span>
-        </div>
-        <div className={chip} title="Your pixels">
-          <span className={cn(chipSlot, "bg-gold")}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className="size-[16px]" src="/img/pixel.png" alt="px" />
-          </span>
-          <span className={chipValue}>{pixels.toLocaleString()}</span>
-        </div>
-        <DisplayControls />
-      </div>
+      <TopRail stats={{ pixels, re, communityRe }} />
     </>
   );
 }
