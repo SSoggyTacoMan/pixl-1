@@ -136,6 +136,31 @@ describe("openableQueueIds", () => {
     ];
     expect(openableQueueIds(list, "UBBB", false, late).has(1)).toBe(true);
   });
+
+  test("a project the viewer has open stays open after the queue shifts past it", () => {
+    // They opened id 15 while it was on the first page. Then a fix-and-reship
+    // with an older wait came back ahead of it and pushed it to 16.
+    const list: QueueRowLike[] = [
+      { id: 100, status: "shipped" },
+      ...rows(14),
+      { id: 15, status: "shipped", reviewing_by: "UBBB" },
+      ...Array.from({ length: 10 }, (_, i) => ({ id: 20 + i, status: "shipped" })),
+    ];
+    const open = openableQueueIds(list, "UBBB", false, now);
+    expect(open.has(15)).toBe(true);
+    expect(open.has(20)).toBe(false);
+  });
+
+  test("a project the viewer has open on the first page still uses a slot", () => {
+    const list: QueueRowLike[] = [
+      { id: 1, status: "shipped", reviewing_by: "UBBB" },
+      ...Array.from({ length: 20 }, (_, i) => ({ id: 10 + i, status: "shipped" })),
+    ];
+    const open = openableQueueIds(list, "UBBB", false, now);
+    expect(open.size).toBe(15);
+    expect(open.has(23)).toBe(true);
+    expect(open.has(24)).toBe(false);
+  });
 });
 
 describe("earnsChangesHold", () => {
