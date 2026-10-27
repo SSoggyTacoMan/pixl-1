@@ -13,7 +13,6 @@ import { FontSwitcher } from "./components/FontSwitcher";
 import { Hero } from "./components/Hero";
 import { WTFISTHIS } from "./components/Description";
 import { Story } from "./components/Story";
-import { MapPreview } from "./components/MapPreview";
 import { MainContent } from "./components/MainContent";
 import { FAQ } from "./components/FAQ";
 import { Footer } from "./components/Footer";
@@ -51,15 +50,11 @@ export async function landingMetadata(locale: Locale): Promise<Metadata> {
 
 // The landing was designed for a 16px root (the shell runs at 15px) and is
 // always cream whatever the shell theme, so while it is mounted it sets the
-// root font size, smooth scrolling and its own fixed scrollbar colours on
-// <html> (via html:has(<this root>)) and on everything inside it.
+// root font size, smooth scrolling and its own fixed scrollbar colour on
+// <html> (via html:has(<this root>)), which everything inside inherits.
 const landingRoot = [
   "[html:has(&)]:text-[16px] [html:has(&)]:scroll-smooth",
-  "[html:has(&)]:[scrollbar-color:#16161e_#e8dfbf] [&_*]:[scrollbar-color:#16161e_#e8dfbf]",
-  "[html:has(&)::-webkit-scrollbar-track]:bg-[#e8dfbf] [html:has(&)::-webkit-scrollbar-corner]:bg-[#e8dfbf]",
-  "[&_::-webkit-scrollbar-track]:bg-[#e8dfbf] [&_::-webkit-scrollbar-corner]:bg-[#e8dfbf]",
-  "[html:has(&)::-webkit-scrollbar-thumb]:bg-[#16161e] [html:has(&)::-webkit-scrollbar-thumb]:border-[#e8dfbf]",
-  "[&_::-webkit-scrollbar-thumb]:bg-[#16161e] [&_::-webkit-scrollbar-thumb]:border-[#e8dfbf]",
+  "[html:has(&)]:[--scroll-thumb:#16161e]",
 ].join(" ");
 
 export async function LandingPage({ locale }: { locale: Locale }) {
@@ -77,7 +72,6 @@ export async function LandingPage({ locale }: { locale: Locale }) {
           <Hero />
           <WTFISTHIS />
           <Story />
-          <MapPreview />
           <MainContent />
           <FAQ />
           <Footer />
