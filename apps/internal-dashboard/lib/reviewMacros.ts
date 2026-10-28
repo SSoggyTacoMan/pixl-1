@@ -8,7 +8,12 @@ export interface ReviewMacro {
   label: string;
   /** The text that replaces the trigger. */
   text: string;
+  /** Optional caret position within text after expansion. Defaults to text.length. */
+  caretOffset?: number;
 }
+
+const BAD_README_PREFIX =
+  "Hiii :hii: !! cool project, super tuff :yay: !! but i noticed your readme doesnt meet all the requirements yet (like for example missing ";
 
 export const REVIEW_MACROS: readonly ReviewMacro[] = [
   {
@@ -38,9 +43,10 @@ export const REVIEW_MACROS: readonly ReviewMacro[] = [
     trigger: "/badreadme",
     label: "README missing requirements",
     text:
-      "Hiii :hii: !! cool project, super tuff :yay: !! but i noticed your readme doesnt meet all the requirements yet (like for example missing X) :( " +
-      "Could you please edit it so it does?? thanks!! here's a handy template you can use for reference: https://gist.github.com/FaizeenHoque/0709576cc598721df07fb62d2430e6fe\n" +
+      BAD_README_PREFIX +
+      ") :( Could you please edit it so it does?? thanks!! here's a handy template you can use for reference: https://gist.github.com/FaizeenHoque/0709576cc598721df07fb62d2430e6fe\n" +
       "good luck! :yay2:",
+    caretOffset: BAD_README_PREFIX.length,
   },
 ];
 
@@ -64,8 +70,16 @@ export function expandMacro(
     if (start > 0 && !/\s/.test(before[start - 1])) continue;
     return {
       value: before.slice(0, start) + macro.text + value.slice(caret),
-      caret: start + macro.text.length,
+      caret: start + (macro.caretOffset ?? macro.text.length),
     };
   }
   return null;
+}
+
+/**
+ * Detects if a reviewer expanded /badreadme without specifying the missing
+ * requirements (leaving "missing ) :(" or the legacy "missing X").
+ */
+export function hasUnfilledMacroPlaceholder(text: string): boolean {
+  return /missing\s*(?:X\b|\)\s*:\()/i.test(text);
 }
