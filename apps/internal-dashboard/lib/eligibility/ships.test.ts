@@ -8,6 +8,7 @@ import {
   repoKeyOf,
   resetManualRefreshLimits,
   shipsUrlFromEnv,
+  shipsSnapshotReaderEnabled,
   ttlFromEnv,
 } from "./ships";
 
@@ -122,7 +123,7 @@ describe("provider fetch", () => {
     const v = await p.get();
     expect(v.snapshot!.pixlCount).toBe(1);
     expect(seen.length).toBe(1);
-    expect(seen[0]!.url).toBe("https://ships.hackclub.com/api/v1/ysws_entries");
+    expect(seen[0]!.url).toBe("https://api.ships.hackclub.com/api/v1/ysws_entries?all=true&boba=false");
     expect(seen[0]!.init.method).toBe("GET");
     expect(seen[0]!.init.body).toBeUndefined();
     const h = seen[0]!.init.headers as Record<string, string>;
@@ -331,11 +332,24 @@ describe("provider cache", () => {
   });
 
   test("the API url can only be overridden with https or localhost", () => {
-    expect(shipsUrlFromEnv(undefined)).toBe("https://ships.hackclub.com/api/v1/ysws_entries");
+    expect(shipsUrlFromEnv(undefined)).toBe("https://api.ships.hackclub.com/api/v1/ysws_entries?all=true&boba=false");
     expect(shipsUrlFromEnv("http://127.0.0.1:4920/x")).toBe("http://127.0.0.1:4920/x");
     expect(shipsUrlFromEnv("https://ships.example.test/x")).toBe("https://ships.example.test/x");
-    expect(shipsUrlFromEnv("http://evil.example/x")).toBe("https://ships.hackclub.com/api/v1/ysws_entries");
-    expect(shipsUrlFromEnv("file:///etc/passwd")).toBe("https://ships.hackclub.com/api/v1/ysws_entries");
+    // Never silently query only the last three months when using a real Ships endpoint.
+    expect(shipsUrlFromEnv("https://ships.hackclub.com/api/v1/ysws_entries")).toBe(
+      "https://ships.hackclub.com/api/v1/ysws_entries?all=true&boba=false",
+    );
+    expect(shipsUrlFromEnv("https://api.ships.hackclub.com/api/v1/ysws_entries?boba=true")).toBe(
+      "https://api.ships.hackclub.com/api/v1/ysws_entries?boba=false&all=true",
+    );
+    expect(shipsUrlFromEnv("http://evil.example/x")).toBe("https://api.ships.hackclub.com/api/v1/ysws_entries?all=true&boba=false");
+    expect(shipsUrlFromEnv("file:///etc/passwd")).toBe("https://api.ships.hackclub.com/api/v1/ysws_entries?all=true&boba=false");
+  });
+
+  test("durable Ships reader is disabled until explicitly enabled", () => {
+    expect(shipsSnapshotReaderEnabled(undefined)).toBe(false);
+    expect(shipsSnapshotReaderEnabled("false")).toBe(false);
+    expect(shipsSnapshotReaderEnabled("true")).toBe(true);
   });
 
   test("env ttl is clamped to a sane range", () => {

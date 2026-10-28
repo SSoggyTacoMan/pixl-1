@@ -46,9 +46,7 @@ const lbl = "mb-1.5 block text-[13px] text-faint";
 const stepperBtn = cn(
   "flex flex-1 items-center justify-center p-0 cursor-px",
   "border-2 border-r-4 border-b-4 border-stroke bg-panel-2 text-ink",
-  "transition-[background-color,color,border-bottom-width,transform] duration-[130ms]",
-  "hover:-translate-x-px hover:-translate-y-px hover:border-b-8 hover:bg-gold hover:text-btn-ink",
-  "active:translate-x-0 active:translate-y-px active:border-b-2",
+  "transition-[background-color,color] duration-[130ms] hover:bg-gold hover:text-btn-ink",
 );
 
 const Chevron = ({ up }: { up: boolean }) => (

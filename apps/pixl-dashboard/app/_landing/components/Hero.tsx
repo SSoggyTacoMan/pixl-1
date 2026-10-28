@@ -112,7 +112,7 @@ export function Hero() {
               href={PLAY_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-center font-pixel px-8 py-3 sm:px-12 sm:py-4 text-2xl sm:text-4xl md:text-5xl bg-[#F5EED2] cursor-pointer text-black border-black border-r-8 border-t-2 border-l-2 border-b-8 hover:border-b-12 hover:-translate-y-1 hover:-translate-x-1 transition-all"
+              className="text-center font-pixel px-8 py-3 sm:px-12 sm:py-4 text-2xl sm:text-4xl md:text-5xl bg-[#F5EED2] hover:bg-[#e6dcb8] cursor-pointer text-black border-black border-r-8 border-t-2 border-l-2 border-b-8 transition-colors"
               whileHover={{ scale: 1.03 }}
               whileTap={{ scale: 0.97 }}
             >
@@ -120,7 +120,7 @@ export function Hero() {
             </motion.a>
             <motion.a
               href={DASH_URL}
-              className="mt-4 text-center font-pixel px-6 py-2.5 sm:px-8 sm:py-3 text-lg sm:text-2xl md:text-3xl bg-black cursor-pointer text-[#F5EED2] border-black border-r-8 border-t-2 border-l-2 border-b-8 hover:border-b-12 hover:-translate-y-1 hover:-translate-x-1 transition-all"
+              className="mt-4 text-center font-pixel px-6 py-2.5 sm:px-8 sm:py-3 text-lg sm:text-2xl md:text-3xl bg-black hover:bg-[#2b2b33] cursor-pointer text-[#F5EED2] border-black border-r-8 border-t-2 border-l-2 border-b-8 transition-colors"
               whileHover={{ scale: 1.03 }}
               whileTap={{ scale: 0.97 }}
             >

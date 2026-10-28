@@ -15,30 +15,43 @@ function fmtSecs(s: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-// One stacked bar per breakdown, colored with Hackatime's own language colors.
+// One pie per breakdown, colored with Hackatime's own language colors. The
+// slices are a conic-gradient; whatever the top 10 don't cover stays sunken.
 function Breakdown({ title, items }: { title: string; items: HackatimeBreakdown[] }) {
   const top = items.filter((i) => i.seconds > 0).slice(0, 10);
   if (top.length === 0) return null;
   const color = (i: HackatimeBreakdown) => i.color || "var(--hc-blue)";
 
+  let from = 0;
+  const stops = top.map((i) => {
+    const to = Math.min(from + i.percent, 100);
+    const stop = `${color(i)} ${from}% ${to}%`;
+    from = to;
+    return stop;
+  });
+  if (from < 100) stops.push(`var(--sunken) ${from}% 100%`);
+
   return (
     <div className="flex flex-col gap-2">
       <p className="hc-eyebrow">{title}</p>
-      <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--sunken)]">
-        {top.map((i, n) => (
-          <div key={n} title={`${i.name} · ${i.text} · ${i.percent}%`} style={{ width: `${i.percent}%`, background: color(i) }} />
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1">
-        {top.map((i, n) => (
-          <span key={n} className="flex items-center gap-1.5 text-xs">
-            <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color(i) }} />
-            <span>{i.name}</span>
-            <Muted className="tabular-nums">
-              {i.text} · {i.percent}%
-            </Muted>
-          </span>
-        ))}
+      <div className="flex flex-wrap items-center gap-5">
+        <div
+          role="img"
+          aria-label={top.map((i) => `${i.name} ${i.percent}%`).join(", ")}
+          className="h-28 w-28 shrink-0 rounded-full"
+          style={{ background: `conic-gradient(${stops.join(", ")})` }}
+        />
+        <div className="flex flex-col gap-1">
+          {top.map((i, n) => (
+            <span key={n} className="flex items-center gap-1.5 text-xs">
+              <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color(i) }} />
+              <span>{i.name}</span>
+              <Muted className="tabular-nums">
+                {i.text} · {i.percent}%
+              </Muted>
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -127,7 +127,11 @@ export function OrderActions({
   if (!mine && o.status !== "pending") {
     if (!canManage) return null;
     return (
-      <div className="flex flex-wrap items-end gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Muted className="w-full text-sm">
+          Claimed by <b>{o.claimed_by || "another fulfiller"}</b>
+          {o.status === "credited" ? ", already paid" : ""}.
+        </Muted>
         <form action={reassignOrder}>
           <input type="hidden" name="id" value={o.id} />
           <ActionButton variant="outline" pendingLabel="Taking over..." icon="member-add">

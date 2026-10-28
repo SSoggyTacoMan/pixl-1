@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PageHeader, buttonVariants } from "@/components/ui/primitives";
 import { serverApi } from "@/lib/server-api";
+import { CommitReminder } from "./_components/commit-reminder";
 import { Feeds, type ActivityItem, type NewsItem } from "./_components/feeds";
 import { HackatimeStrip } from "./_components/hackatime-strip";
 import { HcaSyncedNotice } from "./_components/hca-notice";
@@ -36,6 +37,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
       </PageHeader>
       <HcaSyncedNotice value={hca_synced} />
       <HackatimeStrip stats={stats} />
+      <CommitReminder className="mb-4" />
       <PendingInvites invites={invites?.invites ?? []} />
       <JoinCodeBox />
       <ImportBox

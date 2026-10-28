@@ -12,7 +12,7 @@ import { CommitList } from "@/app/_components/CommitList";
 import { renderMarkdown } from "@/lib/markdown";
 import { HackatimePanel } from "@/app/_components/HackatimePanel";
 import { setJournalHours } from "@/app/actions";
-import { useLiveMode, useReviewerName } from "@/app/_components/LiveMode";
+import { staffName } from "@/lib/staffName";
 import { parseAuditNote, type AuditHeader } from "@/lib/auditNote";
 import { isSafeUrl } from "@/lib/safeUrl";
 import { Badge, Button, Callout, Card, CountBadge, EmptyState, formatDate, formatDateTime, Input, Mono, Muted, Textarea, TextLink, type Tone } from "@/app/_ui/ui";
@@ -194,10 +194,6 @@ export function ReviewDetailTabs({
   /** Owner or second-pass reviewer only - hidden from first-pass-only reviewers. */
   canViewAiTime: boolean;
 }) {
-  // Live mode keeps each past review's verdict and hours but drops its
-  // internal audit-note sections (technical features, deflation reason, ...).
-  const live = useLiveMode();
-  const reviewerName = useReviewerName();
   const [tab, setTab] = useState<TabKey>("commits");
   const [commitsState, setCommitsState] = useState(commits);
 
@@ -256,10 +252,28 @@ export function ReviewDetailTabs({
     return { first: Math.min(...firsts), last: Math.max(...lasts) };
   })();
 
+  // 1-9 open the tab at that position (same order as the strip). Ignored while
+  // typing or with a modifier held, like ReviewShortcuts.
+  const tabKeys = tabs.map((t) => t.key).join(",");
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const el = document.activeElement;
+      if (el instanceof HTMLElement && (el.isContentEditable || el.matches("input, textarea, select"))) return;
+      if (!/^[1-9]$/.test(e.key)) return;
+      const next = tabKeys.split(",")[Number(e.key) - 1] as TabKey | undefined;
+      if (!next) return;
+      e.preventDefault();
+      setTab(next);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [tabKeys]);
+
   return (
     <Card padding="flush">
       <div className="hc-tabs hc-tabs-fill" role="tablist">
-        {tabs.map((t) => (
+        {tabs.map((t, i) => (
           <button
             key={t.key}
             type="button"
@@ -267,6 +281,7 @@ export function ReviewDetailTabs({
             aria-selected={tab === t.key}
             className="hc-tab gap-2"
             onClick={() => setTab(t.key)}
+            title={i < 9 ? `Shortcut: ${i + 1}` : undefined}
           >
             {t.label}
             {t.count !== undefined && <CountBadge>{t.count}</CountBadge>}
@@ -432,7 +447,7 @@ export function ReviewDetailTabs({
           <ul>
             {reviewAudits.map((v) => {
               const meta = VERDICT_LABEL[v.verdict] ?? { label: v.verdict.replaceAll("_", " "), tone: "neutral" as const };
-              const sections = v.audit_note && !live ? parseAuditNote(v.audit_note) : null;
+              const sections = v.audit_note ? parseAuditNote(v.audit_note) : null;
               const sectionKeys = sections
                 ? (Object.keys(SECTION_LABEL) as AuditHeader[]).filter((h) => sections[h]?.trim())
                 : [];
@@ -443,7 +458,7 @@ export function ReviewDetailTabs({
                     <summary>
                       <Badge tone={meta.tone}>{meta.label}</Badge>
                       <span className="min-w-0 flex-1">
-                        {reviewerName(v.reviewer)}
+                        {staffName(v.reviewer)}
                         <Muted>
                           {v.approved_hours !== null && v.approved_hours !== v.claimed_hours
                             ? ` · ${v.claimed_hours}h → ${v.approved_hours}h credited`

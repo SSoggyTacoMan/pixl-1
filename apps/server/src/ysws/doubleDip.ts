@@ -62,10 +62,17 @@ function isOwnProgram(m: ArchiveMatch): boolean {
 // current team member (owner + collaborators) matched against those entries
 // by Slack ID where possible, so a reviewer never has to guess who on the
 // team already got credited for how much of this repo elsewhere.
+//
+// Many archive rows carry no Slack ID at all. When the ship has a single person
+// on it, a row without a Slack ID on the same repo can only be theirs, so it is
+// attributed to them (with a team, an anonymous row stays "someone").
 function teamBreakdown(matches: ArchiveMatch[], team: TeamMember[]): string {
+  const solo = team.length === 1 ? team[0] : null;
+  const isTheirs = (m: ArchiveMatch, t: TeamMember) =>
+    (m.slackId !== "" && m.slackId === t.slackId) || (solo === t && m.slackId === "");
   const priorLines = matches
     .map((m) => {
-      const known = team.find((t) => t.slackId && t.slackId === m.slackId);
+      const known = team.find((t) => isTheirs(m, t));
       const who = known ? known.label : m.slackId ? `Slack user ${m.slackId}` : "someone";
       return `${who} got ${m.hours}h (approved ${fmtDate(m.approvedAt)})`;
     })
@@ -75,7 +82,7 @@ function teamBreakdown(matches: ArchiveMatch[], team: TeamMember[]): string {
     .map((t) => {
       // Every prior entry for this person counts: a project approved twice
       // already has two archive rows, and only the sum is credited time.
-      const priors = matches.filter((m) => m.slackId && m.slackId === t.slackId);
+      const priors = matches.filter((m) => isTheirs(m, t));
       const prior = Math.round(priors.reduce((s, m) => s + m.hours, 0) * 10) / 10;
       return priors.length > 0
         ? suggestedCapLine(t.label, t.claimedHours, prior)

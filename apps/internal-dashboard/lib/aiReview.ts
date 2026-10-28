@@ -156,6 +156,25 @@ Respond with ONLY a JSON object, no markdown fences, matching exactly:
 }`;
 }
 
+// The AI endpoint answered with an error status. Thrown messages are stripped
+// from server actions in production, so the reviewer-facing action catches
+// this one and returns aiProviderMessage() instead.
+export class AiProviderError extends Error {
+  constructor(
+    readonly status: number,
+    detail: string,
+  ) {
+    super(`AI provider ${status}: ${detail}`);
+    this.name = "AiProviderError";
+  }
+}
+
+export function aiProviderMessage(status: number): string {
+  if (status === 402) return "the AI provider's spending limit is reached. Tell an owner; review without a draft for now.";
+  if (status === 429) return "the AI provider is rate limiting us. Wait a minute and try again.";
+  return `the AI provider returned an error (${status}). Try again in a bit, and tell an owner if it keeps happening.`;
+}
+
 export async function generateAiReviewDraft(input: AiReviewInput): Promise<AiReviewDraft> {
   // AI_REVIEW_API_KEY / AI_REVIEW_BASE_URL let the draft run on another
   // OpenAI-compatible endpoint (e.g. the Hack Club AI proxy) for a while without
@@ -186,7 +205,7 @@ export async function generateAiReviewDraft(input: AiReviewInput): Promise<AiRev
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new Error(`AI provider ${res.status}: ${detail.slice(0, 300)}`);
+    throw new AiProviderError(res.status, detail.slice(0, 300));
   }
   const json = (await res.json()) as {
     choices?: { message?: { content?: string } }[];

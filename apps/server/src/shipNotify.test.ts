@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { postShipToSlack, resubmitMessage } from "./shipNotify.js";
+import { postShipToSlack, resubmitMessage, shipContextBlocks, type ShipContext } from "./shipNotify.js";
 
 // F-7: project.name/description are typed by the shipping player, not
 // staff, and land in the ship-alerts staff channel's mrkdwn blocks. Before
@@ -203,5 +203,45 @@ describe("resubmitMessage (DM to the reviewer who asked for changes)", () => {
     const msg = resubmitMessage({ id: 1, name: "<!channel> <https://evil.example|click>" });
     expect(msg).toContain("&lt;!channel&gt;");
     expect(msg).not.toContain("<!channel>");
+  });
+});
+
+describe("shipContextBlocks", () => {
+  const ctx: ShipContext = {
+    previousStatus: "needs_changes",
+    priorChangeRequests: 2,
+    previousReviewNote: "Add a demo link <!channel>",
+    previousReviewer: "Meeran",
+    usedAi: true,
+    aiNotes: "Copilot for the CSS",
+    updateNotes: "",
+    shipNote: "",
+  };
+
+  test("a re-ship after changes shows the request count, AI usage and the previous note", () => {
+    const text = JSON.stringify(shipContextBlocks(ctx, false));
+    expect(text).toContain("Re-ship after changes were requested (2 requests so far)");
+    expect(text).toContain("Copilot for the CSS");
+    expect(text).toContain("Previous reviewer note (Meeran)");
+    expect(text).toContain("Add a demo link");
+  });
+
+  test("typed text can't ping the channel", () => {
+    expect(JSON.stringify(shipContextBlocks(ctx, false))).not.toContain("<!channel>");
+  });
+
+  test("a first ship with no AI says so and has no previous note", () => {
+    const text = JSON.stringify(
+      shipContextBlocks({ ...ctx, previousStatus: "shipped", priorChangeRequests: 0, usedAi: false, aiNotes: "" }, false),
+    );
+    expect(text).toContain("First ship");
+    expect(text).toContain("No AI declared");
+    expect(text).not.toContain("Previous reviewer note");
+  });
+
+  test("an update to an approved project shows what changed", () => {
+    const text = JSON.stringify(shipContextBlocks({ ...ctx, previousStatus: "approved", updateNotes: "New level" }, true));
+    expect(text).toContain("Update to an approved project");
+    expect(text).toContain("New level");
   });
 });

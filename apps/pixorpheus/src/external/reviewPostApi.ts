@@ -28,16 +28,22 @@ http.post("/api/external/review-post", express.json(), requireExternalApiKey, as
   if (message.length > MAX_MESSAGE_LENGTH)
     return res.status(400).json({ error: `message exceeds ${MAX_MESSAGE_LENGTH} characters` });
 
+  // Optional: answer inside an existing thread of the review channel (still
+  // only that one channel) instead of starting a new top-level post.
+  const threadTs = typeof req.body?.threadTs === "string" ? req.body.threadTs.trim() : "";
+  if (threadTs && !/^\d{10}\.\d{6}$/.test(threadTs)) return res.status(400).json({ error: "Invalid threadTs" });
+
   try {
     const posted = await app.client.chat.postMessage({
       channel: PIXL_REVIEW_CHANNEL,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
       text: message,
       unfurl_links: false,
       unfurl_media: false,
     });
     // Optional thread reply (e.g. a cc ping). Best effort: the verdict is already posted.
     const reply = typeof req.body?.reply === "string" ? req.body.reply.trim().slice(0, 500) : "";
-    if (reply && posted.ts) {
+    if (reply && posted.ts && !threadTs) {
       try {
         await app.client.chat.postMessage({
           channel: PIXL_REVIEW_CHANNEL,

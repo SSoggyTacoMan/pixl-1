@@ -74,6 +74,8 @@ export interface StaffSettings {
   reviewRevealName: boolean;
   /** Request a DM on Slack by default when requesting changes. Off unless turned on. */
   reviewNotifyOnResubmit: boolean;
+  /** Pixo DMs you after each review you submit (what you earned, or that your pixel is held). On unless turned off. */
+  reviewDms: boolean;
 }
 
 // What the settings page shows for each theme. The colours themselves live in
@@ -116,6 +118,7 @@ export const DEFAULT_STAFF_SETTINGS: StaffSettings = {
   reviewPanelWidth: 460,
   reviewRevealName: true,
   reviewNotifyOnResubmit: false,
+  reviewDms: true,
 };
 
 export const REVIEW_PANEL_MIN = 360;
@@ -141,5 +144,6 @@ export function parseStaffSettings(raw: unknown): StaffSettings {
     reviewPanelWidth: clampReviewPanelWidth(r.reviewPanelWidth),
     reviewRevealName: r.reviewRevealName !== false,
     reviewNotifyOnResubmit: r.reviewNotifyOnResubmit === true,
+    reviewDms: r.reviewDms !== false,
   };
 }

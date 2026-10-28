@@ -5,7 +5,7 @@ import { addNotification } from "./notifications.js";
 import { findAllInYswsArchive } from "../ysws/archive.js";
 import { buildDoubleDip, type TeamMember } from "../ysws/doubleDip.js";
 import { fetchHackatimeStats, fetchTrackedSecondsBetween, fetchTrackedSecondsSince, HACKATIME_CUTOFF } from "../hackatime/api.js";
-import { dmReviewerOfResubmit, postShipToSlack } from "../shipNotify.js";
+import { dmReviewerOfResubmit, postShipToSlack, type ShipContext } from "../shipNotify.js";
 import { enrollSlackPlayerInReviewChannel } from "../pixlSlack.js";
 import {
   shipEligibilityBlock,
@@ -17,6 +17,7 @@ import { allowedImageUrl, markdownImagesAllowed } from "../http/imageUrls.js";
 import { isGitRepoUrl } from "./gitRepoUrl.js";
 import { urlAlive } from "./urlLiveness.js";
 import { recordShipForOperations } from "../operations/service.js";
+import { trialItemCreditTarget } from "../trialPayout.js";
 import { z } from "zod";
 import { validate, v, optStr, optBool, optNum, params } from "../http/validate.js";
 import { countJournalImages, journalImagesNeeded, journalTextLength } from "./journalRules.js";
@@ -298,8 +299,10 @@ router.get("/api/projects", async (req, res) => {
 
 // A hardware "design" ship (project_type "cad") never got built, so a
 // schematic/PCB viewer link stands in for a demo. KiCanvas is the one
-// reviewers actually use for this.
-function isKicanvasUrl(url: string): boolean {
+// reviewers actually use for this; a Printables model page works for
+// printable designs.
+const DESIGN_VIEWER_HOSTS = new Set(["kicanvas.org", "printables.com"]);
+function isDesignViewerUrl(url: string): boolean {
   let u: URL;
   try {
     u = new URL(url);
@@ -308,7 +311,7 @@ function isKicanvasUrl(url: string): boolean {
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return false;
   const host = u.hostname.replace(/^www\./, "").toLowerCase();
-  return host === "kicanvas.org";
+  return DESIGN_VIEWER_HOSTS.has(host);
 }
 
 const VIDEO_HOSTS = new Set([
@@ -482,24 +485,22 @@ export function parseProjectBody(
 }
 
 // The Trial a project is being built for is chosen at CREATION now (not at
-// ship). A player can only link a Trial they've actually accepted in-game
-// (there's a sidequest_unlocks row); picking one they haven't accepted returns
-// "trial_not_accepted" so the client can tell them to go accept it first. 0 /
-// missing = building their own idea.
+// ship). Every active Trial is unlocked for every player - going to the NPC
+// in-game first is optional, not required to link. 0 / missing = building
+// their own idea.
 async function resolveTrialLink(
   userId: string,
   wantSidequest: unknown,
 ): Promise<{ error: string } | { id: number | null }> {
   const want = Number(wantSidequest);
   if (!Number.isFinite(want) || want <= 0) return { id: null };
-  const { data: unlock } = await db
-    .from("sidequest_unlocks")
-    .select("sidequest_id, sidequests!inner(active)")
-    .eq("user_id", userId)
-    .eq("sidequest_id", want)
-    .eq("sidequests.active", true)
+  const { data: quest } = await db
+    .from("sidequests")
+    .select("id")
+    .eq("id", want)
+    .eq("active", true)
     .maybeSingle();
-  if (!unlock) return { error: "trial_not_accepted" };
+  if (!quest) return { error: "trial_unavailable" };
   return { id: want };
 }
 
@@ -626,6 +627,8 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     return res.status(400).json({ ok: false, error: "repo_required" });
   if (!project.demo_url)
     return res.status(400).json({ ok: false, error: "demo_required" });
+  if (!String(project.description ?? "").trim())
+    return res.status(400).json({ ok: false, error: "description_required" });
   if (!String(project.image_url ?? "").trim())
     return res.status(400).json({ ok: false, error: "image_required" });
   if (!String(project.description ?? "").trim())
@@ -665,7 +668,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   }
 
   // A hardware "design" (CAD Models) ship never gets physically built, so a
-  // schematic/PCB viewer link stands in for a demo. A kicanvas.org link is
+  // schematic/PCB viewer link stands in for a demo. A kicanvas.org or printables.com link is
   // unambiguous proof of a design ship on its own, so it's accepted
   // regardless of project_type - don't make an unrelated dropdown (easy to
   // leave on its default) block an otherwise-legit design submission.
@@ -677,7 +680,7 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     const demoUrl = project.demo_url as string;
     const isDesign = project.project_type === "cad";
     if (isDesign) {
-      if (!isKicanvasUrl(demoUrl) && !isVideoUrl(demoUrl))
+      if (!isDesignViewerUrl(demoUrl) && !isVideoUrl(demoUrl))
         return res.status(400).json({ ok: false, error: "design_demo_invalid" });
     } else if (project.finished_build && !isVideoUrl(demoUrl)) {
       return res.status(400).json({ ok: false, error: "build_demo_video_required" });
@@ -831,22 +834,19 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
   const wantSidequest = Number(project.sidequest_id);
   let sidequestId: number | null = null;
   if (Number.isFinite(wantSidequest) && wantSidequest > 0) {
-    const { data: unlock } = await db
-      .from("sidequest_unlocks")
-      .select("sidequest_id, sidequests!inner(active, name, min_hours)")
-      .eq("user_id", session.userId)
-      .eq("sidequest_id", wantSidequest)
-      .eq("sidequests.active", true)
+    const { data: trial } = await db
+      .from("sidequests")
+      .select("name, min_hours")
+      .eq("id", wantSidequest)
+      .eq("active", true)
       .maybeSingle();
-    if (!unlock)
-      return res.status(400).json({ ok: false, error: "trial_not_available" });
+    if (!trial)
+      return res.status(400).json({ ok: false, error: "trial_unavailable" });
     sidequestId = wantSidequest;
 
     // A Trial can carry a minimum tracked-hours requirement (nullable = no
     // gate, e.g. Trials seeded before this existed). Checked against the same
     // trackedSeconds the normal 1h ship floor uses below.
-    const trial = (unlock as { sidequests?: { name?: string; min_hours?: number | null } })
-      .sidequests;
     const minHours = trial?.min_hours != null ? Number(trial.min_hours) : null;
     if (minHours != null && trackedSeconds < minHours * 3600) {
       // The player can choose to ship anyway (client shows this as an explicit
@@ -988,7 +988,25 @@ router.post("/api/projects/:id/ship", validate({ query: v.noQuery, params: param
     isUpdate ? "Update shipped" : "Project shipped",
     `"${project.name}" is in the review queue. You'll hear back here once it's reviewed.`,
   );
-  void postShipToSlack(data, ownerSlackId, trackedSeconds, isUpdate);
+  void (async () => {
+    const { count } = await db
+      .from("review_audits")
+      .select("id", { count: "exact", head: true })
+      .eq("project_id", id)
+      .eq("verdict", "needs_changes");
+    // `project` is the row as it was BEFORE this ship cleared the review note.
+    const context: ShipContext = {
+      previousStatus: (project.status as string | null) ?? null,
+      priorChangeRequests: count ?? 0,
+      previousReviewNote: String(project.review_note ?? ""),
+      previousReviewer: String(project.review_note_by ?? ""),
+      usedAi: !!project.used_ai,
+      aiNotes: String(project.ai_notes ?? ""),
+      updateNotes: isUpdate ? updateNotes : "",
+      shipNote,
+    };
+    await postShipToSlack(data, ownerSlackId, trackedSeconds, isUpdate, context);
+  })();
   // First-ever ship: add them to the public review channel. Idempotent on the
   // bot side (already_in_channel is fine), so a retry after a failure is safe.
   if (!project.first_shipped_at && ownerSlackId) void enrollSlackPlayerInReviewChannel(ownerSlackId);
@@ -1163,10 +1181,19 @@ router.post("/api/projects/:id/trial-reward", validate({ query: v.noQuery, param
   await db.from("projects").update({ trial_prize_order_id: order.id }).eq("id", id);
   // Keeping the prize still pays out the pixels for hours past the minimum.
   if (beyondPx > 0) {
+    // credit_project_pixels pays (target - already earned on this project), so
+    // the target must include earlier payouts - see trialPayout.ts.
+    const { data: paidTxs } = await db
+      .from("pixel_transactions")
+      .select("amount")
+      .eq("project_id", id)
+      .eq("user_id", session.userId)
+      .in("reason", ["project_approved", "review_reverted"]);
+    const alreadyPx = (paidTxs ?? []).reduce((sum, t) => sum + Number(t.amount), 0);
     const { error: pxError } = await db.rpc("credit_project_pixels", {
       p_user_id: session.userId,
       p_project_id: id,
-      p_amount: beyondPx,
+      p_amount: trialItemCreditTarget(alreadyPx, heldPx, prizePx),
       p_hours: Number(project.approved_hours) || 0,
       p_created_by: "trial_reward",
     });

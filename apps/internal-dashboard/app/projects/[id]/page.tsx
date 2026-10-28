@@ -3,8 +3,6 @@ import { DoubleDipBanner } from "@/app/_components/DoubleDipBanner";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { requirePage, can } from "@/lib/guard";
-import { getLiveMode } from "@/lib/liveModeServer";
-import { liveName } from "@/lib/liveMode";
 import { db, getProject, listCollaboratorsForProject, listProjectNotes } from "@/lib/db";
 import { FRAUD_SCORE_THRESHOLD } from "@/lib/robertOutcome";
 import { builderNameFor } from "@/lib/reviewAccess";
@@ -177,7 +175,6 @@ export default async function ProjectPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const access = await requirePage("reviewer");
-  const live = await getLiveMode();
   const { id } = await params;
   const { error } = await searchParams;
   const projectId = Number(id);
@@ -238,12 +235,8 @@ export default async function ProjectPage({
 
   const ownerName = (handle: string | null) =>
     project.users
-      ? liveName(
-          live,
-          project.users,
-          // Legal name for owners/final reviewers only.
-          builderNameFor(access, project.users, { handle }),
-        )
+      ? // Legal name for owners/final reviewers only.
+        builderNameFor(access, project.users, { handle })
       : project.user_id;
 
   return (
@@ -288,13 +281,9 @@ export default async function ProjectPage({
                   by{" "}
                   {project.users ? (
                     <TextLink href={`/players/${project.user_id}`} className="font-bold">
-                      {live ? (
-                        ownerName(null)
-                      ) : (
-                        <Suspense fallback={ownerName(null)}>
-                          <OwnerHandleName slackId={project.users.slack_id} render={ownerName} />
-                        </Suspense>
-                      )}
+                      <Suspense fallback={ownerName(null)}>
+                        <OwnerHandleName slackId={project.users.slack_id} render={ownerName} />
+                      </Suspense>
                     </TextLink>
                   ) : (
                     project.user_id
@@ -308,7 +297,7 @@ export default async function ProjectPage({
                         {i > 0 && ", "}
                         {c.users ? (
                           <TextLink href={`/players/${c.user_id}`} className="font-bold">
-                            {liveName(live, c.users, builderNameFor(access, c.users))}
+                            {builderNameFor(access, c.users)}
                           </TextLink>
                         ) : (
                           c.user_id
@@ -794,7 +783,7 @@ export default async function ProjectPage({
                           <label key={c.id} className="flex items-center gap-2 text-sm">
                             <Input name={`hours_${c.id}`} type="number" step="0.1" min="0" placeholder="New hours" className="w-32" />
                             <span>
-                              {c.users ? liveName(live, c.users, builderNameFor(access, c.users)) : c.user_id}
+                              {c.users ? builderNameFor(access, c.users) : c.user_id}
                               <span className="hc-caption"> (collaborator, now {Number(c.approved_hours)}h)</span>
                             </span>
                           </label>

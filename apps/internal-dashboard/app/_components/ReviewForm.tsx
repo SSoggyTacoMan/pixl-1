@@ -9,7 +9,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { REVIEW_MACROS, expandMacro } from "@/lib/reviewMacros";
+import { REVIEW_MACROS, expandMacro, hasUnfilledMacroPlaceholder } from "@/lib/reviewMacros";
 import {
   reviewProject,
   applySubmissionEdits,
@@ -51,7 +51,6 @@ export interface CollaboratorHours {
   claimedHours: number;
 }
 
-type Step = 1 | 2 | 3;
 type Draft = Record<string, string | number>;
 
 const TIERS = [
@@ -59,12 +58,6 @@ const TIERS = [
   { value: 2, label: "T2 Signal", blurb: "A focused app, CLI, or game with clean polish" },
   { value: 3, label: "T3 Grid", blurb: "Multiple systems together: backend, state, infra" },
   { value: 4, label: "T4 Nexus", blurb: "Deep systems work, serious scope" },
-];
-
-const STEPS: { n: Step; label: string }[] = [
-  { n: 1, label: "Submission" },
-  { n: 2, label: "Audit notes" },
-  { n: 3, label: "Verdict" },
 ];
 
 // Friendly names for the browser's own validation messages, see onVerdictSelect.
@@ -338,14 +331,12 @@ function VerdictButtons({
   secondPass,
   pendingVerdict,
   onVerdictSelect,
-  onBack,
 }: {
   secondPass: boolean;
   /** The verdict currently being submitted, or null when idle. */
   pendingVerdict: string | null;
   /** Runs on click, before the browser's own validation, and can cancel the submit. */
   onVerdictSelect: (verdict: string) => boolean;
-  onBack: () => void;
 }) {
   const busy = pendingVerdict !== null;
   const select = (verdict: string, e: React.MouseEvent) => {
@@ -353,9 +344,6 @@ function VerdictButtons({
   };
   return (
     <div className="hc-verdict-actions flex flex-wrap items-center gap-2">
-      <Button type="button" variant="outline" onClick={onBack} disabled={busy} className="hc-verdict-back">
-        ← Back
-      </Button>
       <Button
         type="submit"
         name="verdict"
@@ -649,6 +637,13 @@ export function ReviewForm({
       draft = null;
     }
     if (draft) {
+      // A local copy is saved on any edit (tier, hours...), so it can hold a
+      // blank text box. Blank fields must not hide text the server draft has,
+      // such as the AI draft pre-filled in technical features.
+      for (const [k, v] of Object.entries(serverDraft?.draft ?? {})) {
+        const mine = draft[k];
+        if (typeof v === "string" && v.trim() !== "" && typeof mine === "string" && mine.trim() === "") draft[k] = v;
+      }
       setDraftSource("local");
       // Push it to the server right away, so a restored draft the reviewer
       // never edits again still reaches whoever does the real pass.
@@ -740,7 +735,9 @@ export function ReviewForm({
       try {
         // The hours typed in the form, so the deflation draft explains the
         // number the reviewer already picked.
-        setAiDraft(await generateAiReviewDraftAction(projectId, hours));
+        const r = await generateAiReviewDraftAction(projectId, hours);
+        if (r.ok) setAiDraft(r.draft);
+        else setAiError(`Couldn't generate a draft: ${r.error}`);
       } catch (e) {
         setAiError(actionErrorMessage(e, "generate a draft"));
       }
@@ -756,14 +753,9 @@ export function ReviewForm({
     saveDraft();
   };
 
-  // 3-step wizard over this one form. Steps are hidden, never unmounted, so
-  // refs and the draft restore keep working whichever step is visible.
-  const [step, setStep] = useState<Step>(1);
+  // Submission, audit notes and verdict all sit on one scrolling form, so
+  // nothing has to be opened or clicked through before judging.
   const [stepError, setStepError] = useState("");
-  const goToStep = (n: Step) => {
-    setStep(n);
-    setStepError("");
-  };
 
   useEffect(() => {
     // Fresh accumulator per mount: a remount without a page load would
@@ -840,10 +832,9 @@ export function ReviewForm({
 
   // Technical features / additional notes are only required for approve
   // (reviewProject relaxes them for needs_changes and ban too). Those fields live
-  // in Step 2, hidden by the time the verdict buttons are clicked, and the
-  // browser refuses to submit a form with an invalid hidden field without
-  // saying why. So this checks everything itself, jumps to the step that
-  // needs fixing and says what's wrong, instead of a click that does nothing.
+  // sit far above the verdict buttons, out of sight when they're clicked, so
+  // this checks everything itself and says what's wrong next to the buttons,
+  // instead of a click that does nothing.
   const onVerdictSelect = (verdict: string): boolean => {
     const required = verdict === "approved";
     if (technicalFeaturesRef.current) {
@@ -854,11 +845,14 @@ export function ReviewForm({
     if (notesRef.current) notesRef.current.required = required;
     if (ageJustificationRef.current) ageJustificationRef.current.required = required && ageFlag;
 
-    const fail = (n: Step, message: string) => {
-      setStep(n);
+    const fail = (_section: number, message: string) => {
       setStepError(message);
       return false;
     };
+    if (verdict === "needs_changes" && hasUnfilledMacroPlaceholder(noteRef.current?.value ?? "")) {
+      noteRef.current?.focus();
+      return fail(3, "Specify what's missing from the README before requesting changes.");
+    }
     // Hours are only credited on an approve, so only an approve needs the reason.
     if (verdict === "approved" && needsDeflationReason && !deflationReasonRef.current?.value.trim())
       return fail(2, "Say why you're lowering the hours before deciding.");
@@ -878,15 +872,12 @@ export function ReviewForm({
         return fail(1, "Say why this entry isn't eligible for Operation Blackout.");
     }
     // Anything else the browser would reject (an hours value off the 0.1 step,
-    // above the cap, ...). Fields on the visible step get the browser's own
-    // bubble; ones on a hidden step get named here.
+    // above the cap, ...): named here, since its own bubble can be scrolled
+    // out of view.
     const invalid = formRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
       "input:invalid, textarea:invalid, select:invalid",
     );
-    if (invalid) {
-      const n = Number(invalid.closest<HTMLElement>("[data-step]")?.dataset.step) as Step;
-      if (n && n !== step) return fail(n, `${fieldLabel(invalid.name)}: ${invalid.validationMessage}`);
-    }
+    if (invalid) return fail(0, `${fieldLabel(invalid.name)}: ${invalid.validationMessage}`);
     setStepError("");
     return true;
   };
@@ -1028,22 +1019,7 @@ export function ReviewForm({
         <input type="hidden" name="demoSeconds" defaultValue="0" ref={demoSeconds} />
         <input type="hidden" name="totalSeconds" defaultValue="0" ref={totalSeconds} />
 
-        <div className="hc-review-form-head flex flex-wrap items-center justify-between gap-2">
-          <div className="hc-form-steps flex flex-wrap items-center gap-2 text-sm">
-            {STEPS.map((s, i) => (
-              <span key={s.n} className="flex items-center gap-2">
-                {i > 0 && <span className="hc-muted">→</span>}
-                <button
-                  type="button"
-                  className="hc-step"
-                  data-active={step === s.n ? true : undefined}
-                  onClick={() => goToStep(s.n)}
-                >
-                  {s.n}. {s.label}
-                </button>
-              </span>
-            ))}
-          </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <span className="hc-save-status" data-tone={serverSave === "error" || serverSave === "stale" ? "danger" : serverSave === "saved" ? "success" : undefined}>
             {serverSave === "saving"
               ? "Saving draft…"
@@ -1066,9 +1042,8 @@ export function ReviewForm({
             </div>
           </Callout>
         )}
-        {stepError && <Callout tone="danger" icon="important">{stepError}</Callout>}
-
-        <div data-step="1" hidden={step !== 1} className="flex flex-col gap-4">
+        <div className="flex flex-col gap-4">
+          <p className="hc-eyebrow">Submission</p>
           <InlineNumber
             label="Hours to credit"
             hint={
@@ -1155,69 +1130,59 @@ export function ReviewForm({
               ))}
             </div>
           )}
-          <div className="flex justify-end">
-            <Button type="button" onClick={() => goToStep(2)}>
-              Next: Audit notes →
-            </Button>
-          </div>
         </div>
 
-        <div data-step="2" hidden={step !== 2} className="flex flex-col gap-4">
-          <div className="hc-panel flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="hc-eyebrow">AI draft (beta)</span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={!canAiDraft || aiPending}
-                onClick={runAiDraft}
-                title={canAiDraft ? undefined : "You don't have access to this. Ask an owner to enable it for you."}
-              >
-                {aiPending ? "Generating…" : "Generate AI draft"}
-              </Button>
-              {!canAiDraft && <span className="hc-caption text-xs">Ask an owner to enable this for you</span>}
-            </div>
-            <p className="hc-caption text-xs">
-              Reads the repo, commits, journals and Hackatime data and drafts the fields below for you to check and
-              edit. It never picks a verdict or hours, that&apos;s still on you. If you already lowered the hours, it
-              drafts the explanation for that number too, so set hours first for the best deflation draft.
-            </p>
-            {aiError && <Callout tone="danger" icon="important">{aiError}</Callout>}
-            {aiDraft && (
-              <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-2 text-sm">
-                <p className="hc-caption">{aiDraft.summary}</p>
-                {aiDraft.redFlags.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {aiDraft.redFlags.map((f, i) => (
-                      <Badge key={i} tone="danger">{f}</Badge>
-                    ))}
-                  </div>
-                )}
-                {aiDraft.strengths.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {aiDraft.strengths.map((s, i) => (
-                      <Badge key={i} tone="success">{s}</Badge>
-                    ))}
-                  </div>
-                )}
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("technicalFeatures", aiDraft.technicalFeatures)}>
-                    Insert into Technical features
-                  </Button>
-                  {needsDeflationReason && aiDraft.deflationReason && (
-                    <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("deflationReason", aiDraft.deflationReason)}>
-                      Insert into Why lower the hours?
-                    </Button>
-                  )}
-                  <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("notes", aiDraft.notes)}>
-                    Insert into Notes
-                  </Button>
-                </div>
-                <p className="hc-caption text-xs">Drafted by {aiDraft.model}</p>
+        <div className="flex flex-col gap-4 border-t border-[var(--border)] pt-4">
+          <p className="hc-eyebrow">Audit notes</p>
+          {canAiDraft && (
+            <div className="hc-panel flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="hc-eyebrow">AI draft (beta)</span>
+                <Button type="button" variant="outline" size="sm" disabled={aiPending} onClick={runAiDraft}>
+                  {aiPending ? "Generating…" : "Generate AI draft"}
+                </Button>
               </div>
-            )}
-          </div>
+              <p className="hc-caption text-xs">
+                Reads the repo, commits, journals and Hackatime data and drafts the fields below for you to check and
+                edit. It never picks a verdict or hours, that&apos;s still on you. If you already lowered the hours, it
+                drafts the explanation for that number too, so set hours first for the best deflation draft.
+              </p>
+              {aiError && <Callout tone="danger" icon="important">{aiError}</Callout>}
+              {aiDraft && (
+                <div className="flex flex-col gap-2 border-t border-[var(--border)] pt-2 text-sm">
+                  <p className="hc-caption">{aiDraft.summary}</p>
+                  {aiDraft.redFlags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {aiDraft.redFlags.map((f, i) => (
+                        <Badge key={i} tone="danger">{f}</Badge>
+                      ))}
+                    </div>
+                  )}
+                  {aiDraft.strengths.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {aiDraft.strengths.map((s, i) => (
+                        <Badge key={i} tone="success">{s}</Badge>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("technicalFeatures", aiDraft.technicalFeatures)}>
+                      Insert into Technical features
+                    </Button>
+                    {needsDeflationReason && aiDraft.deflationReason && (
+                      <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("deflationReason", aiDraft.deflationReason)}>
+                        Insert into Why lower the hours?
+                      </Button>
+                    )}
+                    <Button type="button" size="sm" variant="outline" onClick={() => insertAiText("notes", aiDraft.notes)}>
+                      Insert into Notes
+                    </Button>
+                  </div>
+                  <p className="hc-caption text-xs">Drafted by {aiDraft.model}</p>
+                </div>
+              )}
+            </div>
+          )}
 
           <p className="hc-eyebrow">
             Internal audit note, never shown to the player. Someone who wasn&apos;t involved should reach the same
@@ -1297,17 +1262,10 @@ export function ReviewForm({
               rows={5}
             />
           </Field>
-          <div className="flex justify-between">
-            <Button type="button" variant="outline" onClick={() => goToStep(1)}>
-              ← Back
-            </Button>
-            <Button type="button" onClick={() => goToStep(3)}>
-              Next: Verdict →
-            </Button>
-          </div>
         </div>
 
-        <div data-step="3" hidden={step !== 3} className="flex flex-col gap-4">
+        <div className="flex flex-col gap-4 border-t border-[var(--border)] pt-4">
+          <p className="hc-eyebrow">Verdict</p>
           <Field
             label="Note to the player"
             hint={`Required. Be nice and personal, show their work is good. Macros: ${REVIEW_MACROS.map((m) => `${m.trigger} = ${m.label}`).join(", ")}`}
@@ -1348,6 +1306,7 @@ export function ReviewForm({
             defaultChecked={defaultNotifyOnResubmit}
             label="If you request changes: DM me on Slack when the player ships this project again, so I can re-review it while I still remember it."
           />
+          {stepError && <Callout tone="danger" icon="important">{stepError}</Callout>}
           {submitError && <Callout tone="danger" icon="important">{submitError}</Callout>}
           {undoLeft !== null && (
             <Callout tone="neutral" icon="clock">
@@ -1368,7 +1327,6 @@ export function ReviewForm({
             secondPass={secondPass}
             pendingVerdict={pendingVerdict}
             onVerdictSelect={onVerdictSelect}
-            onBack={() => goToStep(2)}
           />
         </div>
       </form>

@@ -29,6 +29,33 @@ interface AuditLike {
   created_at: string;
 }
 
+// Every reviewer is expected to do at least this many reviews a week (Saturday
+// 00:00 UTC to Friday 23:59 UTC, see reviewWeekStartMs). The stats page only
+// shows progress against it, nothing is withheld for missing it.
+export const WEEKLY_REVIEW_MINIMUM = 15;
+
+const DAY_MS = 86_400_000;
+
+// Start of the review week containing `nowMs`: the most recent Saturday 00:00
+// UTC. A week runs Saturday to Friday, so Friday 23:59 UTC is its last minute.
+export function reviewWeekStartMs(nowMs: number): number {
+  const now = new Date(nowMs);
+  const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const daysSinceSaturday = (now.getUTCDay() + 1) % 7;
+  return dayStart - daysSinceSaturday * DAY_MS;
+}
+
+// Reviews logged since `since` (a UTC ms timestamp): outcome verdicts only, the
+// same ones the verdict chart counts, so an unship or revert doesn't add to it.
+export function countReviewsSince(audits: readonly AuditLike[], since: number): number {
+  let n = 0;
+  for (const a of audits) {
+    if (bucketFor(a.verdict) === null) continue;
+    if (new Date(a.created_at).getTime() >= since) n++;
+  }
+  return n;
+}
+
 // Verdict counts plus how many distinct reviewers submitted them, for one time
 // window (`since` is a UTC ms timestamp, null = all time). A reviewer is keyed
 // by Slack id when the label has one (so a renamed "Name (ID)" label is still
@@ -46,8 +73,7 @@ function displayName(label: string): string {
 
 // `audits` is expected newest first (as the stats page queries it), so the
 // first label seen for a Slack id is that reviewer's most recent name.
-// `nameFor` turns the full "Name (SlackID)" label into what's shown (the
-// stats page passes live mode's reviewerName so others can be hidden).
+// `nameFor` turns the full "Name (SlackID)" label into what's shown.
 export function summarizeWindow(
   audits: AuditLike[],
   since: number | null,

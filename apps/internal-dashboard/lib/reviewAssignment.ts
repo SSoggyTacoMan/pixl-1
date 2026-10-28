@@ -89,14 +89,22 @@ export interface QueueRowLike extends AssignmentFields {
   hold_at?: string | null;
   own?: boolean;
   claimedBy?: string | null;
+  reviewing_by?: string | null;
 }
 
 // The ids a viewer may open. `rows` must be in the queue's own order (longest
 // wait first), never a viewer-chosen sort, or changing the sort would change
 // what is open. Owners can open everything. A plain reviewer gets the first
-// `count` projects they could actually review (a row held, their own, being
-// reviewed by someone else or reserved for another reviewer doesn't take a
-// slot), plus anything assigned to them, wherever it sits.
+// `count` projects they could actually review, plus anything assigned to them,
+// wherever it sits. A row that is held, their own, or being reviewed by someone
+// else can't be started on, so it doesn't take a slot, but it stays openable to
+// look at (as it always was). A project the viewer has claimed (they are on its
+// review page) stays open even if the queue has since moved it past the first
+// page: claims ahead of it expire, pre-checks finish and fix-and-reships come
+// back ahead of it while they review, and the verdict would otherwise bounce.
+// A claim only exists after the page let them in, so this opens nothing new.
+// Only a project reserved for another reviewer, or past the first page, is
+// locked.
 export function openableQueueIds(
   rows: readonly QueueRowLike[],
   viewerSlackId: string,
@@ -112,10 +120,16 @@ export function openableQueueIds(
       open.add(Number(r.id));
       continue;
     }
-    if (r.hold_at || r.own || r.claimedBy || lockedForViewer(r, viewerSlackId, isOwner, nowMs)) continue;
+    if (lockedForViewer(r, viewerSlackId, isOwner, nowMs)) continue;
+    if (r.hold_at || r.own || r.claimedBy) {
+      open.add(Number(r.id));
+      continue;
+    }
     if (free < count) {
       open.add(Number(r.id));
       free++;
+    } else if (r.reviewing_by && r.reviewing_by === viewerSlackId) {
+      open.add(Number(r.id));
     }
   }
   return open;
