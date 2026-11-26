@@ -2846,6 +2846,15 @@ export async function listGrantOrdersForExport(statuses: string[]): Promise<Shop
     .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 }
 
+// Every grant link already recorded on an order. The HCB grants import filters
+// these out before matching, so a grant that was already marked sent (possibly
+// on a different order) can never be recorded twice. Throws on a database
+// failure: silently returning an empty list would make duplicates possible.
+export async function listUsedHcbGrantLinks(): Promise<string[]> {
+  const rows = await sql`select hcb_link from shop_orders where hcb_link like '%/grants/%'`;
+  return rows.map((row) => String(row.hcb_link ?? "")).filter((link) => link !== "");
+}
+
 // A single order by id, for the shipping-label print page - same row shape
 // as listShopOrders (player_name/player_slack resolved the same way), just
 // without the list/pagination machinery.
