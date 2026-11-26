@@ -89,7 +89,15 @@ import { buildAirtableFields, duplicateOverrideNote, newHoursOnly, pushProjectRe
 import { withAgeOverride } from "@/lib/ageOverrides";
 import { getReviewGrantView } from "@/lib/reviewGrants";
 import { submitToRobert, recordRobertOutcome } from "@/lib/robertSync";
-import { slackHandle, dmUser, slackAvatars, DM_EXCLUDED_SLACK_IDS } from "@/lib/slack";
+import {
+  slackHandle,
+  dmUser,
+  slackAvatars,
+  matchSlackDirectory,
+  slackDirectory,
+  type SlackDirectoryMember,
+  DM_EXCLUDED_SLACK_IDS,
+} from "@/lib/slack";
 import { fetchHackatimeReport, fetchTrackedSecondsSince } from "@/lib/hackatime";
 import { AiProviderError, aiProviderMessage, generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
 import { buildAiReviewInput } from "@/lib/aiReviewRun";
@@ -4449,28 +4457,109 @@ export interface PlayerHit {
   id: string;
   name: string;
   hasSlack: boolean;
+  // Secondary identifiers for the dropdown, so two people with the same legal
+  // name are distinguishable when searching by Slack name or handle.
+  slackName: string | null;
+  slackDisplayName: string | null;
 }
 
-// Typeahead for the notify page: find players by display name so an admin can
-// pick one instead of guessing the exact spelling.
+interface PlayerSearchRow {
+  id: string;
+  display_name: string | null;
+  real_name: string | null;
+  slack_id: string | null;
+}
+
+const PLAYER_SEARCH_COLUMNS = "id, display_name, real_name, slack_id";
+
+function playerSearchScore(
+  row: PlayerSearchRow,
+  needle: string,
+  slack?: SlackDirectoryMember,
+): number {
+  let score = 0;
+  for (const value of [
+    row.real_name,
+    row.display_name,
+    row.slack_id,
+    slack?.name,
+    slack?.displayName,
+    slack?.realName,
+  ]) {
+    const hay = (value ?? "").trim().toLowerCase();
+    if (!hay) continue;
+    if (hay === needle) score = Math.max(score, 3);
+    else if (hay.startsWith(needle)) score = Math.max(score, 2);
+    else if (hay.includes(needle)) score = Math.max(score, 1);
+  }
+  return score;
+}
+
+// Typeahead for the pixel and notify forms. The dashboard still shows legal
+// names (playerLabel), but search matches the in-game display name and the
+// Slack username/display name too, because that is how staff usually know a
+// player.
 export const searchPlayers = guardedAction("searchPlayers", "owner", async (access, query: string): Promise<PlayerHit[]> => {
   const clean = query.replace(/[%_,()\\]/g, " ").trim();
-  if (clean.length < 2) return [];
-  const { data, error } = await db
-    .from("users")
-    .select("id, display_name, real_name, slack_id")
-    .or(`display_name.ilike.${orValue(`%${clean}%`)},real_name.ilike.${orValue(`%${clean}%`)}`)
-    .order("display_name", { ascending: true })
-    .limit(8);
-  if (error) {
-    console.error("searchPlayers", error.message);
+  const needle = clean.replace(/^@+/, "").toLowerCase();
+  if (needle.length < 2) return [];
+  const [byName, directory] = await Promise.all([
+    db
+      .from("users")
+      .select(PLAYER_SEARCH_COLUMNS)
+      .or(
+        `display_name.ilike.${orValue(`%${needle}%`)},real_name.ilike.${orValue(`%${needle}%`)},slack_id.ilike.${orValue(`%${needle}%`)}`,
+      )
+      .order("display_name", { ascending: true })
+      .limit(8),
+    slackDirectory({ maxWaitMs: 3000 }),
+  ]);
+  if (byName.error) {
+    console.error("searchPlayers", byName.error.message);
     return [];
   }
-  return (data ?? []).map((u) => ({
-    id: u.id as string,
-    name: (u.real_name as string) || (u.display_name as string) || "(unnamed)",
-    hasSlack: Boolean(u.slack_id),
-  }));
+  const rows = [...((byName.data ?? []) as PlayerSearchRow[])];
+  const seen = new Set(rows.map((u) => u.id));
+
+  // users.list is the only Slack API that can find a member by name, so the
+  // directory hits are mapped back to their Pixl account through slack_id.
+  const directoryById = new Map(directory.map((m) => [m.id, m]));
+  const slackMatches = matchSlackDirectory(directory, clean, 12);
+  const missingSlackIds = slackMatches
+    .map((m) => m.id)
+    .filter((id) => !rows.some((u) => u.slack_id === id));
+  if (missingSlackIds.length > 0) {
+    const { data, error } = await db
+      .from("users")
+      .select(PLAYER_SEARCH_COLUMNS)
+      .in("slack_id", missingSlackIds)
+      .limit(24);
+    if (error) console.error("searchPlayers slack", error.message);
+    for (const u of (data ?? []) as PlayerSearchRow[]) {
+      if (seen.has(u.id)) continue;
+      seen.add(u.id);
+      rows.push(u);
+    }
+  }
+
+  const score = (row: PlayerSearchRow) =>
+    playerSearchScore(row, needle, row.slack_id ? directoryById.get(row.slack_id) : undefined);
+  rows.sort(
+    (a, b) =>
+      score(b) - score(a) ||
+      playerLabel(a, "(unnamed)").localeCompare(playerLabel(b, "(unnamed)")),
+  );
+
+  return rows.slice(0, 8).map((u) => {
+    const slack = u.slack_id ? directoryById.get(u.slack_id) : undefined;
+    return {
+      id: u.id,
+      name: playerLabel(u, "(unnamed)"),
+      hasSlack: Boolean(u.slack_id),
+      slackName: slack?.name || null,
+      slackDisplayName: slack?.displayName || null,
+    };
+  });
 });
 
 // Every team change is one `team.change` audit_log row (replacing the old

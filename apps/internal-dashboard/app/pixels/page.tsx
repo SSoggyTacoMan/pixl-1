@@ -1,5 +1,6 @@
 import { requirePage } from "@/lib/guard";
 import { listPixelTransactions, totalWalletPixels } from "@/lib/db";
+import { warmSlackDirectory } from "@/lib/slack";
 import { config } from "@/app/_generated/config";
 import { PixelAdjustForm } from "@/app/_components/PixelAdjustForm";
 import {
@@ -70,6 +71,9 @@ export default async function PixelsPage({
   }>;
 }) {
   const access = await requirePage("owner");
+  // Start the Slack name crawl while the page renders, so the player
+  // typeahead does not have to wait for it on the first keystroke.
+  warmSlackDirectory();
   const { page, filter, user, error, adjusted } = await searchParams;
   const [all, net] = await Promise.all([listPixelTransactions(1000), totalWalletPixels()]);
 

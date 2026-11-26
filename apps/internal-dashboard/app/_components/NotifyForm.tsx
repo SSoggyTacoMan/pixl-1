@@ -4,6 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { sendNotification, searchPlayers, type PlayerHit } from "@/app/actions";
 import { ActionButton, Badge, Card, CardHeader, Field, Input, Muted, Textarea } from "@/app/_ui/ui";
 
+function slackLabel(hit: PlayerHit): string {
+  const handle = hit.slackName ? `@${hit.slackName}` : "";
+  if (!handle) return hit.slackDisplayName ?? "";
+  if (!hit.slackDisplayName || hit.slackDisplayName === hit.slackName) return handle;
+  return `${handle} · ${hit.slackDisplayName}`;
+}
+
 export function NotifyForm() {
   const [everyone, setEveryone] = useState(true);
   const [player, setPlayer] = useState("");
@@ -92,7 +99,7 @@ export function NotifyForm() {
                 hint={
                   selected
                     ? `Selected ${selected.name}${selected.hasSlack ? "" : ". No Slack linked, so they get no DM (inbox only)."}`
-                    : "Pick a player from the list, no need to type the exact name."
+                    : "Legal name, in-game name or Slack name/handle all work, no need to type the exact spelling."
                 }
               >
                 <div className="relative">
@@ -106,7 +113,7 @@ export function NotifyForm() {
                       setSelected(null);
                     }}
                     onFocus={() => hits.length > 0 && setOpen(true)}
-                    placeholder="Search by display name"
+                    placeholder="Search name or @slack"
                     required={!everyone}
                     className="w-full"
                   />
@@ -124,7 +131,10 @@ export function NotifyForm() {
                           onClick={() => pick(h)}
                           className="hc-select-option flex w-full items-center gap-2 text-left"
                         >
-                          <span className="truncate font-bold">{h.name}</span>
+                          <span className="min-w-0 truncate font-bold">{h.name}</span>
+                          {(h.slackName || h.slackDisplayName) && (
+                            <span className="hc-muted min-w-0 truncate text-xs">{slackLabel(h)}</span>
+                          )}
                           {!h.hasSlack && (
                             <span className="ml-auto shrink-0">
                               <Badge tone="warning">No Slack, no DM</Badge>

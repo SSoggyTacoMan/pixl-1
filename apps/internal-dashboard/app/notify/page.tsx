@@ -1,4 +1,5 @@
 import { requirePage } from "@/lib/guard";
+import { warmSlackDirectory } from "@/lib/slack";
 import { NotifyForm } from "@/app/_components/NotifyForm";
 import { Flash, PageHeader } from "@/app/_ui/ui";
 
@@ -10,6 +11,7 @@ export default async function NotifyPage({
   searchParams: Promise<{ sent?: string; error?: string }>;
 }) {
   await requirePage("owner");
+  warmSlackDirectory();
   const { sent, error } = await searchParams;
 
   return (

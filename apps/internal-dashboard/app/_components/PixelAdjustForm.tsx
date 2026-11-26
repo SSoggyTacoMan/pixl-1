@@ -11,6 +11,13 @@ const PX_PER_DOLLAR = 1 / config.economy.pixelValueUsd;
 
 // Owner-only manual pixel correction: pick a player, deduct or grant whole
 // pixels with a mandatory reason. Everything lands in the ledger.
+function slackLabel(hit: PlayerHit): string {
+  const handle = hit.slackName ? `@${hit.slackName}` : "";
+  if (!handle) return hit.slackDisplayName ?? "";
+  if (!hit.slackDisplayName || hit.slackDisplayName === hit.slackName) return handle;
+  return `${handle} · ${hit.slackDisplayName}`;
+}
+
 export function PixelAdjustForm() {
   const [player, setPlayer] = useState("");
   const [selected, setSelected] = useState<PlayerHit | null>(null);
@@ -60,7 +67,14 @@ export function PixelAdjustForm() {
     <Details summary="Adjust a player's pixels (owners only)">
       <form action={adjustPixels} className="flex flex-col gap-4">
         <div className="grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
-          <Field label="Player">
+          <Field
+            label="Player"
+            hint={
+              selected && (selected.slackName || selected.slackDisplayName)
+                ? `Selected ${selected.name} · ${slackLabel(selected)}`
+                : "Searches legal name, in-game display name and Slack name or handle."
+            }
+          >
             <div ref={boxRef} className="relative">
               {selected && <input type="hidden" name="userId" value={selected.id} />}
               <Input
@@ -71,7 +85,7 @@ export function PixelAdjustForm() {
                   setSelected(null);
                 }}
                 onFocus={() => hits.length > 0 && setOpen(true)}
-                placeholder="Search player"
+                placeholder="Search name or @slack"
                 required
                 className="w-full"
               />
@@ -82,14 +96,17 @@ export function PixelAdjustForm() {
                     <li key={h.id}>
                       <button
                         type="button"
-                        className="hc-select-option"
+                        className="hc-select-option flex items-center gap-2"
                         onClick={() => {
                           setSelected(h);
                           setPlayer(h.name);
                           setOpen(false);
                         }}
                       >
-                        <span className="truncate">{h.name}</span>
+                        <span className="min-w-0 truncate">{h.name}</span>
+                        {(h.slackName || h.slackDisplayName) && (
+                          <span className="hc-muted ml-auto min-w-0 truncate text-xs">{slackLabel(h)}</span>
+                        )}
                       </button>
                     </li>
                   ))}

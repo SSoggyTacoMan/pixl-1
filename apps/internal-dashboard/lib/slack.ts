@@ -154,6 +154,168 @@ export function warmSlackHandles(ids: (string | null | undefined)[]): void {
   void slackHandles(ids).catch(() => {});
 }
 
+// Workspace member directory for name/handle search in the dashboard's player
+// typeaheads. Slack has no users.search method, so a cached users.list crawl
+// is the name source. It is cached for ten minutes and shared by every request
+// in the process. A stale copy is served while it refreshes, so a search never
+// has to wait for Slack once the cache is warm.
+export interface SlackDirectoryMember {
+  id: string;
+  // Slack username, e.g. "maaren" (without the @).
+  name: string;
+  // Slack profile display name, which is what people usually go by.
+  displayName: string;
+  // Slack profile real name, often the legal name.
+  realName: string;
+}
+
+interface UsersListResponse {
+  members?: {
+    id?: string;
+    name?: string;
+    real_name?: string;
+    deleted?: boolean;
+    is_bot?: boolean;
+    profile?: { display_name?: string; real_name?: string };
+  }[];
+  response_metadata?: { next_cursor?: string };
+}
+
+const DIRECTORY_TTL = 10 * 60_000;
+const DIRECTORY_STALE_MAX = 24 * 60 * 60_000;
+const DIRECTORY_FAIL_TTL = 30_000;
+// Same page cap as slackAvatars() above. A workspace bigger than this still
+// gets the DB-backed search; the directory is only an extra name source.
+const DIRECTORY_MAX_PAGES = 20;
+
+let directoryCache: { at: number; members: SlackDirectoryMember[] } | null = null;
+let directoryInflight: Promise<SlackDirectoryMember[]> | null = null;
+let directoryFailedAt = 0;
+
+async function fetchSlackDirectory(): Promise<SlackDirectoryMember[]> {
+  if (!process.env.SLACK_BOT_TOKEN) return [];
+  const members: SlackDirectoryMember[] = [];
+  let cursor = "";
+  for (let page = 0; page < DIRECTORY_MAX_PAGES; page++) {
+    let res: UsersListResponse;
+    try {
+      res = (await slackCall("users.list", { limit: 200, cursor })) as UsersListResponse;
+    } catch (e) {
+      // Keep whatever pages already arrived (rate limits, a Slack blip) so a
+      // partial directory can still answer searches.
+      console.error("slack users.list failed", (e as Error).message);
+      break;
+    }
+    for (const u of res.members ?? []) {
+      if (!u.id || u.deleted || u.is_bot) continue;
+      members.push({
+        id: u.id,
+        name: (u.name ?? "").trim(),
+        displayName: (u.profile?.display_name ?? "").trim(),
+        realName: (u.profile?.real_name || u.real_name || "").trim(),
+      });
+    }
+    cursor = res.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+  return members;
+}
+
+function startDirectoryFetch(): Promise<SlackDirectoryMember[]> {
+  if (directoryInflight) return directoryInflight;
+  const job = fetchSlackDirectory()
+    .then((members) => {
+      if (members.length > 0) {
+        directoryCache = { at: Date.now(), members };
+        directoryFailedAt = 0;
+      } else {
+        // No token, or Slack returned an empty workspace. Retry later rather
+        // than caching an empty directory for ten minutes.
+        directoryFailedAt = Date.now();
+      }
+      return members.length > 0 ? members : (directoryCache?.members ?? []);
+    })
+    .catch((e) => {
+      directoryFailedAt = Date.now();
+      console.error("slack users.list failed", (e as Error).message);
+      return directoryCache?.members ?? [];
+    })
+    .finally(() => {
+      directoryInflight = null;
+    });
+  directoryInflight = job;
+  return job;
+}
+
+// maxWaitMs lets a typeahead fall back to DB results instead of hanging on a
+// cold Slack crawl. The crawl keeps running and lands in the cache for the
+// next keystroke.
+export async function slackDirectory(
+  opts: { maxWaitMs?: number } = {},
+): Promise<SlackDirectoryMember[]> {
+  const hit = directoryCache;
+  const age = hit ? Date.now() - hit.at : Infinity;
+  if (hit && age < DIRECTORY_TTL) return hit.members;
+  if (hit && age < DIRECTORY_STALE_MAX) {
+    void startDirectoryFetch();
+    return hit.members;
+  }
+  if (directoryFailedAt && Date.now() - directoryFailedAt < DIRECTORY_FAIL_TTL) {
+    return hit?.members ?? [];
+  }
+  const job = startDirectoryFetch();
+  if (opts.maxWaitMs === undefined) return job;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = await Promise.race([
+    job.then(() => false),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), opts.maxWaitMs);
+    }),
+  ]);
+  clearTimeout(timer);
+  return timedOut ? (directoryCache?.members ?? []) : job;
+}
+
+// Start the crawl during page render so the first keystroke usually finds a
+// warm cache.
+export function warmSlackDirectory(): void {
+  const age = directoryCache ? Date.now() - directoryCache.at : Infinity;
+  if (age < DIRECTORY_TTL) return;
+  if (directoryFailedAt && Date.now() - directoryFailedAt < DIRECTORY_FAIL_TTL) return;
+  void startDirectoryFetch();
+}
+
+function directoryLabel(member: SlackDirectoryMember): string {
+  return member.displayName || member.realName || member.name;
+}
+
+// Pure so it can be unit tested without Slack. Matches any of the three names,
+// accepts an @handle, and ranks exact -> prefix -> substring.
+export function matchSlackDirectory(
+  members: SlackDirectoryMember[],
+  query: string,
+  limit = 8,
+): SlackDirectoryMember[] {
+  const needle = query.trim().replace(/^@+/, "").toLowerCase();
+  if (needle.length < 2) return [];
+  const hits: { member: SlackDirectoryMember; score: number }[] = [];
+  for (const member of members) {
+    let score = 0;
+    for (const value of [member.name, member.displayName, member.realName]) {
+      const hay = value.trim().toLowerCase();
+      if (!hay) continue;
+      if (hay === needle) score = Math.max(score, 3);
+      else if (hay.startsWith(needle)) score = Math.max(score, 2);
+      else if (hay.includes(needle)) score = Math.max(score, 1);
+    }
+    if (score > 0) hits.push({ member, score });
+  }
+  hits.sort(
+    (a, b) => b.score - a.score || directoryLabel(a.member).localeCompare(directoryLabel(b.member)),
+  );
+  return hits.slice(0, limit).map((hit) => hit.member);
+}
+
 // Per-id avatar lookup (one users.info call per id, cached) - for small lists
 // like the Forms tab where crawling the whole workspace via slackAvatars()
 // above would be overkill.
