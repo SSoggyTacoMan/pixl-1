@@ -69,7 +69,7 @@ export interface VisibleOrderActions {
 }
 
 export function visibleOrderActions(c: OrderActionContext): VisibleOrderActions {
-  // shipped is a legacy terminal state (tracking sent, payout paid) and done is
+  // shipped is a legacy terminal state (delivery info sent, payout paid) and done is
   // terminal: neither has a queue action left. Only pending, claimed and legacy
   // ordered/credited orders can still be worked.
   const actionable = c.status !== "shipped" && c.status !== "done" && c.status !== "cancelled";
@@ -79,8 +79,8 @@ export function visibleOrderActions(c: OrderActionContext): VisibleOrderActions 
     else primary = true;
   }
   const flag = actionable && (c.mine || c.canManage) && (!c.flagged || c.canManage);
-  // Messaging the buyer stays useful after an order closes (a tracking or
-  // delivery question), so fulfilled orders keep this action too. Cancelled
+  // Messaging the buyer stays useful after an order closes (a delivery
+  // question), so fulfilled orders keep this action too. Cancelled
   // orders are the only ones with nothing to ask about.
   const contact = c.hasBuyerSlack && c.status !== "cancelled";
   const edit = c.canManage && c.status !== "pending" && c.status !== "claimed" && c.status !== "cancelled";

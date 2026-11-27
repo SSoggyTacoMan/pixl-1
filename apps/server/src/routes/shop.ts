@@ -693,6 +693,11 @@ router.delete("/api/shop/save/:id", validate({ query: v.noQuery, params: params(
 // the fulfillment-pipeline columns (status/tracking/stage stamps) but falls back
 // to the base columns so it keeps working before migration 0052 is applied.
 const ORDER_COLUMNS =
+  "id, item_id, item_name, option, price, quantity, status, note, buyer_note, created_at, ordered_at, credited_at, shipped_at, done_at, tracking, is_grant, item_flow";
+// Same set without the unfulfill column (migration 0245), so a server deploy
+// that lands before the migration keeps working instead of dropping tracking
+// and quantity via the very old fallback below.
+const ORDER_COLUMNS_WITHOUT_ITEM_FLOW =
   "id, item_id, item_name, option, price, quantity, status, note, buyer_note, created_at, ordered_at, credited_at, shipped_at, done_at, tracking, is_grant";
 const ORDER_COLUMNS_FALLBACK =
   "id, item_name, option, price, status, note, created_at, fulfilled_at";
@@ -710,6 +715,7 @@ router.get("/api/shop/orders", async (req, res) => {
       .limit(100);
 
   let { data, error } = await build(ORDER_COLUMNS);
+  if (error) ({ data, error } = await build(ORDER_COLUMNS_WITHOUT_ITEM_FLOW));
   if (error) ({ data, error } = await build(ORDER_COLUMNS_FALLBACK));
   if (error) {
     console.error("[shop] orders failed", error);
@@ -720,6 +726,8 @@ router.get("/api/shop/orders", async (req, res) => {
     status: string;
     item_id?: number | null;
     is_grant?: boolean;
+    digital?: boolean;
+    item_flow?: boolean;
     queue_total?: number;
   }[];
 
@@ -729,15 +737,30 @@ router.get("/api/shop/orders", async (req, res) => {
   // pre-migration fallback columns, which just yields is_grant: false.
   const itemIds = [...new Set(orders.map((o) => o.item_id).filter((x): x is number => typeof x === "number"))];
   const grantItemIds = new Set<number>();
+  const softwareItemIds = new Set<number>();
   if (itemIds.length > 0) {
     const { data: items, error: itemsError } = await db.from("shop_items").select("id, category").in("id", itemIds);
-    if (itemsError) console.error("[shop] orders grant lookup failed", itemsError);
-    for (const it of (items ?? []) as { id: number; category: string | null }[])
+    if (itemsError) console.error("[shop] orders item lookup failed", itemsError);
+    for (const it of (items ?? []) as { id: number; category: string | null }[]) {
       if (it.category === "grants") grantItemIds.add(it.id);
+      if (it.category === "software") softwareItemIds.add(it.id);
+    }
   }
   for (const o of orders) {
-    o.is_grant = o.is_grant === true || (typeof o.item_id === "number" && grantItemIds.has(o.item_id));
+    // A manual conversion to the grant flow always wins; item_flow only turns
+    // the category-derived grant flow off for a re-fulfilled order.
+    o.is_grant =
+      o.is_grant === true ||
+      (o.item_flow !== true && typeof o.item_id === "number" && grantItemIds.has(o.item_id));
+    // Software items are delivered as a code instead of a parcel, so the
+    // Orders tab uses code wording for them.
+    o.digital =
+      !o.is_grant &&
+      o.item_flow !== true &&
+      typeof o.item_id === "number" &&
+      softwareItemIds.has(o.item_id);
     delete o.item_id;
+    delete o.item_flow;
   }
 
   // How many orders are waiting in the "New" queue right now: FIFO across
@@ -804,46 +827,63 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
   const session = req.session;
   if (!session) return res.status(401).json({ ok: false });
 
-  // We physically ship every order, so an address has to be on file before we
-  // let the purchase through , see /account in apps/game/web.
-  const { data: buyer } = await db
-    .from("users")
-    .select("address_line1, address_city, address_country, address_postal, phone")
-    .eq("id", session.userId)
-    .maybeSingle();
-  const addressOnFile =
-    !!buyer &&
-    String(buyer.address_line1 ?? "").trim() !== "" &&
-    String(buyer.address_city ?? "").trim() !== "" &&
-    String(buyer.address_country ?? "").trim() !== "" &&
-    String(buyer.address_postal ?? "").trim() !== "";
-  const buyerCountry = decryptPII(buyer?.address_country).trim();
-  if (!addressOnFile || !buyerCountry)
-    return res.status(400).json({ ok: false, error: "address_required" });
-  const buyerRegion = regionForCountry(buyerCountry);
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
 
-  // A phone number is required on the FIRST order only - once one's on file
-  // it's reused silently on every order after, same "ask once, reuse
-  // forever" shape as the address check above. Fulfillers need it to
-  // actually get a physical prize delivered (see the Shipping info
-  // disclosure on /fulfillment).
-  const phoneOnFile = decryptPII(buyer?.phone).trim();
-  if (!phoneOnFile) {
-    const rawPhone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
-    if (rawPhone.length < 7 || rawPhone.length > 20)
-      return res.status(400).json({ ok: false, error: "phone_required" });
-    const { error: phoneErr } = await db
+  // Look the item up before the shipping checks: software/license items are
+  // delivered as a code, so they don't need a shipping address or phone.
+  const { data: gateRow } = await db
+    .from("shop_items")
+    .select("unlock_trial_ids, manual_locked, region, unlock_xp, beacon_locked, reserved_user_id, review_locked, category")
+    .eq("id", id)
+    .maybeSingle();
+  const digital = (gateRow as { category?: string | null } | null)?.category === "software";
+
+  let buyerRegion: string;
+  if (digital) {
+    // Region still scopes the catalog, but it can come from the player's
+    // selected region instead of a shipping address.
+    buyerRegion = await regionFor(session.userId);
+  } else {
+    // Physical orders need an address on file before the purchase goes through
+    // , see /account in apps/game/web.
+    const { data: buyer } = await db
       .from("users")
-      .update({ phone: encryptPII(rawPhone) })
-      .eq("id", session.userId);
-    if (phoneErr) {
-      console.error("[shop] failed to save phone", phoneErr.message);
-      return res.status(503).json({ ok: false, error: "phone_save_failed" });
+      .select("address_line1, address_city, address_country, address_postal, phone")
+      .eq("id", session.userId)
+      .maybeSingle();
+    const addressOnFile =
+      !!buyer &&
+      String(buyer.address_line1 ?? "").trim() !== "" &&
+      String(buyer.address_city ?? "").trim() !== "" &&
+      String(buyer.address_country ?? "").trim() !== "" &&
+      String(buyer.address_postal ?? "").trim() !== "";
+    const buyerCountry = decryptPII(buyer?.address_country).trim();
+    if (!addressOnFile || !buyerCountry)
+      return res.status(400).json({ ok: false, error: "address_required" });
+    buyerRegion = regionForCountry(buyerCountry);
+
+    // A phone number is required on the FIRST physical order only - once one's
+    // on file it's reused silently on every order after, same "ask once, reuse
+    // forever" shape as the address check above. Fulfillers need it to
+    // actually get a physical prize delivered (see the Shipping info
+    // disclosure on /fulfillment).
+    const phoneOnFile = decryptPII(buyer?.phone).trim();
+    if (!phoneOnFile) {
+      const rawPhone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
+      if (rawPhone.length < 7 || rawPhone.length > 20)
+        return res.status(400).json({ ok: false, error: "phone_required" });
+      const { error: phoneErr } = await db
+        .from("users")
+        .update({ phone: encryptPII(rawPhone) })
+        .eq("id", session.userId);
+      if (phoneErr) {
+        console.error("[shop] failed to save phone", phoneErr.message);
+        return res.status(503).json({ ok: false, error: "phone_save_failed" });
+      }
     }
   }
 
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ ok: false });
   const option = typeof req.body?.option === "string" ? req.body.option.slice(0, 80) : "";
   // Structured picks for items with a real price-varying configurator
   // (config_options). Ignored by buy_shop_item for every other item.
@@ -863,11 +903,6 @@ router.post("/api/shop/buy/:id", validate({ query: v.noQuery, params: params({ i
   // unlocking Trials (mirrors the `locked` flag computed for the catalog).
   // A manual lock (see updateShopItem in the dashboard) blocks purchase
   // outright, independent of any Trial.
-  const { data: gateRow } = await db
-    .from("shop_items")
-    .select("unlock_trial_ids, manual_locked, region, unlock_xp, beacon_locked, reserved_user_id, review_locked")
-    .eq("id", id)
-    .maybeSingle();
   if ((gateRow as { manual_locked?: boolean } | null)?.manual_locked)
     return res.status(403).json({ ok: false, error: "locked" });
   if ((gateRow as { beacon_locked?: boolean } | null)?.beacon_locked) {

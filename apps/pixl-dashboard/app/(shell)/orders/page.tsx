@@ -14,7 +14,9 @@ export default async function OrdersPage() {
         title="YOUR ORDERS"
         sub="Everything you've spent pixels on, and where it is in fulfilment"
       />
-      <p className="mb-4 text-dim">We&apos;ll DM you the tracking number the moment it ships.</p>
+      <p className="mb-4 text-dim">
+        We&apos;ll DM you delivery info (a tracking number, an ETA, or a code) when there&apos;s an update.
+      </p>
       {!res.ok ? (
         <Notice tone="bad">Couldn&apos;t load your orders right now.</Notice>
       ) : orders.length === 0 ? (

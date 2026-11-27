@@ -7,8 +7,9 @@ export interface ShipmentResult {
   itemName: string;
 }
 
-// The tracking number is optional: an envelope, software key or hand-delivered
-// item has none, and the order still counts as shipped and gets paid.
+// Delivery info (a tracking number, an ETA, or a software code) is optional:
+// an envelope or hand-delivered item has none, and the order still counts as
+// shipped and gets paid.
 export async function settleShipment(
   orderId: number,
   tracking: string,
@@ -58,13 +59,15 @@ export async function settleShipment(
 }
 
 // The single item fulfillment step: claimed/ordered/credited -> done, with the
-// HCB transaction, real cost and (optional) tracking recorded. Tracking is not
-// a separate stage: grants, software and hand-delivered items simply have none.
+// HCB transaction, real cost and (optional) delivery info recorded. Delivery
+// info is either a tracking number/ETA or, for software items, the code itself.
+// It is not a separate stage: grants, software and hand-delivered items simply
+// have no physical shipment.
 // Same atomic guarantees as settleShipment: the status transition, wallet
 // credit, ledger row and payout stamp commit together or not at all.
 export async function settleItemFulfillment(
   orderId: number,
-  fields: { tracking: string; hcbLink: string; actualCostUsd: number },
+  fields: { tracking: string; hcbLink: string; actualCostUsd: number; digital?: boolean },
   fulfillerSlackId: string,
   fulfillerName: string,
   pixels: number,
@@ -72,7 +75,7 @@ export async function settleItemFulfillment(
   // Owners may fulfil their own order; everyone else is refused below.
   allowOwnOrder = false,
 ): Promise<ShipmentResult | null> {
-  const { tracking, hcbLink, actualCostUsd } = fields;
+  const { tracking, hcbLink, actualCostUsd, digital = false } = fields;
   if (!Number.isSafeInteger(orderId) || orderId <= 0 ||
       !Number.isSafeInteger(pixels) || pixels <= 0 ||
       !Number.isFinite(actualCostUsd) || actualCostUsd < 0 ||
@@ -87,7 +90,9 @@ export async function settleItemFulfillment(
       set status = 'done',
           ordered_at = coalesce(o.ordered_at, now()),
           credited_at = coalesce(o.credited_at, now()),
-          shipped_at = case when ${tracking} <> '' then now() else o.shipped_at end,
+          shipped_at = case when ${digital} then o.shipped_at
+                            when ${tracking} <> '' then now()
+                            else o.shipped_at end,
           done_at = now(),
           fulfilled_at = now(),
           fulfilled_by = ${fulfillerName},

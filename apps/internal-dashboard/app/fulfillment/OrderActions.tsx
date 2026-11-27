@@ -1,15 +1,18 @@
 import { cancelOrder, clearOrderFlag, claimOrder, convertOrderToGrant, flagOrderOverBudget, fulfillOrder, reassignOrder, sendGrant, unclaimOrder, updateOrderFulfillmentInfo } from "@/app/actions";
 import type { ShopOrderRow } from "@/lib/db";
+import { isDigitalOrder } from "@/lib/fulfillmentDelivery";
 import { isGrantOrder } from "@/lib/fulfillmentGrant";
 import { ActionButton, Details, Field, Input, Muted } from "@/app/_ui/ui";
 import { orderBudgetUsd } from "./shared";
 
-// Corrects the HCB link / actual cost / tracking after the fact. Deliberately
-// not gated by `actionable`: a typo'd link or a wrong cost still needs fixing
-// once an order is done. Owner-only, same as updateOrderFulfillmentInfo.
+// Corrects the HCB link / actual cost / delivery info after the fact.
+// Deliberately not gated by `actionable`: a typo'd link or a wrong cost still
+// needs fixing once an order is done. Owner-only, same as
+// updateOrderFulfillmentInfo.
 export function EditFulfillmentInfo({ order: o }: { order: ShopOrderRow }) {
+  const digital = isDigitalOrder(o);
   return (
-    <Details summary="Edit HCB link, cost, tracking or source URL">
+    <Details summary={`Edit HCB link, cost, ${digital ? "code" : "delivery info"} or source URL`}>
       <form action={updateOrderFulfillmentInfo} className="fw-order-action-form">
         <input type="hidden" name="id" value={o.id} />
         <div className="fw-order-action-fields">
@@ -26,8 +29,11 @@ export function EditFulfillmentInfo({ order: o }: { order: ShopOrderRow }) {
               defaultValue={o.actual_cost_usd !== null ? Number(o.actual_cost_usd) : undefined}
             />
           </Field>
-          <Field label="Tracking number" hint="Optional">
-            <Input name="tracking" maxLength={120} defaultValue={o.tracking} />
+          <Field
+            label={digital ? "Code / license" : "Delivery info"}
+            hint={digital ? "Required; DM'd to the buyer exactly as entered" : "Optional; a tracking number or an ETA"}
+          >
+            <Input name="tracking" maxLength={120} defaultValue={o.tracking} required={digital} />
           </Field>
           <Field label="Bought from" hint="Saved onto the item for the next fulfiller">
             <Input
@@ -90,7 +96,7 @@ function ConvertToGrant({ order: o }: { order: ShopOrderRow }) {
         size="sm"
         pendingLabel="Converting..."
         icon="send"
-        confirm="Switch this order to the grant flow? It skips the purchase, receipt and tracking steps: you just send the HCB grant to the buyer's email."
+        confirm="Switch this order to the grant flow? It skips the purchase and shipping steps: you just send the HCB grant to the buyer's email."
       >
         Convert to grant
       </ActionButton>
@@ -132,6 +138,7 @@ export function OrderActions({
   // fulfillers can work a claimed order but not override or refund one. Cancel
   // is offered until the order ships, claimed or not (cancelOrder in
   // app/actions.ts enforces the same rule server-side).
+  const digital = isDigitalOrder(o);
   const claimed = o.status === "claimed" || o.status === "ordered" || o.status === "credited";
   const cancelForm =
     canManage && (o.status === "pending" || claimed) ? (
@@ -152,7 +159,7 @@ export function OrderActions({
     ) : null;
 
   // Fulfilled is terminal. shipped is a legacy terminal state from the old
-  // item pipeline (tracking already sent, payout already paid): nothing left
+  // item pipeline (delivery info already sent, payout already paid): nothing left
   // here, though owners can correct the record from the edit panel.
   if (o.status === "done" || o.status === "shipped") return null;
 
@@ -202,7 +209,7 @@ export function OrderActions({
   }
 
   // Grant flow: one form, then the order is done. No purchase, receipt or
-  // tracking number, the buyer gets an HCB grant invite by email.
+  // delivery info, the buyer gets an HCB grant invite by email.
   if (o.status === "claimed" && isGrantOrder(o)) {
     return (
       <div className="fw-order-action-stack">
@@ -234,7 +241,7 @@ export function OrderActions({
   }
 
   // Claimed items, and legacy ordered/credited orders, use the one terminal
-  // fulfillment form: HCB transaction + real cost, tracking optional. Saving it
+  // fulfillment form: HCB transaction + real cost, delivery info optional. Saving it
   // closes the order and pays the fulfiller; there is no separate done click.
   return (
     <div className="fw-order-action-stack">
@@ -262,8 +269,22 @@ export function OrderActions({
               placeholder={orderBudgetUsd(o)}
             />
           </Field>
-          <Field label="Tracking number" hint="Optional; DM'd to the buyer when provided" className="fw-order-action-field-wide">
-            <Input name="tracking" maxLength={120} defaultValue={o.tracking} placeholder="1Z... (optional)" />
+          <Field
+            label={digital ? "Code / license" : "Delivery info"}
+            hint={
+              digital
+                ? "Required; DM'd to the buyer exactly as entered"
+                : "Optional; a tracking number or ETA, DM'd to the buyer when provided"
+            }
+            className="fw-order-action-field-wide"
+          >
+            <Input
+              name="tracking"
+              maxLength={120}
+              defaultValue={o.tracking}
+              required={digital}
+              placeholder={digital ? "License key or redemption code" : "1Z... or an ETA (optional)"}
+            />
           </Field>
           <Field label="Bought from" hint="Optional, saved onto the item" className="fw-order-action-field-wide">
             <Input

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { BuyerDetails, OrderStatus, ShopOrderRow } from "@/lib/db";
 import { visibleOrderActions } from "@/lib/fulfillmentAccess";
+import { isDigitalOrder } from "@/lib/fulfillmentDelivery";
 import { GRANT_STAGES, GRANT_STAGE_HINT, GRANT_STAGE_LABEL, isGrantOrder, usesGrantFlow } from "@/lib/fulfillmentGrant";
 import {
   Badge,
@@ -127,6 +128,28 @@ function ShippingPanel({ order: o, buyer, country }: { order: ShopOrderRow; buye
       />
     );
   }
+  if (isDigitalOrder(o)) {
+    if (!buyer) {
+      return (
+        <p className="text-sm">
+          <Muted>Digital order; the code is DM&apos;d to the buyer when it is fulfilled.</Muted>
+        </p>
+      );
+    }
+    return (
+      <>
+        <DescriptionList
+          items={[
+            ["Name", <OnFile key="n" value={buyer.name} />],
+            ["Email", <OnFile key="e" value={buyer.email && <CopyEmail email={buyer.email} />} />],
+          ]}
+        />
+        <p className="mt-3 text-sm">
+          <Muted>Digital order; the code is DM&apos;d to the buyer when it is fulfilled.</Muted>
+        </p>
+      </>
+    );
+  }
   if (!buyer) {
     return (
       <p className="text-sm">
@@ -210,8 +233,9 @@ export function OrderDetail({
     facts.push(["Actual cost", <Badge key="c" tone={overBudget ? "danger" : "success"} outline>${Number(o.actual_cost_usd).toFixed(2)}</Badge>]);
   }
   const grant = isGrantOrder(o);
+  const digital = isDigitalOrder(o);
   if (!grant && (o.status === "shipped" || o.status === "done") && o.tracking) {
-    facts.push(["Tracking", <><Mono>{o.tracking}</Mono> <Muted>· DM&apos;d to buyer</Muted></>]);
+    facts.push([digital ? "Code" : "Delivery info", <><Mono>{o.tracking}</Mono> <Muted>· DM&apos;d to buyer</Muted></>]);
   }
   if (o.status !== "pending" && o.status !== "cancelled" && o.hcb_link) {
     facts.push([grant && o.status === "done" ? "HCB grant" : "HCB", <SafeLink key="hcb" url={o.hcb_link} />]);
@@ -296,7 +320,10 @@ export function OrderDetail({
 
       <div className="fw-cols">
         <div className="fw-col">
-          <Panel title={grant ? "Grant recipient" : "Shipping info"} icon={grant ? "person" : "pin"}>
+          <Panel
+            title={grant ? "Grant recipient" : digital ? "Code delivery" : "Shipping info"}
+            icon={grant ? "person" : digital ? "message" : "pin"}
+          >
             <ShippingPanel order={o} buyer={buyer} country={country} />
           </Panel>
           {o.buyer_note && (

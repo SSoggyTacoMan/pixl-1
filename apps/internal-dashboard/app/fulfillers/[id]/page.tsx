@@ -133,7 +133,7 @@ export default async function FulfillerPage({ params }: { params: Promise<{ id: 
           icon="history"
           count={orders.length}
         />
-        <Table headers={["Item", "Player", "Status", "Tracking", "Claimed", "Shipped"]}>
+        <Table headers={["Item", "Player", "Status", "Delivery info", "Claimed", "Shipped"]}>
           {orders.length === 0 && <EmptyRow colSpan={6} title="No orders claimed yet" icon="package" />}
           {orders.map((o) => (
             <tr key={o.id}>

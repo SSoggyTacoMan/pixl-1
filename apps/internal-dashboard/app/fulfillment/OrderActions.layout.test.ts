@@ -48,8 +48,11 @@ describe("fulfillment action layout", () => {
     expect(grid).toBeGreaterThan(-1);
     expect(actionsPanel).toBeGreaterThan(grid);
     expect(actionsPanel).toBeLessThan(funding);
-    // Grants show a "Grant recipient" panel in the same slot instead.
-    expect(detail.slice(grid, actionsPanel)).toContain('title={grant ? "Grant recipient" : "Shipping info"}');
+    // Grants show a "Grant recipient" panel and software orders a "Code
+    // delivery" panel in the same slot instead of shipping info.
+    expect(detail.slice(grid, actionsPanel)).toContain(
+      'title={grant ? "Grant recipient" : digital ? "Code delivery" : "Shipping info"}',
+    );
   });
 
   test("forms use shrinkable columns and responsive wrapping", () => {

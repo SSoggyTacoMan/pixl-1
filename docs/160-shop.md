@@ -6,7 +6,7 @@ description: Turn your shipped hours into real gear and rewards.
 
 # The shop and your orders
 
-^ Shipped work becomes pixels, and the shop is where they go. Everything listed is a real item or a digital grant sent to you.
+^ Shipped work becomes pixels, and the shop is where they go. Everything listed is a real item, a software code, or a digital grant sent to you.
 
 ## Regional catalogues
 
@@ -38,7 +38,9 @@ Your Orders page tracks each one:
 - **CLAIMED.** A fulfiller has picked it up but has not placed the purchase yet.
 - **ORDERED.** Fulfillment has ordered or packed it.
 - **PAID.** Payment confirmed on our end.
-- **SHIPPED.** In transit, with tracking attached.
+- **SHIPPED.** In transit, with delivery info attached.
 - **DELIVERED.** At your door.
+
+Software and license items don't ship: their code is DM'd to you when the order is fulfilled.
 
 If something's out of stock or gets cancelled, your pixels come back automatically.

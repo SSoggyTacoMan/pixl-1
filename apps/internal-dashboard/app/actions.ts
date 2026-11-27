@@ -3,6 +3,7 @@
 import { claimOrderWithFunding, refreshCommitmentAmount } from "@/lib/eligibility/commit";
 import { releaseOrderClaim, settleGrant, settleItemFulfillment } from "@/lib/fulfillmentShip";
 import { fulfillmentPayoutPixels, isGrantOrder, GRANT_FULFILLMENT_PAYOUT_PIXELS } from "@/lib/fulfillmentGrant";
+import { isDigitalOrder } from "@/lib/fulfillmentDelivery";
 import { manualShipsRefresh, shipsProvider } from "@/lib/eligibility/ships";
 import { FUNDING_ORDER_PREFIX } from "@/lib/eligibility/policy";
 import { revalidatePath } from "next/cache";
@@ -6083,18 +6084,25 @@ async function logOrderAction(
 
 // Whether an order uses the grant flow and payout: its item is in the grants
 // category, or a fulfiller converted this one order (shop_orders.is_grant).
-async function orderIsGrant(order: { item_id?: number | null; is_grant?: boolean | null }): Promise<boolean> {
+// An order pushed onto the normal item flow by an unfulfill (item_flow) is not
+// a grant unless it was also converted, exactly like isGrantOrder.
+async function orderIsGrant(order: { item_id?: number | null; is_grant?: boolean | null; item_flow?: boolean | null; item_category?: string | null }): Promise<boolean> {
   if (order.is_grant === true) return true;
+  if (order.item_flow === true) return false;
+  // Callers that already looked the item up pass its category, so this skips
+  // the extra query.
+  if (order.item_category !== undefined) return order.item_category === "grants";
   if (order.item_id == null) return false;
   const { data } = await db.from("shop_items").select("category").eq("id", order.item_id).maybeSingle();
   return isGrantOrder({ item_category: (data?.category as string | null | undefined) ?? null });
 }
 
 // One terminal step for an item: the fulfiller bought it, recorded the HCB
-// transaction and real cost, and optionally the tracking number. Claimed (or
-// a legacy ordered/credited order) goes straight to done - there is no separate
-// placed/credited/shipped/done ceremony and no "mark delivered" click.
-// settleItemFulfillment closes the order and pays the fulfiller atomically.
+// transaction and real cost, and optionally delivery info (a tracking number,
+// an ETA, or a software code). Claimed (or a legacy ordered/credited order)
+// goes straight to done - there is no separate placed/credited/shipped/done
+// ceremony and no "mark delivered" click. settleItemFulfillment closes the
+// order and pays the fulfiller atomically.
 export const fulfillOrder = guardedAction("fulfillOrder", "fulfiller", async (access, formData: FormData): Promise<void> => {
   const id = Number(formData.get("id") ?? 0);
   if (!Number.isSafeInteger(id) || id <= 0) return;
@@ -6106,8 +6114,9 @@ export const fulfillOrder = guardedAction("fulfillOrder", "fulfiller", async (ac
   // Optional: where this was actually bought from. Kept on the item itself so
   // the next fulfiller sourcing the same item/region sees a known-working link.
   const sourceUrl = String(formData.get("sourceUrl") ?? "").trim().slice(0, 500);
-  // Optional: shipping is not a separate stage. If there is a number, record
-  // and DM it; grants, software and hand-delivered items simply have none.
+  // Optional: shipping is not a separate stage. Delivery info can be a
+  // tracking number, an ETA, or a code; if there is one, record and DM it.
+  // Grants and hand-delivered items simply have none.
   const tracking = String(formData.get("tracking") ?? "").trim().slice(0, 120);
   if (
     !hcbLink ||
@@ -6121,7 +6130,7 @@ export const fulfillOrder = guardedAction("fulfillOrder", "fulfiller", async (ac
   }
   const { data: order } = await db
     .from("shop_orders")
-    .select("user_id, item_name, status, claimed_by_slack, item_id, is_grant")
+    .select("user_id, item_name, status, claimed_by_slack, item_id, is_grant, item_flow")
     .eq("id", id)
     .maybeSingle();
   const open = order?.status === "claimed" || order?.status === "ordered" || order?.status === "credited";
@@ -6129,19 +6138,37 @@ export const fulfillOrder = guardedAction("fulfillOrder", "fulfiller", async (ac
     revalidatePath("/fulfillment");
     return;
   }
+  // The item's category decides both the flow (grant vs item) and the delivery
+  // wording (software items are a code, not a shipped parcel).
+  let itemCategory: string | null = null;
+  if (order.item_id != null) {
+    const { data: item } = await db.from("shop_items").select("category").eq("id", order.item_id).maybeSingle();
+    itemCategory = (item?.category as string | null | undefined) ?? null;
+  }
+  const grant = await orderIsGrant({ ...order, item_category: itemCategory });
+  const digital = isDigitalOrder({
+    item_category: itemCategory,
+    is_grant: order.is_grant as boolean | null,
+    item_flow: order.item_flow as boolean | null,
+  });
+  // A software order is only fulfilled once the buyer has something to
+  // receive. The form requires this too; this is the server-side guard.
+  if (digital && !tracking) {
+    throw new Error("A code or license is required for software orders.");
+  }
   // A claimed grant has its own one-step form (send the HCB invite); a direct
   // post must not silently treat it as an item purchase.
-  if (order.status === "claimed" && (await orderIsGrant(order))) {
+  if (order.status === "claimed" && grant) {
     throw new Error("This order is a grant. Send the HCB grant instead.");
   }
   // Owners may fulfil their own order (upstream policy); everyone else cannot.
   if (isOwnOrder({ player_slack: await buyerSlackFor(order.user_id as string) }, access.session.slackId, access.isOwner)) {
     throw new Error("You can't fulfill your own shop order.");
   }
-  const payoutPixels = fulfillmentPayoutPixels({ is_grant: await orderIsGrant(order) });
+  const payoutPixels = fulfillmentPayoutPixels({ is_grant: grant });
   const settled = await settleItemFulfillment(
     id,
-    { tracking, hcbLink, actualCostUsd },
+    { tracking, hcbLink, actualCostUsd, digital },
     access.session.slackId,
     actorName(access),
     payoutPixels,
@@ -6162,12 +6189,19 @@ export const fulfillOrder = guardedAction("fulfillOrder", "fulfiller", async (ac
 
   const showOffLine = "Show it off in <#C07UMRYJ1LH> when it arrives, we'd love to see it! 🎉";
   const showOffLineInApp = "Show it off in #treasure-cove when it arrives, we'd love to see it! 🎉";
+  const codeMessage = `Here's your code for "${order.item_name}": ${tracking}`;
   await db.from("notifications").insert({
     user_id: order.user_id,
-    title: tracking ? "Order shipped! 📦" : "Order fulfilled! 📦",
-    body: tracking
-      ? `Your "${order.item_name}" order shipped. Tracking: ${tracking}\n\n${showOffLineInApp}`
-      : `Your "${order.item_name}" order is fulfilled.`,
+    title: digital
+      ? tracking ? "Your code is ready! 🎁" : "Order fulfilled! 📦"
+      : tracking ? "Order update! 📦" : "Order fulfilled! 📦",
+    body: digital
+      ? tracking
+        ? `${codeMessage}\n\nHave fun! 🎉`
+        : `Your "${order.item_name}" order is fulfilled.`
+      : tracking
+        ? `Delivery info for your "${order.item_name}" order: ${tracking}\n\n${showOffLineInApp}`
+        : `Your "${order.item_name}" order is fulfilled.`,
   });
   if (tracking) {
     const { data: buyer } = await db
@@ -6176,17 +6210,27 @@ export const fulfillOrder = guardedAction("fulfillOrder", "fulfiller", async (ac
       .eq("id", order.user_id)
       .maybeSingle();
     if (buyer?.slack_id) {
+      const text = digital
+        ? `🎁 ${codeMessage}\n\nHave fun! 🎉`
+        : `📦 Update on your "${order.item_name}" order: ${tracking}\n\n${showOffLine}`;
       try {
-        await dmUser(
-          buyer.slack_id,
-          `📦 Your "${order.item_name}" order shipped! Tracking number: ${tracking}\n\n${showOffLine}`,
-        );
+        await dmUser(buyer.slack_id, text);
       } catch (err) {
         console.error("fulfillOrder DM", err instanceof Error ? err.message : err);
       }
     }
   }
-  await logOrderAction(id, "order_fulfilled", tracking ? `tracking ${tracking}` : "fulfilled without tracking", actorName(access), order);
+  await logOrderAction(
+    id,
+    "order_fulfilled",
+    tracking
+      ? `${digital ? "code" : "delivery info"} ${tracking}`
+      : digital
+        ? "fulfilled without a code"
+        : "fulfilled without delivery info",
+    actorName(access),
+    order,
+  );
 
   try {
     await dmUser(
@@ -6259,7 +6303,7 @@ async function completeGrant(
 }
 
 // Grant flow: claimed -> done in one step. A grant is sent by email as an HCB
-// grant invite, so there is no purchase, receipt or tracking number to collect.
+// grant invite, so there is no purchase, receipt or delivery info to collect.
 // The fulfiller pastes the HCB grant link and the amount; settleGrant (one
 // transaction) closes the order and pays the grant payout (2 pixels). The
 // buyer gets an in-app notification and a Pixo DM saying to check their email.
@@ -6274,7 +6318,7 @@ export const sendGrant = guardedAction("sendGrant", "fulfiller", async (access, 
   }
   const { data: order } = await db
     .from("shop_orders")
-    .select("user_id, item_name, status, claimed_by_slack, item_id, is_grant")
+    .select("user_id, item_name, status, claimed_by_slack, item_id, is_grant, item_flow")
     .eq("id", id)
     .maybeSingle();
   if (!order || order.status !== "claimed" || !ownsOrder(access, order.claimed_by_slack as string)) {
@@ -6531,7 +6575,7 @@ export const convertOrderToGrant = guardedAction("convertOrderToGrant", "fulfill
   if (!Number.isSafeInteger(id) || id <= 0) return;
   const { data: order } = await db
     .from("shop_orders")
-    .select("user_id, item_name, status, claimed_by_slack, item_id, is_grant")
+    .select("user_id, item_name, status, claimed_by_slack, item_id, is_grant, item_flow")
     .eq("id", id)
     .maybeSingle();
   if (!order || (order.status !== "pending" && order.status !== "claimed")) {
@@ -6550,7 +6594,7 @@ export const convertOrderToGrant = guardedAction("convertOrderToGrant", "fulfill
   }
   const { data: changed, error } = await db
     .from("shop_orders")
-    .update({ is_grant: true })
+    .update({ is_grant: true, item_flow: false })
     .eq("id", id)
     .in("status", ["pending", "claimed"])
     .eq("is_grant", false)
@@ -6563,7 +6607,7 @@ export const convertOrderToGrant = guardedAction("convertOrderToGrant", "fulfill
 });
 
 // Corrects an already-claimed order's fulfillment paper trail - the HCB link,
-// actual cost, and tracking number - after the fact. Every other action here
+// actual cost, and delivery info - after the fact. Every other action here
 // only ever writes these once, at the stage they're first collected, and
 // stops being reachable once an order is done/cancelled; this is the one
 // escape hatch for fixing a typo'd link or a wrong cost after the fact,
@@ -6591,12 +6635,26 @@ export const updateOrderFulfillmentInfo = guardedAction("updateOrderFulfillmentI
   }
   const { data: order } = await db
     .from("shop_orders")
-    .select("hcb_link, actual_cost_usd, tracking, status, item_id")
+    .select("hcb_link, actual_cost_usd, tracking, status, item_id, is_grant, item_flow")
     .eq("id", id)
     .maybeSingle();
   if (!order || order.status === "pending") {
     revalidatePath("/fulfillment");
     return;
+  }
+  let itemCategory: string | null = null;
+  if (order.item_id != null) {
+    const { data: item } = await db.from("shop_items").select("category").eq("id", order.item_id).maybeSingle();
+    itemCategory = (item?.category as string | null | undefined) ?? null;
+  }
+  const digital = isDigitalOrder({
+    item_category: itemCategory,
+    is_grant: order.is_grant as boolean | null,
+    item_flow: order.item_flow as boolean | null,
+  });
+  // Don't let an owner accidentally erase the only copy of a delivered code.
+  if (digital && !tracking) {
+    throw new Error("A code or license is required for software orders.");
   }
   const { error } = await db
     .from("shop_orders")
@@ -6616,7 +6674,7 @@ export const updateOrderFulfillmentInfo = guardedAction("updateOrderFulfillmentI
   await logOrderAction(
     id,
     "order_info_corrected",
-    `HCB ${order.hcb_link || "(none)"} → ${hcbLink} , cost $${order.actual_cost_usd ?? "?"} → $${actualCostUsd} , tracking "${order.tracking || "(none)"}" → "${tracking || "(none)"}"${sourceUrl ? ` , source url → ${sourceUrl}` : ""}`,
+    `HCB ${order.hcb_link || "(none)"} → ${hcbLink} , cost $${order.actual_cost_usd ?? "?"} → $${actualCostUsd} , ${digital ? "code" : "delivery info"} "${order.tracking || "(none)"}" → "${tracking || "(none)"}"${sourceUrl ? ` , source url → ${sourceUrl}` : ""}`,
     actorName(access),
   );
   revalidatePath("/fulfillment");

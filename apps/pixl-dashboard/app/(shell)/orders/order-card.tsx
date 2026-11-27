@@ -17,6 +17,8 @@ export interface Order {
   note?: string | null;
   /** A grant order: sent by email as an HCB grant, no shipping. */
   is_grant?: boolean | null;
+  /** A software/license order: delivered as a code, no shipping. */
+  digital?: boolean | null;
 }
 
 const STAGES: [string, string][] = [
@@ -138,7 +140,7 @@ export function OrderCard({ order: o }: { order: Order }) {
         </div>
       ) : (o.status === "shipped" || o.status === "done") && o.tracking ? (
         <div className={meta}>
-          Tracking <span className="font-mono text-ink">{o.tracking}</span>
+          {o.digital ? "Code" : "Delivery info"} <span className="font-mono text-ink">{o.tracking}</span>
           <span className="text-muted"> · DM&apos;d to you</span>
         </div>
       ) : null}

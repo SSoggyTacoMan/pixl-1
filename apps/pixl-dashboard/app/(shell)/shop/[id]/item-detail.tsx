@@ -74,6 +74,9 @@ export function ItemDetail({
   const unsave = useAction(unsaveItem);
 
   const isConfig = !!item.config_options;
+  // Software items are delivered as a code, so checkout skips the shipping
+  // address and phone steps.
+  const digital = item.category === "software";
   const picks = resolvePicks(item, rawPicks);
   const inStock = stockOk(item, picks, quantity);
   const total = isConfig ? configTotal(item, config) : Number(item.price) * quantity;
@@ -85,7 +88,7 @@ export function ItemDetail({
   useEffect(() => {
     if (!verifyReturn) return;
     router.replace(`/shop/${item.id}`, { scroll: false });
-    if (verifyReturn === "ok") setStep(firstStep(false));
+    if (verifyReturn === "ok") setStep(firstStep(false, digital));
   }, [verifyReturn, item.id, router]);
 
   // Live stock: re-render from the server so "12 LEFT" stays current.
@@ -130,10 +133,10 @@ export function ItemDetail({
           : "ORDER PLACED! The team will reach out.",
       );
       router.refresh();
-    } else if (r.error === "phone_required") {
+    } else if (r.error === "phone_required" && !digital) {
       buy.setError(null);
       setStep("phone");
-    } else if (r.error === "address_required") {
+    } else if (r.error === "address_required" && !digital) {
       buy.setError(null);
       setStep("address");
     } else if (r.error === "sold_out") {
@@ -217,7 +220,7 @@ export function ItemDetail({
                 className={cn(textareaField, "mt-1")}
                 maxLength={300}
                 rows={2}
-                placeholder="anything the person shipping this should know..."
+                placeholder={digital ? "anything the fulfiller should know..." : "anything the person shipping this should know..."}
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
               />
@@ -263,7 +266,11 @@ export function ItemDetail({
             ) : (
               <Button
                 disabled={ps.buyDisabled || buy.pending}
-                onClick={() => setStep(firstStep(!!item.beacon_locked))}
+                onClick={() => {
+                  const next = firstStep(!!item.beacon_locked, digital);
+                  if (next) setStep(next);
+                  else void doBuy();
+                }}
               >
                 {buy.pending ? "BUYING..." : item.beacon_locked ? "BUY WITH BEACON" : ps.buyLabel}
               </Button>
@@ -284,6 +291,7 @@ export function ItemDetail({
         itemName={item.name}
         beaconAvailable={item.beaconAvailable ?? 0}
         eligibility={eligibility}
+        digital={digital}
         pending={buy.pending}
         onBuy={doBuy}
       />

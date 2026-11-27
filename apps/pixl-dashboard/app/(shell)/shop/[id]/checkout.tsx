@@ -17,8 +17,8 @@ export interface CheckoutEligibility {
 
 export type CheckoutStep = null | "beacon" | "address" | "phone";
 
-export function firstStep(beacon: boolean): CheckoutStep {
-  return beacon ? "beacon" : "address";
+export function firstStep(beacon: boolean, digital = false): CheckoutStep {
+  return beacon ? "beacon" : digital ? null : "address";
 }
 
 export function Checkout({
@@ -28,6 +28,7 @@ export function Checkout({
   itemName,
   beaconAvailable,
   eligibility,
+  digital,
   pending,
   onBuy,
 }: {
@@ -37,6 +38,8 @@ export function Checkout({
   itemName: string;
   beaconAvailable: number;
   eligibility: CheckoutEligibility;
+  /** Software/license item: skip the shipping address and phone steps. */
+  digital: boolean;
   pending: boolean;
   onBuy: (phone?: string) => void;
 }) {
@@ -48,6 +51,15 @@ export function Checkout({
   async function verifyAddress() {
     const r = await flow.run({ name: "verify-address", returnTo: `/shop/${itemId}?addr_verified_return=1` });
     if (r.ok && !goTo(r.data.url)) flow.setError("Couldn't start address verification.");
+  }
+
+  function afterBeacon() {
+    if (digital) {
+      setStep(null);
+      onBuy();
+    } else {
+      setStep("address");
+    }
   }
 
   function afterAddress() {
@@ -107,13 +119,13 @@ export function Checkout({
           <Button variant="ghost" onClick={() => setStep(null)}>
             Keep my unlock
           </Button>
-          <Button disabled={beaconAvailable < 1} onClick={() => setStep("address")}>
+          <Button disabled={beaconAvailable < 1} onClick={afterBeacon}>
             Use 1 Beacon unlock
           </Button>
         </div>
       </Dialog>
 
-      {eligibility.hasAddress ? (
+      {!digital && eligibility.hasAddress ? (
         <Dialog open={step === "address"} onOpenChange={close} title="Confirm shipping address">
           <p className="text-dim">We&apos;ll ship to: {eligibility.summary}</p>
           {flow.error ? <Notice tone="bad" className="mt-3">{flow.error}</Notice> : null}
@@ -129,7 +141,7 @@ export function Checkout({
             </Button>
           </div>
         </Dialog>
-      ) : (
+      ) : !digital ? (
         <ConfirmDialog
           open={step === "address"}
           onOpenChange={close}
@@ -141,10 +153,10 @@ export function Checkout({
         >
           {flow.error ? <Notice tone="bad">{flow.error}</Notice> : null}
         </ConfirmDialog>
-      )}
+      ) : null}
 
       <Dialog
-        open={step === "phone"}
+        open={!digital && step === "phone"}
         onOpenChange={close}
         title="Phone number needed"
         description="We need a phone number for shipping this prize. It's only asked once."

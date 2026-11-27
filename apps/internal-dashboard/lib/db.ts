@@ -2709,7 +2709,8 @@ export interface ShopOrderRow {
   fulfilled_at: string | null;
   fulfilled_by: string;
   // Pipeline: the one fulfiller who owns the order once it's claimed, plus a
-  // stamp per stage and the shipment tracking number DM'd to the buyer.
+  // stamp per stage and the delivery info (tracking number or ETA) DM'd to the
+  // buyer.
   claimed_by: string;
   claimed_by_slack: string;
   claimed_at: string | null;
@@ -2717,6 +2718,8 @@ export interface ShopOrderRow {
   credited_at: string | null;
   shipped_at: string | null;
   done_at: string | null;
+  // Kept in the `tracking` column for compatibility; holds any delivery info,
+  // such as a carrier tracking number, an ETA, or a software code.
   tracking: string;
   // The HCB (hcb.hackclub.com) transaction or grant the order was actually
   // paid from - required to claim an order (see claimOrder in
@@ -2763,6 +2766,10 @@ export interface ShopOrderRow {
   // An order is a grant if this is set OR its item category is "grants": use
   // isGrantOrder in lib/fulfillmentGrant.ts, never read this alone.
   is_grant?: boolean | null;
+  // An unfulfilled order can be pushed back onto the normal item flow even
+  // when its item is in the grants category (migration 0245). is_grant still
+  // wins; use isGrantOrder rather than reading this directly.
+  item_flow?: boolean | null;
 }
 
 // Shop orders players placed with pixels, newest first. Player name + Slack are

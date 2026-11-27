@@ -120,6 +120,24 @@ suite("atomic fulfillment shipment", () => {
     expect(Number(rows[0]!.fulfillment_pixels_paid)).toBe(2);
   });
 
+  test("a digital code closes the order without a shipped stamp", async () => {
+    await db`insert into shop_orders (id, user_id, item_name, status, claimed_by_slack)
+      values (7, ${buyer}, 'Aseprite License', 'credited', 'UFULFILLER')`;
+    expect(await settleItemFulfillment(7, {
+      tracking: "ASEPRITE-CODE",
+      hcbLink: "https://hcb.example/tx/7",
+      actualCostUsd: 20,
+      digital: true,
+    }, "UFULFILLER", "Staff", 6, db)).not.toBeNull();
+    const rows = await db`select status, tracking, shipped_at, done_at, fulfillment_pixels_paid
+      from shop_orders where id = 7`;
+    expect(rows[0]!.status).toBe("done");
+    expect(rows[0]!.tracking).toBe("ASEPRITE-CODE");
+    expect(rows[0]!.shipped_at).toBeNull();
+    expect(rows[0]!.done_at).not.toBeNull();
+    expect(Number(rows[0]!.fulfillment_pixels_paid)).toBe(6);
+  });
+
   describe("grants", () => {
     test("two simultaneous sends close the grant and pay exactly once", async () => {
       await db`insert into shop_items (id, category) values (100, 'grants')`;
