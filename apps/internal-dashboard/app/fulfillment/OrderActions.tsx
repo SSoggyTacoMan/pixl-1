@@ -31,7 +31,7 @@ export function EditFulfillmentInfo({ order: o }: { order: ShopOrderRow }) {
           </Field>
           <Field
             label={digital ? "Code / license" : "Delivery info"}
-            hint={digital ? "Required; DM'd to the buyer exactly as entered" : "Optional; a tracking number or an ETA"}
+            hint={digital ? "Required; DM'd to the buyer exactly as entered" : "Optional; any delivery details"}
           >
             <Input name="tracking" maxLength={120} defaultValue={o.tracking} required={digital} />
           </Field>
@@ -274,7 +274,7 @@ export function OrderActions({
             hint={
               digital
                 ? "Required; DM'd to the buyer exactly as entered"
-                : "Optional; a tracking number or ETA, DM'd to the buyer when provided"
+                : "Optional; delivery details, DM'd to the buyer when provided"
             }
             className="fw-order-action-field-wide"
           >
@@ -283,7 +283,7 @@ export function OrderActions({
               maxLength={120}
               defaultValue={o.tracking}
               required={digital}
-              placeholder={digital ? "License key or redemption code" : "1Z... or an ETA (optional)"}
+              placeholder={digital ? "License key or redemption code" : "ETA or delivery notes (optional)"}
             />
           </Field>
           <Field label="Bought from" hint="Optional, saved onto the item" className="fw-order-action-field-wide">
