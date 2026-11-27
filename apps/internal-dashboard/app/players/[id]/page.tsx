@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { requirePage } from "@/lib/guard";
 import { banIsActive, getPlayer, listReportsAgainst } from "@/lib/db";
-import { slackDmLink, slackHandle } from "@/lib/slack";
+import { slackDmLink, slackHandle, warmSlackDirectory } from "@/lib/slack";
 import { isSafeUrl } from "@/lib/safeUrl";
 import {
   BanForm,
@@ -49,6 +49,9 @@ async function SlackHandle({ id }: { id: string | null | undefined }) {
 
 export default async function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
   const access = await requirePage("owner");
+  // Start the Slack name crawl while the page renders, so the transfer/adjust
+  // pickers do not have to wait for it on the first keystroke.
+  warmSlackDirectory();
   // Every player action (warn, ban, notify, edit, delete) is owner-only.
   const owner = access.isOwner;
   const { id } = await params;

@@ -1,5 +1,5 @@
 import { requirePage } from "@/lib/guard";
-import { listViolations } from "@/lib/db";
+import { listViolations, playerIdsBySlackName } from "@/lib/db";
 import { BanForm, WarnForm } from "@/app/_components/Moderate";
 import SlackName from "@/app/_ui/SlackName";
 import {
@@ -34,6 +34,10 @@ export default async function ViolationsPage({
   const nameCount = all.length - chatCount;
 
   const query = (q ?? "").trim().toLowerCase();
+  const slackPlayerIds =
+    query.length >= 2
+      ? new Set(await playerIdsBySlackName(q ?? "", { limit: 100 }))
+      : new Set<string>();
   let rows = all;
   if (kind === "chat") rows = rows.filter((v) => v.kind === "chat");
   else if (kind === "name") rows = rows.filter((v) => v.kind !== "chat");
@@ -41,6 +45,8 @@ export default async function ViolationsPage({
     rows = rows.filter(
       (v) =>
         (v.users?.real_name || v.users?.display_name || "").toLowerCase().includes(query) ||
+        (v.users?.slack_id ?? "").toLowerCase().includes(query) ||
+        slackPlayerIds.has(v.user_id) ||
         (v.content ?? "").toLowerCase().includes(query),
     );
 

@@ -6,6 +6,8 @@ export interface OrderSearchOptions {
   viewerSlack?: string;
   allowPrivateNames?: boolean;
   offset?: number;
+  // Pixl user ids resolved from Slack names/handles for this search.
+  playerIds?: string[];
 }
 
 export async function searchShopOrders(
@@ -30,6 +32,7 @@ export async function searchShopOrders(
         or coalesce(o.option, '') ilike ${q}
         or coalesce(u.display_name, '') ilike ${q}
         or coalesce(u.slack_id, '') ilike ${q}
+        or o.user_id = any(${opts.playerIds ?? []}::uuid[])
         or ((${opts.allowPrivateNames === true} or o.claimed_by_slack = ${opts.viewerSlack ?? ""})
           and coalesce(u.real_name, '') ilike ${q})
         or exists (

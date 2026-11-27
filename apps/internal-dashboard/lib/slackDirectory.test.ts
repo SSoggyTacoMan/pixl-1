@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { matchSlackDirectory, type SlackDirectoryMember } from "./slack";
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import {
+  matchSlackDirectory,
+  searchPublicSlackDirectory,
+  type SlackDirectoryMember,
+} from "./slack";
 
 const member = (
   id: string,
@@ -42,5 +46,41 @@ describe("matchSlackDirectory", () => {
 
   test("respects the limit", () => {
     expect(matchSlackDirectory(members, "le", 1)).toHaveLength(1);
+  });
+});
+
+describe("searchPublicSlackDirectory", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("maps username, display name and real name from the public directory", async () => {
+    globalThis.fetch = mock(async (url: unknown) => {
+      expect(String(url)).toContain("/users/search?q=krazyorange");
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: "U09TCVDPGGK",
+              name: "krazyorange13",
+              real_name: "krazyorange",
+              display_name: "krazyorange",
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const hits = await searchPublicSlackDirectory("krazyorange");
+    expect(hits.map((h) => h.id)).toEqual(["U09TCVDPGGK"]);
+  });
+
+  test("returns no members when the public directory is unreachable", async () => {
+    globalThis.fetch = mock(async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    expect(await searchPublicSlackDirectory("offline-user")).toEqual([]);
   });
 });

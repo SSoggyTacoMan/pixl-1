@@ -21,9 +21,10 @@ import { lockedForViewer, openableQueueIds, type AssignmentFields } from "./revi
 // stays importable while Next prerenders static pages (e.g. /_not-found)
 // where env vars may be absent.
 export { db } from "./pgCompat";
-import { db, sql } from "./pgCompat";
+import { db, orValue, sql } from "./pgCompat";
 import { PUBLIC_USER_COLUMNS, publicOwnerLabel } from "./publicLabels";
 import { searchShopOrders, type OrderSearchOptions } from "./shopOrderSearch";
+import { cachedSlackDirectory, matchSlackDirectory, searchPublicSlackDirectory } from "./slack";
 
 export interface UserRow {
   id: string;
@@ -2772,9 +2773,11 @@ export async function listShopOrders(
   opts: OrderSearchOptions & { search?: string } = {},
 ): Promise<ShopOrderRow[]> {
   let rows: ShopOrderRow[];
-  if (opts.search?.trim()) {
+  const search = opts.search?.trim();
+  if (search) {
     try {
-      rows = [...await searchShopOrders(status, opts.search, limit, opts)] as ShopOrderRow[];
+      const playerIds = await playerIdsBySlackName(search, { limit: 200 });
+      rows = [...await searchShopOrders(status, search, limit, { ...opts, playerIds })] as ShopOrderRow[];
     } catch (e) {
       console.error("searchShopOrders", e);
       return [];
@@ -3512,22 +3515,73 @@ export async function listViolations(limit = 100): Promise<ViolationRow[]> {
   return (data ?? []) as ViolationRow[];
 }
 
+// Player ids whose Pixl account is linked to a Slack member matching the
+// query. Uses the warm in-process directory when one exists and the public
+// directory otherwise, so every dashboard search can honor Slack names without
+// each one paginating users.list.
+export async function playerIdsBySlackName(
+  query: string,
+  opts: { limit?: number } = {},
+): Promise<string[]> {
+  const clean = query.replace(/[,()%*\\]/g, " ").trim().replace(/^@+/, "");
+  if (clean.length < 2 || /^\d+$/.test(clean)) return [];
+  const limit = opts.limit ?? 50;
+  const directory = cachedSlackDirectory();
+  const byId = new Map(directory.map((m) => [m.id, m]));
+  let matches = matchSlackDirectory(directory, clean, limit);
+  if (matches.length < limit) {
+    for (const member of await searchPublicSlackDirectory(clean, limit)) {
+      if (!byId.has(member.id)) byId.set(member.id, member);
+    }
+    matches = matchSlackDirectory([...byId.values()], clean, limit);
+  }
+  const slackIds = matches.map((m) => m.id);
+  if (slackIds.length === 0) return [];
+  const { data, error } = await db
+    .from("users")
+    .select("id")
+    .in("slack_id", slackIds)
+    .limit(limit);
+  if (error) {
+    console.error("playerIdsBySlackName", error.message);
+    return [];
+  }
+  return (data ?? []).map((u) => u.id as string);
+}
+
 export async function listPlayers(query?: string): Promise<
   (UserRow & { projectCount: number; violationCount: number; activeBan: BanRow | null })[]
 > {
+  const like = query ? query.replace(/[,()%*\\]/g, " ").trim() : "";
   let q = db.from("users").select("*").order("created_at", { ascending: false }).limit(500);
-  if (query) {
-    // Sanitize before interpolating into an or-filter , stray commas/parens
-    // would otherwise break PostgREST's filter grammar.
-    const like = query.replace(/[,()%*\\]/g, " ").trim();
-    q = q.or(`display_name.ilike.%${like}%,real_name.ilike.%${like}%`);
+  if (like) {
+    q = q.or(
+      `display_name.ilike.${orValue(`%${like}%`)},real_name.ilike.${orValue(`%${like}%`)},slack_id.ilike.${orValue(`%${like}%`)}`,
+    );
   }
-  const { data, error } = await q;
-  if (error) {
-    console.error("listPlayers", error.message);
+  const [byName, slackIds] = await Promise.all([
+    q,
+    like.length >= 2
+      ? playerIdsBySlackName(query ?? "", { limit: 100 })
+      : Promise.resolve([] as string[]),
+  ]);
+  if (byName.error) {
+    console.error("listPlayers", byName.error.message);
     return [];
   }
-  const users = (data ?? []) as UserRow[];
+  const byId = new Map<string, UserRow>();
+  for (const u of (byName.data ?? []) as UserRow[]) byId.set(u.id, u);
+  if (slackIds.length > 0) {
+    const { data: slackUsers, error: slackError } = await db
+      .from("users")
+      .select("*")
+      .in("id", slackIds);
+    if (slackError) console.error("listPlayers slack", slackError.message);
+    for (const u of (slackUsers ?? []) as UserRow[]) byId.set(u.id, u);
+  }
+  const users = [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
 
   const [projects, violations, bans] = await Promise.all([
     db.from("projects").select("user_id"),
@@ -3600,7 +3654,7 @@ export async function globalSearch(
   const like = `%${clean}%`;
   const nameSearch = clean.length >= 2;
 
-  const [playersRes, projectsRes, projectById] = await Promise.all([
+  const [playersRes, projectsRes, projectById, slackPlayerIds] = await Promise.all([
     opts.players && nameSearch
       ? db
           .from("users")
@@ -3625,17 +3679,33 @@ export async function globalSearch(
           .is("archived_at", null)
           .eq("id", number)
       : Promise.resolve({ data: [], error: null }),
+    opts.players && nameSearch
+      ? playerIdsBySlackName(clean, { limit: 20 })
+      : Promise.resolve([] as string[]),
   ]);
   if (playersRes.error) console.error("globalSearch players", playersRes.error.message);
   if (projectsRes.error) console.error("globalSearch projects", projectsRes.error.message);
   if (projectById.error) console.error("globalSearch project by id", projectById.error.message);
+
+  const playerById = new Map<string, SearchResults["players"][number]>();
+  for (const p of (playersRes.data ?? []) as SearchResults["players"]) playerById.set(p.id, p);
+  if (slackPlayerIds.length > 0) {
+    const { data: slackPlayers, error } = await db
+      .from("users")
+      .select("id, display_name, real_name, slack_id")
+      .in("id", slackPlayerIds)
+      .limit(6);
+    if (error) console.error("globalSearch slack players", error.message);
+    for (const p of (slackPlayers ?? []) as SearchResults["players"]) playerById.set(p.id, p);
+  }
+  const players = [...playerById.values()].slice(0, 6);
 
   // The project with that number first, then the name matches.
   const exact = (projectById.data ?? []) as unknown as SearchResults["projects"];
   const seen = new Set(exact.map((p) => Number(p.id)));
   const named = ((projectsRes.data ?? []) as unknown as SearchResults["projects"]).filter((p) => !seen.has(Number(p.id)));
   return {
-    players: (playersRes.data ?? []) as SearchResults["players"],
+    players,
     projects: [...exact, ...named],
   };
 }

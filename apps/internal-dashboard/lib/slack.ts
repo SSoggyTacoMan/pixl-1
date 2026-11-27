@@ -285,6 +285,62 @@ export function warmSlackDirectory(): void {
   void startDirectoryFetch();
 }
 
+// The already-fetched directory, without starting a Slack crawl. Search pages
+// that are not dedicated pickers use this plus the public fallback, so typing
+// in a global search never kicks off a users.list run.
+export function cachedSlackDirectory(): SlackDirectoryMember[] {
+  const hit = directoryCache;
+  const age = hit ? Date.now() - hit.at : Infinity;
+  return hit && age < DIRECTORY_STALE_MAX ? hit.members : [];
+}
+
+// Public Hack Club Slack directory fallback. users.list needs the bot's
+// users:read scope, and very large workspaces can run past our page cap; this
+// still resolves a name to a Slack member id when either happens. It only
+// receives the search text (never player data), and callers map the ids back
+// through users.slack_id. Set SLACK_PUBLIC_DIRECTORY_URL to "" to disable.
+const PUBLIC_DIRECTORY_URL =
+  process.env.SLACK_PUBLIC_DIRECTORY_URL ?? "https://flaron.halceon.dev";
+const PUBLIC_DIRECTORY_TTL = 5 * 60_000;
+const publicSearchCache = new Map<string, { at: number; members: SlackDirectoryMember[] }>();
+
+export async function searchPublicSlackDirectory(
+  query: string,
+  limit = 8,
+): Promise<SlackDirectoryMember[]> {
+  const base = PUBLIC_DIRECTORY_URL.trim().replace(/\/+$/, "");
+  const needle = query.trim().replace(/^@+/, "");
+  if (!base || needle.length < 2) return [];
+  const key = `${limit}:${needle.toLowerCase()}`;
+  const cached = publicSearchCache.get(key);
+  if (cached && Date.now() - cached.at < PUBLIC_DIRECTORY_TTL) return cached.members;
+  try {
+    const res = await fetch(`${base}/users/search?q=${encodeURIComponent(needle)}`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!res.ok) return [];
+    const json = (await res.json()) as {
+      data?: { id?: string; name?: string; real_name?: string; display_name?: string }[];
+    };
+    const members: SlackDirectoryMember[] = [];
+    for (const u of json.data ?? []) {
+      if (!u.id) continue;
+      members.push({
+        id: u.id,
+        name: (u.name ?? "").trim(),
+        displayName: (u.display_name ?? "").trim(),
+        realName: (u.real_name ?? "").trim(),
+      });
+    }
+    const matches = matchSlackDirectory(members, needle, limit);
+    publicSearchCache.set(key, { at: Date.now(), members: matches });
+    return matches;
+  } catch {
+    return [];
+  }
+}
+
 function directoryLabel(member: SlackDirectoryMember): string {
   return member.displayName || member.realName || member.name;
 }

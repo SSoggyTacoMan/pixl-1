@@ -36,6 +36,7 @@ import {
   listAdmins,
   ackGuidelines,
   playerLabel,
+  playerIdsBySlackName,
   logModAction,
   creditProjectPixels,
   revokeProjectPixels,
@@ -95,6 +96,7 @@ import {
   slackAvatars,
   matchSlackDirectory,
   slackDirectory,
+  searchPublicSlackDirectory,
   type SlackDirectoryMember,
   DM_EXCLUDED_SLACK_IDS,
 } from "@/lib/slack";
@@ -4412,21 +4414,25 @@ export const sendNotification = guardedAction("sendNotification", "owner", async
     const likeName = playerName.replace(/[,()%*\\]/g, " ").trim();
     const { data } = await db
       .from("users")
-      .select("id, display_name, real_name")
+      .select("id")
       .or(`display_name.ilike.${orValue(likeName)},real_name.ilike.${orValue(likeName)}`)
       .limit(2);
-    if (!data || data.length !== 1) {
+    const matches = new Set((data ?? []).map((u) => u.id as string));
+    for (const id of await playerIdsBySlackName(playerName, { limit: 2 })) {
+      matches.add(id);
+    }
+    if (matches.size !== 1) {
       if (backTo)
         redirect(
           `${backTo}?error=${encodeURIComponent(
-            data && data.length > 1
+            matches.size > 1
               ? `Multiple players match "${playerName}" , be more specific.`
               : `No player named "${playerName}".`,
           )}`,
         );
       return;
     }
-    targetId = data[0].id as string;
+    targetId = [...matches][0]!;
   }
 
   if (targetId) {
@@ -4512,7 +4518,7 @@ export const searchPlayers = guardedAction("searchPlayers", "owner", async (acce
       )
       .order("display_name", { ascending: true })
       .limit(8),
-    slackDirectory({ maxWaitMs: 3000 }),
+    slackDirectory({ maxWaitMs: 1500 }),
   ]);
   if (byName.error) {
     console.error("searchPlayers", byName.error.message);
@@ -4524,7 +4530,16 @@ export const searchPlayers = guardedAction("searchPlayers", "owner", async (acce
   // users.list is the only Slack API that can find a member by name, so the
   // directory hits are mapped back to their Pixl account through slack_id.
   const directoryById = new Map(directory.map((m) => [m.id, m]));
-  const slackMatches = matchSlackDirectory(directory, clean, 12);
+  let slackMatches = matchSlackDirectory(directory, clean, 12);
+  // users.list comes back empty when the bot lacks users:read, and a very
+  // large workspace can run past our page cap. Fill the gap from the public
+  // Hack Club directory; ids still have to match a Pixl account below.
+  if (slackMatches.length < 8) {
+    for (const member of await searchPublicSlackDirectory(clean, 12)) {
+      if (!directoryById.has(member.id)) directoryById.set(member.id, member);
+    }
+    slackMatches = matchSlackDirectory([...directoryById.values()], clean, 12);
+  }
   const missingSlackIds = slackMatches
     .map((m) => m.id)
     .filter((id) => !rows.some((u) => u.slack_id === id));
@@ -5677,7 +5692,12 @@ async function findPlayerForPersonalItem(
     return data && data.length === 1 ? data[0] : null;
   }
   const { data } = await db.from("users").select(cols).ilike("display_name", query).limit(2);
-  return data && data.length === 1 ? data[0] : null;
+  if (data && data.length === 1) return data[0];
+  if (data && data.length > 1) return null;
+  const ids = await playerIdsBySlackName(query, { limit: 2 });
+  if (ids.length !== 1) return null;
+  const { data: byId } = await db.from("users").select(cols).eq("id", ids[0]).limit(1);
+  return byId && byId.length === 1 ? byId[0] : null;
 }
 
 export const createPersonalShopItem = guardedAction("createPersonalShopItem", "owner", async (access, formData: FormData): Promise<void> => {

@@ -80,7 +80,7 @@ export default async function PlayersPage({
           }
         />
         <Flash error={error} ok={done} />
-        <FilterBar q={q} placeholder="Search display names" />
+        <FilterBar q={q} placeholder="Search name or @slack" />
       </div>
 
       <form action={massPlayerAction} className="flex flex-col gap-6">
