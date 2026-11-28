@@ -1,8 +1,8 @@
-import { cancelOrder, clearOrderFlag, claimOrder, convertOrderToGrant, flagOrderOverBudget, fulfillOrder, reassignOrder, sendGrant, unclaimOrder, updateOrderFulfillmentInfo } from "@/app/actions";
+import { cancelOrder, clearOrderFlag, claimOrder, convertOrderToGrant, convertOrderToItem, flagOrderOverBudget, fulfillOrder, reassignOrder, sendGrant, unclaimOrder, unfulfillOrder, updateOrderFulfillmentInfo } from "@/app/actions";
 import type { ShopOrderRow } from "@/lib/db";
 import { isDigitalOrder } from "@/lib/fulfillmentDelivery";
 import { isGrantOrder } from "@/lib/fulfillmentGrant";
-import { ActionButton, Details, Field, Input, Muted } from "@/app/_ui/ui";
+import { ActionButton, Details, Field, Input, Muted, NativeSelect, Textarea } from "@/app/_ui/ui";
 import { orderBudgetUsd } from "./shared";
 
 // Corrects the HCB link / actual cost / delivery info after the fact.
@@ -85,8 +85,9 @@ export function FlagControls({ order: o, canManage, budget }: { order: ShopOrder
   );
 }
 
-// Switches one order to the short grant flow. Only offered while nothing has
-// been bought yet, for grant-shaped orders on items that aren't tagged grants.
+// Switches one order to the short grant flow. Offered in the waiting and
+// claimed queues while nothing has been bought yet, for orders that aren't
+// already grants.
 function ConvertToGrant({ order: o }: { order: ShopOrderRow }) {
   return (
     <form action={convertOrderToGrant}>
@@ -99,6 +100,25 @@ function ConvertToGrant({ order: o }: { order: ShopOrderRow }) {
         confirm="Switch this order to the grant flow? It skips the purchase and shipping steps: you just send the HCB grant to the buyer's email."
       >
         Convert to grant
+      </ActionButton>
+    </form>
+  );
+}
+
+// The reverse switch: a grant goes back onto the normal purchase flow while it
+// is still waiting or claimed, so the item can be bought directly instead.
+function ConvertToItem({ order: o }: { order: ShopOrderRow }) {
+  return (
+    <form action={convertOrderToItem}>
+      <input type="hidden" name="id" value={o.id} />
+      <ActionButton
+        variant="outline"
+        size="sm"
+        pendingLabel="Converting..."
+        icon="bag-add"
+        confirm="Switch this order to the normal item flow? You'll buy the item and record the HCB transaction, actual cost and delivery info instead of sending a grant."
+      >
+        Convert to item
       </ActionButton>
     </form>
   );
@@ -120,6 +140,51 @@ function UnclaimButton({ order: o }: { order: ShopOrderRow }) {
         Unclaim
       </ActionButton>
     </form>
+  );
+}
+
+// Reopens a finished order without undoing the payout or deleting the record
+// of the first fulfillment. Owner-only (the action enforces it too). Kept out
+// of the normal action flow on purpose: it is an after-the-fact correction,
+// e.g. a grant that HCB cancelled and refunded.
+export function UnfulfillControls({ order: o }: { order: ShopOrderRow }) {
+  if (o.status !== "done" && o.status !== "shipped") return null;
+  const grantShaped = Boolean(o.is_grant || o.item_flow || o.item_category === "grants");
+  return (
+    <Details summary="Unfulfill and return it to the queue">
+      <form action={unfulfillOrder} className="fw-order-action-form">
+        <input type="hidden" name="id" value={o.id} />
+        <Muted className="text-sm">
+          {o.fulfillment_pixels_paid > 0
+            ? `Puts this order back in its fulfiller's queue so it can be fulfilled again. The ${o.fulfillment_pixels_paid} px already paid are kept by the fulfiller, and this fulfillment stays on the order's history.`
+            : "Puts this order back in its fulfiller's queue so it can be fulfilled again. This fulfillment stays on the order's history."}
+        </Muted>
+        <div className="fw-order-action-fields">
+          <Field label="Why is this being unfulfilled?" hint="Required; shown in the order history" className="fw-order-action-field-wide">
+            <Textarea
+              name="reason"
+              maxLength={300}
+              rows={3}
+              required
+              placeholder="The grant was cancelled and refunded, so I'm buying the item directly instead."
+            />
+          </Field>
+          {grantShaped && (
+            <Field label="Fulfill it again as" className="fw-order-action-field-wide">
+              <NativeSelect name="flow" defaultValue={isGrantOrder(o) ? "grant" : "item"}>
+                <option value="grant">A grant (send a new HCB grant)</option>
+                <option value="item">A normal item purchase (HCB transaction, cost, delivery info)</option>
+              </NativeSelect>
+            </Field>
+          )}
+        </div>
+        <div className="fw-order-action-buttons">
+          <ActionButton variant="danger" pendingLabel="Reopening..." icon="back">
+            Unfulfill order
+          </ActionButton>
+        </div>
+      </form>
+    </Details>
   );
 }
 
@@ -179,6 +244,8 @@ export function OrderActions({
           </ActionButton>
         </form>
         {o.status === "claimed" && <UnclaimButton order={o} />}
+        {o.status === "claimed" &&
+          (isGrantOrder(o) ? <ConvertToItem order={o} /> : <ConvertToGrant order={o} />)}
         {cancelForm}
       </div>
     );
@@ -202,7 +269,7 @@ export function OrderActions({
             {isGrantOrder(o) ? "Claim grant" : "Claim order"}
           </ActionButton>
         </form>
-        {!isGrantOrder(o) && <ConvertToGrant order={o} />}
+        {!isGrantOrder(o) ? <ConvertToGrant order={o} /> : <ConvertToItem order={o} />}
         {cancelForm}
       </div>
     );
@@ -234,6 +301,7 @@ export function OrderActions({
         </form>
         <div className="flex flex-wrap items-center gap-2">
           <UnclaimButton order={o} />
+          <ConvertToItem order={o} />
           {cancelForm}
         </div>
       </div>
@@ -304,6 +372,7 @@ export function OrderActions({
       </form>
       <div className="flex flex-wrap items-center gap-2">
         {o.status === "claimed" && <UnclaimButton order={o} />}
+        {o.status === "claimed" && <ConvertToGrant order={o} />}
         {cancelForm}
       </div>
     </div>

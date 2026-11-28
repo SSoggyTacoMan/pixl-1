@@ -514,6 +514,20 @@ export async function fetchCommitDiff(
   return result;
 }
 
+export interface RepoTreeFile {
+  path: string;
+  /** Blob size in bytes when the host reports it (GitLab does not). */
+  bytes: number | null;
+}
+
+export interface RepoTreeResult {
+  files: RepoTreeFile[];
+  /** The host or our own cap cut the listing short, so it cannot prove a file
+   * is absent. */
+  truncated: boolean;
+  error: string | null;
+}
+
 export interface RepoReadme {
   /** "html" is GitHub's own sanitized rendering; "markdown" is the raw file
    * for hosts that don't render it for us. */
@@ -588,5 +602,139 @@ export async function fetchReadme(repoUrl: string | null, deps?: SsrfGuardDeps):
     return noReadme("fetch_failed");
   }
   readmeCache.set(key, { result, at: Date.now() });
+  return result;
+}
+
+// The default branch's file list, used to resolve Hackatime's raw editor paths
+// ("/Users/me/code/pixl/src/a.ts") to the repository's own paths and casing.
+// GitHub returns the whole tree in one call; Forgejo and GitLab paginate, so
+// those stop at a bounded page count rather than holding the review open.
+const TREE_CACHE_TTL_MS = 10 * 60 * 1000;
+const TREE_FILE_CAP = 10_000;
+const treeCache = new Map<string, { result: RepoTreeResult; at: number }>();
+
+function treeFiles(items: unknown): RepoTreeFile[] {
+  if (!Array.isArray(items)) return [];
+  const out: RepoTreeFile[] = [];
+  for (const raw of items) {
+    const item = raw as { path?: unknown; type?: unknown; size?: unknown };
+    if (item.type !== "blob" || typeof item.path !== "string" || !item.path) continue;
+    const size = Number(item.size);
+    out.push({ path: item.path, bytes: Number.isFinite(size) && size >= 0 ? size : null });
+  }
+  return out;
+}
+
+function truncateTree(files: RepoTreeFile[], truncated: boolean): RepoTreeResult {
+  if (files.length > TREE_FILE_CAP) {
+    return { files: files.slice(0, TREE_FILE_CAP), truncated: true, error: null };
+  }
+  return { files, truncated, error: null };
+}
+
+export async function fetchRepoTree(repoUrl: string | null, deps?: SsrfGuardDeps): Promise<RepoTreeResult> {
+  const ref = parseRepoRef(repoUrl);
+  if (!ref) return { files: [], truncated: false, error: "unsupported" };
+  if (!ref.provider) return { files: [], truncated: false, error: "unsupported_host" };
+  const key = `${ref.provider}:${ref.host}/${ref.path}`;
+  const hit = treeCache.get(key);
+  if (hit && Date.now() - hit.at < TREE_CACHE_TTL_MS) return hit.result;
+
+  let result: RepoTreeResult;
+  try {
+    if (ref.provider === "github") {
+      const r = await ghFetch(`https://api.github.com/repos/${ref.path}/git/trees/HEAD?recursive=1`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (r.status === 404) return { files: [], truncated: false, error: "not_found" };
+      if (isRateLimit(r)) return { files: [], truncated: false, error: "rate_limited" };
+      if (!r.ok) return { files: [], truncated: false, error: `http_${r.status}` };
+      const json = (await r.json()) as { tree?: unknown; truncated?: boolean };
+      if (!Array.isArray(json.tree)) return { files: [], truncated: false, error: "fetch_failed" };
+      result = truncateTree(treeFiles(json.tree), Boolean(json.truncated));
+    } else if (ref.provider === "gitlab") {
+      const id = encodeURIComponent(ref.path);
+      const files: RepoTreeFile[] = [];
+      let truncated = false;
+      let exhausted = false;
+      // 100 is GitLab's page maximum; a very large repo stops after 30 pages
+      // rather than making a hundred sequential requests. The recursive listing
+      // puts directories first, so pagination must continue on the raw page, not
+      // on how many blobs that page happened to contain.
+      for (let page = 1; page <= 30; page++) {
+        const r = await gitlabFetch(
+          `https://${ref.host}/api/v4/projects/${id}/repository/tree?recursive=true&per_page=100&page=${page}`,
+          ref.host,
+          deps,
+        );
+        if (!r || r.status < 200 || r.status >= 300) {
+          if (page === 1) return { files: [], truncated: false, error: r?.status === 404 ? "not_found" : "fetch_failed" };
+          truncated = true;
+          break;
+        }
+        if (!Array.isArray(r.json)) {
+          if (page === 1) return { files: [], truncated: false, error: "fetch_failed" };
+          truncated = true;
+          break;
+        }
+        const rawCount = r.json.length;
+        files.push(...treeFiles(r.json));
+        if (files.length >= TREE_FILE_CAP) {
+          truncated = true;
+          break;
+        }
+        if (rawCount < 100) {
+          exhausted = true;
+          break;
+        }
+      }
+      result = truncateTree(files, truncated || !exhausted);
+    } else {
+      const files: RepoTreeFile[] = [];
+      let truncated = false;
+      let exhausted = false;
+      let seenItems = 0;
+      let totalItems = 0;
+      for (let page = 1; page <= 10; page++) {
+        const r = await forgejoFetch(
+          `https://${ref.host}/api/v1/repos/${ref.path}/git/trees/HEAD?recursive=true&per_page=1000&page=${page}`,
+          ref.host,
+          deps,
+        );
+        if (!r || r.status < 200 || r.status >= 300) {
+          if (page === 1) return { files: [], truncated: false, error: r?.status === 404 ? "not_found" : "fetch_failed" };
+          truncated = true;
+          break;
+        }
+        const body = r.json as { tree?: unknown; truncated?: boolean; total_count?: unknown };
+        if (!Array.isArray(body.tree)) {
+          if (page === 1) return { files: [], truncated: false, error: "fetch_failed" };
+          truncated = true;
+          break;
+        }
+        const rawCount = body.tree.length;
+        seenItems += rawCount;
+        const total = Number(body.total_count);
+        if (Number.isFinite(total) && total > 0) totalItems = total;
+        files.push(...treeFiles(body.tree));
+        if (files.length >= TREE_FILE_CAP) {
+          truncated = true;
+          break;
+        }
+        if (rawCount < 1000) {
+          exhausted = true;
+          break;
+        }
+      }
+      // Forgejo reports `truncated` whenever the recursive listing spans more
+      // than one page, which is normal here; only a stopped walk is incomplete.
+      if (totalItems > 0 && seenItems < totalItems) truncated = true;
+      result = truncateTree(files, truncated || !exhausted);
+    }
+  } catch {
+    return { files: [], truncated: false, error: "fetch_failed" };
+  }
+  if (!result.error) treeCache.set(key, { result, at: Date.now() });
   return result;
 }

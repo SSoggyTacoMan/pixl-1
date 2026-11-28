@@ -63,4 +63,34 @@ describe("fulfillment action layout", () => {
     expect(css).toContain(".fw-order-action-buttons .hc-btn");
     expect(css).toContain("white-space: normal;");
   });
+
+  test("unfulfilling asks for a required reason and is owner-gated", () => {
+    const control = actions.slice(
+      actions.indexOf("export function UnfulfillControls"),
+      actions.indexOf("export function OrderActions"),
+    );
+    expect(control).toContain('name="reason"');
+    expect(control).toContain("required");
+    expect(control).toContain('name="flow"');
+    expect(control).toContain("already paid are kept");
+    expect(detail).toContain("visible.unfulfill && <UnfulfillControls");
+  });
+
+  test("orders can switch between grant and item in the waiting and claimed queues", () => {
+    expect(actions).toContain("function ConvertToGrant");
+    expect(actions).toContain("function ConvertToItem");
+    const pending = actions.slice(
+      actions.indexOf('if (o.status === "pending")'),
+      actions.indexOf("// Grant flow: one form"),
+    );
+    expect(pending).toContain("<ConvertToGrant order={o} />");
+    expect(pending).toContain("<ConvertToItem order={o} />");
+    const claimedGrant = actions.slice(
+      actions.indexOf("// Grant flow: one form"),
+      actions.indexOf("// Claimed items, and legacy ordered/credited orders"),
+    );
+    expect(claimedGrant).toContain("<ConvertToItem order={o} />");
+    const claimedItem = actions.slice(actions.indexOf("// Claimed items, and legacy ordered/credited orders"));
+    expect(claimedItem).toContain("<ConvertToGrant order={o} />");
+  });
 });

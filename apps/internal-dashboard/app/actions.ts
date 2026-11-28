@@ -1,7 +1,7 @@
 "use server";
 
 import { claimOrderWithFunding, refreshCommitmentAmount } from "@/lib/eligibility/commit";
-import { releaseOrderClaim, settleGrant, settleItemFulfillment } from "@/lib/fulfillmentShip";
+import { releaseOrderClaim, settleGrant, settleItemFulfillment, unfulfillOrder as unfulfillOrderInDb } from "@/lib/fulfillmentShip";
 import { fulfillmentPayoutPixels, isGrantOrder, GRANT_FULFILLMENT_PAYOUT_PIXELS } from "@/lib/fulfillmentGrant";
 import { isDigitalOrder } from "@/lib/fulfillmentDelivery";
 import { manualShipsRefresh, shipsProvider } from "@/lib/eligibility/ships";
@@ -67,6 +67,7 @@ import {
   referralTierFor,
   turnedNineteenSinceShipping,
   type DashEventRow,
+  type UserRow,
   getReviewPayoutSettings,
   ensureJournalShareToken,
   listUsedHcbGrantLinks,
@@ -104,7 +105,16 @@ import {
 import { fetchHackatimeReport, fetchTrackedSecondsSince } from "@/lib/hackatime";
 import { AiProviderError, aiProviderMessage, generateAiReviewDraft, type AiReviewDraft } from "@/lib/aiReview";
 import { buildAiReviewInput } from "@/lib/aiReviewRun";
-import { fetchFileTime, type FileTimeReport } from "@/lib/hackatimeFiles";
+import {
+  capFileRows,
+  fallbackFileRows,
+  fetchPersonFileSeconds,
+  isMarkdown,
+  mergeFileRows,
+  resolveFileHours,
+  type FileRow,
+} from "@/lib/hackatimeFiles";
+import { fetchRepoTree } from "@/lib/commits";
 import { serializeGroups } from "@/lib/shopOptions";
 import { SHOP_REGIONS, type ShopRegion } from "@/lib/shopRegions";
 import { SHOP_CATEGORIES, type ShopCategory } from "@/lib/shopCategories";
@@ -126,6 +136,7 @@ import {
 } from "@/lib/reviewAccess";
 import { vaultDeleteFailure } from "@/lib/vaultDelete";
 import { safeRedirectPath, isSafeUrl } from "@/lib/safeUrl";
+import { transferPixels } from "@/lib/pixelTransfer";
 import {
   guardedAction,
   ownerSlackIds,
@@ -163,6 +174,14 @@ const DASH_URL = process.env.BASE_URL ?? "https://dash.pixl.hackclub.com";
 
 function actorName(access: AdminAccess): string {
   return `${access.session.name} (${access.session.slackId})`;
+}
+
+// Adds a flash message to a same-app redirect target without dropping any
+// query it already carries.
+function flashPath(path: string, key: string, value: string): string {
+  const u = new URL(path, "https://pixl.invalid");
+  u.searchParams.set(key, value);
+  return u.pathname + u.search + u.hash;
 }
 
 // Where to send a reviewer after they finish a verdict: straight to the next
@@ -1058,30 +1077,76 @@ export const generateAiReviewDraftAction = guardedAction("generateAiReviewDraftA
 
 // Time per file for a project's linked Hackatime projects (lib/hackatimeFiles.ts),
 // for the "Time by file" card on the review page. On demand only: one request
-// per coding day, so it is never loaded with the page. Read-only; the maker's
-// Hackatime token stays on the server and only repo-relative paths come back.
-export type ProjectFileTime =
-  | { ok: true; people: { name: string; report: FileTimeReport }[] }
-  | { ok: false; error: string };
+// per coding day plus one repository tree read, so it is never loaded with the
+// page. Read-only; the maker's Hackatime token stays on the server and the
+// browser only sees repository-relative paths and repo-relative tails.
+export interface ProjectFileTimePerson {
+  name: string;
+  totalSeconds: number;
+  repoSeconds: number;
+  outsideSeconds: number;
+  markdownSeconds: number;
+  aiSeconds: number;
+  missingDays: number;
+  skippedDays: number;
+}
+
+export interface ProjectFileTimeReport {
+  people: ProjectFileTimePerson[];
+  /** Contributors whose Hackatime data could not be read, and why. */
+  skippedPeople: { name: string; reason: string }[];
+  /** Repository rows (including untouched files) plus unresolved entities. */
+  files: FileRow[];
+  totalSeconds: number;
+  repoSeconds: number;
+  outsideSeconds: number;
+  markdownSeconds: number;
+  aiSeconds: number;
+  missingDays: number;
+  skippedDays: number;
+  /** The default branch's file list was read, so `files` is a real tree. */
+  treeOk: boolean;
+  treeTruncated: boolean;
+  repoFileCount: number;
+  /** Rows left out of the payload because the repository is very large. */
+  hiddenFiles: number;
+}
+
+export type ProjectFileTime = { ok: true; report: ProjectFileTimeReport } | { ok: false; error: string };
+
+const sumSeconds = (rows: readonly FileRow[]) => rows.reduce((sum, row) => sum + row.seconds, 0);
+const sumAiSeconds = (rows: readonly FileRow[]) => rows.reduce((sum, row) => sum + row.aiSeconds, 0);
+const sumMarkdownSeconds = (rows: readonly FileRow[]) =>
+  rows.reduce((sum, row) => (row.status !== "none" && isMarkdown(row.path) ? sum + row.seconds : sum), 0);
 
 export const loadProjectFileTime = guardedAction("loadProjectFileTime", "reviewer", async (access, rawProjectId: number | string): Promise<ProjectFileTime> => {
   // bigint ids reach the client as strings, so normalize before checking.
   const projectId = Number(rawProjectId);
   if (!Number.isInteger(projectId) || projectId <= 0) return { ok: false, error: "Missing project id." };
   const project = await authorizeProjectAction(access, projectId, null, { allowOwn: true });
-  const { data: row } = await db.from("projects").select("hackatime_projects").eq("id", projectId).maybeSingle();
+  const { data: row } = await db
+    .from("projects")
+    .select("hackatime_projects, repo_url")
+    .eq("id", projectId)
+    .maybeSingle();
+  const repoUrl = (row as { repo_url?: string | null } | null)?.repo_url ?? null;
   const { data: collabs } = await db
     .from("project_collaborators")
     .select("user_id, hackatime_projects")
     .eq("project_id", projectId)
     .eq("status", "accepted");
+  const seenUsers = new Set<string>();
   const sources = [
     { userId: project.user_id, projects: ((row?.hackatime_projects as string[] | null) ?? []) },
     ...((collabs ?? []) as { user_id: string; hackatime_projects: string[] | null }[]).map((c) => ({
       userId: c.user_id,
       projects: c.hackatime_projects ?? [],
     })),
-  ].filter((s) => s.projects.length > 0);
+  ].filter((s) => {
+    if (s.projects.length === 0 || seenUsers.has(s.userId)) return false;
+    seenUsers.add(s.userId);
+    return true;
+  });
   if (sources.length === 0) return { ok: false, error: "No Hackatime project is linked." };
 
   const { data: users } = await db
@@ -1093,16 +1158,97 @@ export const loadProjectFileTime = guardedAction("loadProjectFileTime", "reviewe
       (u) => [u.id, u] as const,
     ),
   );
-  const people: { name: string; report: FileTimeReport }[] = [];
+
+  const fetched: {
+    name: string;
+    projects: string[];
+    totalSeconds: number;
+    aiSeconds: number;
+    entitySeconds: Map<string, number>;
+    aiEntitySeconds: Map<string, number>;
+    missingDays: number;
+    skippedDays: number;
+  }[] = [];
+  const skippedPeople: { name: string; reason: string }[] = [];
   let lastError = "";
   for (const s of sources) {
     const u = byId.get(s.userId);
-    const result = await fetchFileTime(u?.slack_id, u?.hackatime_token ?? null, s.projects);
-    if (result.ok) people.push({ name: u?.display_name ?? "Player", report: result.report });
-    else lastError = result.error;
+    const result = await fetchPersonFileSeconds(u?.slack_id, u?.hackatime_token ?? null, s.projects);
+    if (!result.ok) {
+      lastError = result.error;
+      skippedPeople.push({ name: u?.display_name ?? "Player", reason: result.error });
+      continue;
+    }
+    fetched.push({
+      name: u?.display_name ?? "Player",
+      projects: s.projects,
+      totalSeconds: result.totalSeconds,
+      aiSeconds: result.aiSeconds,
+      entitySeconds: result.entitySeconds,
+      aiEntitySeconds: result.aiEntitySeconds,
+      missingDays: result.missingDays,
+      skippedDays: result.skippedDays,
+    });
   }
-  if (people.length === 0) return { ok: false, error: lastError || "No data." };
-  return { ok: true, people };
+  if (fetched.length === 0) return { ok: false, error: lastError || "No data." };
+
+  const tree = repoUrl
+    ? await fetchRepoTree(repoUrl)
+    : { files: [], truncated: false, error: "unsupported" };
+  const treeOk = !tree.error;
+
+  const merged = new Map<string, number>();
+  const mergedAi = new Map<string, number>();
+  for (const person of fetched) {
+    for (const [entity, seconds] of person.entitySeconds) merged.set(entity, (merged.get(entity) ?? 0) + seconds);
+    for (const [entity, seconds] of person.aiEntitySeconds) mergedAi.set(entity, (mergedAi.get(entity) ?? 0) + seconds);
+  }
+
+  const allRows = treeOk
+    ? resolveFileHours(merged, tree.files, [], mergedAi)
+    : mergeFileRows(
+        fetched.map((person) => fallbackFileRows(person.entitySeconds, person.aiEntitySeconds, person.projects)),
+      );
+  const files = capFileRows(allRows);
+  const totalSeconds = sumSeconds(allRows);
+  const repoSeconds = allRows.filter((f) => f.status !== "none").reduce((sum, f) => sum + f.seconds, 0);
+
+  const people: ProjectFileTimePerson[] = fetched.map((person) => {
+    const rows = treeOk
+      ? resolveFileHours(person.entitySeconds, tree.files, [], person.aiEntitySeconds)
+      : fallbackFileRows(person.entitySeconds, person.aiEntitySeconds, person.projects);
+    const personRepoSeconds = rows.filter((f) => f.status !== "none").reduce((sum, f) => sum + f.seconds, 0);
+    return {
+      name: person.name,
+      totalSeconds: person.totalSeconds,
+      repoSeconds: personRepoSeconds,
+      outsideSeconds: Math.max(0, person.totalSeconds - personRepoSeconds),
+      markdownSeconds: sumMarkdownSeconds(rows),
+      aiSeconds: sumAiSeconds(rows),
+      missingDays: person.missingDays,
+      skippedDays: person.skippedDays,
+    };
+  });
+
+  return {
+    ok: true,
+    report: {
+      people,
+      skippedPeople,
+      files,
+      totalSeconds,
+      repoSeconds,
+      outsideSeconds: Math.max(0, totalSeconds - repoSeconds),
+      markdownSeconds: sumMarkdownSeconds(allRows),
+      aiSeconds: sumAiSeconds(allRows),
+      missingDays: fetched.reduce((sum, p) => sum + p.missingDays, 0),
+      skippedDays: fetched.reduce((sum, p) => sum + p.skippedDays, 0),
+      treeOk,
+      treeTruncated: tree.truncated,
+      repoFileCount: tree.files.length,
+      hiddenFiles: Math.max(0, allRows.length - files.length),
+    },
+  };
 });
 
 // Two-pass review. A shipped project always gets a first pass from *some*
@@ -2791,18 +2937,21 @@ export const updateSecondPassChecklist = guardedAction("updateSecondPassChecklis
   redirect(back);
 });
 
-// Manual pixel correction from the Pixels tab. Deducts (or grants) whole
-// pixels with a mandatory reason; owners only, everything lands in the ledger.
+// Manual pixel correction from the Pixels tab or a player's own page. Deducts
+// (or grants) whole pixels with a mandatory reason; owners only, everything
+// lands in the ledger.
 export const adjustPixels = guardedAction("adjustPixels", "owner", async (access, formData: FormData): Promise<void> => {
   const by = actorName(access);
+  const back = safeRedirectPath(formData.get("back"), "/pixels");
+  const fail = (message: string): never => redirect(flashPath(back, "error", message));
   const userId = String(formData.get("userId") ?? "").trim();
   const amount = Math.round(Number(formData.get("amount") ?? 0));
   const deduct = formData.get("mode") !== "grant";
   const reason = String(formData.get("reason") ?? "").trim().slice(0, 300);
   if (!userId || !Number.isFinite(amount) || amount <= 0)
-    redirect(`/pixels?error=${encodeURIComponent("Pick a player and a whole number of pixels.")}`);
+    fail("Pick a player and a whole number of pixels.");
   if (!reason)
-    redirect(`/pixels?error=${encodeURIComponent("A reason is required for manual pixel changes.")}`);
+    fail("A reason is required for manual pixel changes.");
   const delta = deduct ? -amount : amount;
   const { error } = await db.rpc("adjust_user_pixels", {
     p_user_id: userId,
@@ -2812,7 +2961,7 @@ export const adjustPixels = guardedAction("adjustPixels", "owner", async (access
   });
   if (error) {
     console.error("adjustPixels failed", error.message);
-    redirect(`/pixels?error=${encodeURIComponent("Couldn't adjust pixels , try again.")}`);
+    fail("Couldn't adjust pixels , try again.");
   }
   await logModAction(
     userId,
@@ -2829,8 +2978,89 @@ export const adjustPixels = guardedAction("adjustPixels", "owner", async (access
 
   await dmOrEmail(userId, title, body);
   revalidatePath("/pixels");
-  redirect("/pixels?adjusted=1");
+  revalidatePath(`/players/${userId}`);
+  redirect(flashPath(back, "adjusted", "1"));
 });
+
+// Moves pixels between two players from a player's page. The balance change
+// and both ledger rows are atomic (lib/pixelTransfer.ts); notifications and
+// moderation log entries are best-effort after that.
+export const transferPlayerPixels = guardedAction(
+  "transferPlayerPixels",
+  "owner",
+  async (access, formData: FormData): Promise<void> => {
+    const by = actorName(access);
+    const back = safeRedirectPath(formData.get("back"), "/pixels");
+    const fail = (message: string): never => redirect(flashPath(back, "error", message));
+
+    const hereId = String(formData.get("here") ?? "").trim();
+    const otherId = String(formData.get("other") ?? "").trim();
+    const direction = formData.get("direction") === "in" ? "in" : "out";
+    const amount = Math.round(Number(formData.get("amount") ?? 0));
+    const reason = String(formData.get("reason") ?? "").trim().slice(0, 300);
+
+    if (!hereId || !otherId) fail("Pick the other player.");
+    if (hereId === otherId) fail("Pick a different player.");
+    if (!Number.isSafeInteger(amount) || amount <= 0) fail("Enter a whole number of pixels.");
+    if (!reason) fail("A reason is required for pixel transfers.");
+
+    const fromUserId = direction === "in" ? otherId : hereId;
+    const toUserId = direction === "in" ? hereId : otherId;
+
+    const { data, error } = await db
+      .from("users")
+      .select("id, display_name, real_name, pixels")
+      .in("id", [fromUserId, toUserId]);
+    if (error) {
+      console.error("transferPlayerPixels load", error.message);
+      fail("Couldn't load those players , try again.");
+    }
+    const players = (data ?? []) as Pick<UserRow, "id" | "display_name" | "real_name" | "pixels">[];
+    const from = players.find((p) => p.id === fromUserId);
+    const to = players.find((p) => p.id === toUserId);
+    if (!from || !to) fail("One of those players no longer exists.");
+    const fromName = playerLabel(from, fromUserId);
+    const toName = playerLabel(to, toUserId);
+
+    const result = await transferPixels({
+      fromUserId,
+      toUserId,
+      amount,
+      actor: by,
+      note: reason,
+    });
+    if (!result.ok) {
+      fail(
+        result.balance !== undefined
+          ? `${fromName} only has ${result.balance} pixels, so ${amount} can't be transferred.`
+          : result.error,
+      );
+    }
+
+    const fromBody = `${amount} pixels were moved from your balance to ${toName} by the Pixl team.\n\nReason: ${reason}\n\nIf you think this is a mistake, contact the Pixl team.`;
+    const toBody = `${amount} pixels were transferred to your account from ${fromName} by the Pixl team.\n\nReason: ${reason}\n\nIf you think this is a mistake, contact the Pixl team.`;
+    const { error: notifyError } = await db.from("notifications").insert([
+      { user_id: fromUserId, title: "Pixels transferred", body: fromBody },
+      { user_id: toUserId, title: "Pixels transferred", body: toBody },
+    ]);
+    if (notifyError) console.error("transferPlayerPixels notification failed", notifyError.message);
+
+    await Promise.all([
+      dmOrEmail(fromUserId, "Pixels transferred", fromBody),
+      dmOrEmail(toUserId, "Pixels transferred", toBody),
+    ]);
+    await Promise.all([
+      logModAction(fromUserId, "pixels_transferred_out", `${amount} pixels to ${toName} , ${reason}`, by),
+      logModAction(toUserId, "pixels_transferred_in", `${amount} pixels from ${fromName} , ${reason}`, by),
+    ]);
+
+    revalidatePath("/pixels");
+    revalidatePath(`/players/${hereId}`);
+    if (fromUserId !== hereId) revalidatePath(`/players/${fromUserId}`);
+    if (toUserId !== hereId) revalidatePath(`/players/${toUserId}`);
+    redirect(flashPath(back, "transferred", `${amount} pixels moved from ${fromName} to ${toName}.`));
+  },
+);
 
 // One-click "that first-pass review was bad": takes back what the first-pass
 // reviewer was paid for approving this project (8 px at the current rate),
@@ -6565,14 +6795,16 @@ export const markImportedGrants = guardedAction(
   },
 );
 
-// Turns one order into a grant order (shop_orders.is_grant) so it uses the
-// short grant flow: for grant-shaped orders on items that aren't tagged as
-// grants (e.g. a custom-amount request). Only while nothing has been bought
-// yet (pending or claimed); the claiming fulfiller or an owner can do it, and
-// anyone with fulfiller access can convert a pending order.
-export const convertOrderToGrant = guardedAction("convertOrderToGrant", "fulfiller", async (access, formData: FormData): Promise<void> => {
-  const id = Number(formData.get("id") ?? 0);
-  if (!Number.isSafeInteger(id) || id <= 0) return;
+type OrderFlowTarget = "grant" | "item";
+
+// Switches a waiting or claimed order between the short grant flow and the
+// normal item purchase flow. Nothing has been bought yet in either status, so
+// only the flow flags change and the claim (if any) is kept. The claiming
+// fulfiller or an owner can switch a claimed order; any fulfiller can switch a
+// pending one. A claimed order has a funding commitment, so its amount is
+// recalculated after the switch: grants count at their face value while items
+// count at their recorded supplier cost or pixel budget.
+async function convertOrderFlow(access: AdminAccess, id: number, target: OrderFlowTarget): Promise<void> {
   const { data: order } = await db
     .from("shop_orders")
     .select("user_id, item_name, status, claimed_by_slack, item_id, is_grant, item_flow")
@@ -6580,30 +6812,65 @@ export const convertOrderToGrant = guardedAction("convertOrderToGrant", "fulfill
     .maybeSingle();
   if (!order || (order.status !== "pending" && order.status !== "claimed")) {
     revalidatePath("/fulfillment");
+    revalidatePath("/fulfillment/grants");
     return;
   }
   if (order.status === "claimed" && !access.isOwner && !ownsOrder(access, order.claimed_by_slack as string)) {
-    throw new Error("Only the fulfiller who claimed this order can convert it.");
+    throw new Error("Only the fulfiller who claimed this order can change its flow.");
   }
   if (isOwnOrder({ player_slack: await buyerSlackFor(order.user_id as string) }, access.session.slackId, access.isOwner)) {
     throw new Error("You can't fulfill your own shop order.");
   }
-  if (await orderIsGrant(order)) {
+  const grant = target === "grant";
+  if ((await orderIsGrant(order)) === grant) {
     revalidatePath("/fulfillment");
+    revalidatePath("/fulfillment/grants");
     return;
   }
   const { data: changed, error } = await db
     .from("shop_orders")
-    .update({ is_grant: true, item_flow: false })
+    .update({ is_grant: grant, item_flow: !grant })
     .eq("id", id)
     .in("status", ["pending", "claimed"])
-    .eq("is_grant", false)
     .select("id")
     .maybeSingle();
   if (error) throw new Error(error.message);
-  if (!changed) { revalidatePath("/fulfillment"); return; }
-  await logOrderAction(id, "order_converted_to_grant", "now uses the grant flow", actorName(access), order);
+  if (!changed) {
+    revalidatePath("/fulfillment");
+    revalidatePath("/fulfillment/grants");
+    return;
+  }
+  if (order.status === "claimed" && (await refreshCommitmentAmount(id, { ships: shipsProvider() })) === "failed") {
+    await logOrderAction(id, "ledger_refresh_failed", "funding ledger amount could not be updated", actorName(access));
+  }
+  await logOrderAction(
+    id,
+    grant ? "order_converted_to_grant" : "order_converted_to_item",
+    grant ? "now uses the grant flow" : "now uses the normal item flow",
+    actorName(access),
+    order,
+  );
   revalidatePath("/fulfillment");
+  revalidatePath("/fulfillment/grants");
+}
+
+// Turns a waiting or claimed order into a grant order (shop_orders.is_grant) so
+// it uses the short grant flow: for grant-shaped orders on items that aren't
+// tagged as grants (e.g. a custom-amount request), or one that was previously
+// pushed onto the item flow.
+export const convertOrderToGrant = guardedAction("convertOrderToGrant", "fulfiller", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!Number.isSafeInteger(id) || id <= 0) return;
+  await convertOrderFlow(access, id, "grant");
+});
+
+// The reverse switch: pushes a waiting or claimed grant back onto the normal
+// item purchase flow (shop_orders.item_flow), e.g. when the grant was declined
+// and the item can simply be bought instead.
+export const convertOrderToItem = guardedAction("convertOrderToItem", "fulfiller", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  if (!Number.isSafeInteger(id) || id <= 0) return;
+  await convertOrderFlow(access, id, "item");
 });
 
 // Corrects an already-claimed order's fulfillment paper trail - the HCB link,
@@ -6746,6 +7013,58 @@ export const cancelOrder = guardedAction("cancelOrder", "owner", async (access, 
   );
   revalidatePath("/fulfillment");
   revalidatePath("/pixels");
+});
+
+// Owner escape hatch for a fulfillment that has to be undone after the fact,
+// e.g. a grant that HCB later cancelled and refunded. The order goes back to
+// its claimer's queue (or the New queue if it had none), the previous
+// fulfillment stays on file with the required reason, and the payout already
+// paid stays with the fulfiller. `flow` can move a grant-category order onto
+// the normal item flow for the retry when the replacement is bought directly.
+export const unfulfillOrder = guardedAction("unfulfillOrder", "owner", async (access, formData: FormData): Promise<void> => {
+  const id = Number(formData.get("id") ?? 0);
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 300);
+  const flowValue = String(formData.get("flow") ?? "");
+  const flow = flowValue === "grant" || flowValue === "item" ? flowValue : null;
+  if (!Number.isSafeInteger(id) || id <= 0 || !reason) {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  const { data: order } = await db
+    .from("shop_orders")
+    .select("user_id, item_name, status")
+    .eq("id", id)
+    .maybeSingle();
+  if (!order || (order.status !== "done" && order.status !== "shipped")) {
+    revalidatePath("/fulfillment");
+    return;
+  }
+  const result = await unfulfillOrderInDb(id, reason, actorName(access), access.session.slackId, { flow });
+  if (!result) {
+    revalidatePath("/fulfillment");
+    revalidatePath("/fulfillment/grants");
+    return;
+  }
+  if ((await refreshCommitmentAmount(id, { ships: shipsProvider() })) === "failed") {
+    await logOrderAction(id, "ledger_refresh_failed", "funding ledger amount could not be updated", actorName(access));
+  }
+  // The reason is internal (it can mention refunds, vendors or mistakes), so
+  // the player only gets the useful part: this order is being redone.
+  await db.from("notifications").insert({
+    user_id: result.userId,
+    title: "Order reopened",
+    body: `Your "${result.itemName}" order is being fulfilled again. We'll let you know when it's on its way.`,
+  });
+  await logOrderAction(
+    id,
+    "order_unfulfilled",
+    `reopened: ${reason}${flow ? ` (now on the ${flow} flow)` : ""}; ${result.pixelsPaid} px payout kept`,
+    actorName(access),
+    { user_id: result.userId, item_name: result.itemName },
+  );
+  revalidatePath("/fulfillment");
+  revalidatePath("/fulfillment/grants");
+  redirect(result.status === "pending" ? `/fulfillment?order=${id}` : `/fulfillment?status=claimed&order=${id}`);
 });
 
 // Backfill player-card photos from Slack for everyone who has a slack_id but

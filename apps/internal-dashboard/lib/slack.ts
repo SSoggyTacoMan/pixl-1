@@ -538,7 +538,7 @@ export async function dmViaPixorpheus(
 }
 
 // Slack ids the dashboard should never DM, regardless of reason (warn,
-// ban, project approve/reject, review payout, shipping tracking, ...) - this
+// ban, project approve/reject, review payout, delivery info, ...) - this
 // is the one place every dashboard-originated DM funnels through (dmOrEmail
 // in lib/notify.ts also checks it directly, so it falls back to email
 // instead of silently doing nothing). A short hardcoded list rather than an
@@ -546,8 +546,8 @@ export async function dmViaPixorpheus(
 // change without a code review.
 export const DM_EXCLUDED_SLACK_IDS = new Set<string>(["U09HNFFLFDF"]);
 
-// All player-facing DMs (warns, bans, project approve/reject/ban, shipping
-// tracking, notices). They go out through Pixo whenever EXTERNAL_API_KEY is
+// All player-facing DMs (warns, bans, project approve/reject/ban, delivery
+// info, notices). They go out through Pixo whenever EXTERNAL_API_KEY is
 // set, so players see one identity; without the key they fall back to the
 // dashboard's own Slack bot (the token the tickets/avatar helpers use).
 // Pixo rejects Slack control syntax (<!here>, <https://...|label>), so DM
